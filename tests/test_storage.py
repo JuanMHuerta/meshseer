@@ -1158,3 +1158,477 @@ def test_repository_caps_ack_only_backoff_at_standard_cooldown(tmp_path):
     assert blocked is None
     assert eligible is not None
     assert eligible["node_num"] == 202
+
+
+def test_repository_backfills_derived_analytics_from_legacy_history(tmp_path):
+    db_path = tmp_path / "mesh.db"
+    connection = sqlite3.connect(db_path)
+    connection.executescript(
+        """
+        CREATE TABLE packets (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            mesh_packet_id INTEGER,
+            received_at TEXT NOT NULL,
+            from_node_num INTEGER,
+            to_node_num INTEGER,
+            portnum TEXT NOT NULL,
+            channel_index INTEGER,
+            hop_limit INTEGER,
+            hop_start INTEGER,
+            rx_snr REAL,
+            rx_rssi INTEGER,
+            next_hop INTEGER,
+            relay_node INTEGER,
+            via_mqtt INTEGER,
+            transport_mechanism TEXT,
+            text_preview TEXT,
+            payload_base64 TEXT,
+            raw_json TEXT NOT NULL
+        );
+
+        CREATE TABLE nodes (
+            node_num INTEGER PRIMARY KEY,
+            node_id TEXT,
+            short_name TEXT,
+            long_name TEXT,
+            hardware_model TEXT,
+            role TEXT,
+            channel_index INTEGER,
+            last_heard_at TEXT,
+            last_snr REAL,
+            latitude REAL,
+            longitude REAL,
+            altitude REAL,
+            battery_level REAL,
+            channel_utilization REAL,
+            air_util_tx REAL,
+            hops_away INTEGER,
+            via_mqtt INTEGER,
+            raw_json TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE node_metric_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            node_num INTEGER NOT NULL,
+            recorded_at TEXT NOT NULL,
+            channel_utilization REAL,
+            air_util_tx REAL
+        );
+
+        CREATE TABLE traceroute_attempts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            target_node_num INTEGER NOT NULL,
+            requested_at TEXT NOT NULL,
+            completed_at TEXT,
+            hop_limit INTEGER NOT NULL,
+            status TEXT NOT NULL,
+            request_mesh_packet_id INTEGER,
+            response_mesh_packet_id INTEGER,
+            detail TEXT
+        );
+        """
+    )
+    connection.executemany(
+        """
+        INSERT INTO nodes (
+            node_num,
+            node_id,
+            short_name,
+            long_name,
+            hardware_model,
+            role,
+            channel_index,
+            last_heard_at,
+            last_snr,
+            latitude,
+            longitude,
+            altitude,
+            battery_level,
+            channel_utilization,
+            air_util_tx,
+            hops_away,
+            via_mqtt,
+            raw_json,
+            updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        [
+            (
+                101,
+                "!00000065",
+                "LOCAL",
+                "Local Node",
+                "TBEAM",
+                "CLIENT",
+                0,
+                "2026-03-30T12:00:00Z",
+                4.0,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                0,
+                '{"num":101}',
+                "2026-03-30T12:00:00Z",
+            ),
+            (
+                202,
+                "!000000ca",
+                "BETA",
+                "Beta Node",
+                "TBEAM",
+                "CLIENT",
+                0,
+                "2026-03-30T11:58:00Z",
+                4.0,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                2,
+                0,
+                '{"num":202}',
+                "2026-03-30T11:58:00Z",
+            ),
+            (
+                303,
+                "!0000012f",
+                "GAMMA",
+                "Gamma Node",
+                "TBEAM",
+                "CLIENT",
+                0,
+                "2026-03-30T11:57:00Z",
+                4.0,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                3,
+                0,
+                '{"num":303}',
+                "2026-03-30T11:57:00Z",
+            ),
+        ],
+    )
+    connection.executemany(
+        """
+        INSERT INTO packets (
+            mesh_packet_id,
+            received_at,
+            from_node_num,
+            to_node_num,
+            portnum,
+            channel_index,
+            hop_limit,
+            hop_start,
+            rx_snr,
+            rx_rssi,
+            next_hop,
+            relay_node,
+            via_mqtt,
+            transport_mechanism,
+            text_preview,
+            payload_base64,
+            raw_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        [
+            (
+                11,
+                "2026-03-30T11:45:00Z",
+                202,
+                BROADCAST_NODE_NUM,
+                "TEXT_MESSAGE_APP",
+                0,
+                1,
+                1,
+                5.0,
+                -90,
+                None,
+                None,
+                0,
+                None,
+                "hello",
+                None,
+                "{}",
+            ),
+            (
+                12,
+                "2026-03-30T11:40:00Z",
+                303,
+                101,
+                "TRACEROUTE_APP",
+                0,
+                3,
+                3,
+                4.5,
+                -95,
+                None,
+                None,
+                0,
+                None,
+                None,
+                encode_traceroute_payload(
+                    route=[202],
+                    snr_towards=[20, 12],
+                    route_back=[202],
+                    snr_back=[16, 8],
+                ),
+                "{}",
+            ),
+            (
+                13,
+                "2026-03-30T11:35:00Z",
+                202,
+                BROADCAST_NODE_NUM,
+                "TEXT_MESSAGE_APP",
+                2,
+                1,
+                1,
+                3.0,
+                -98,
+                None,
+                None,
+                0,
+                None,
+                "off channel",
+                None,
+                "{}",
+            ),
+        ],
+    )
+    connection.executemany(
+        """
+        INSERT INTO traceroute_attempts (
+            target_node_num,
+            requested_at,
+            completed_at,
+            hop_limit,
+            status,
+            request_mesh_packet_id,
+            response_mesh_packet_id,
+            detail
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        [
+            (202, "2026-03-29T20:00:00Z", "2026-03-29T20:00:05Z", 2, "ack_only", 1, 2, "ack"),
+            (202, "2026-03-30T05:30:00Z", "2026-03-30T05:30:05Z", 2, "ack_only", 3, 4, "ack"),
+        ],
+    )
+    connection.commit()
+    connection.close()
+
+    repo = MeshRepository(db_path)
+
+    with sqlite3.connect(db_path) as derived_connection:
+        rollups = {
+            row[0]: {
+                "total_packets": row[1],
+                "text_packets": row[2],
+                "position_packets": row[3],
+                "telemetry_packets": row[4],
+                "mqtt_packets": row[5],
+                "direct_packets": row[6],
+                "relayed_packets": row[7],
+            }
+            for row in derived_connection.execute(
+                """
+                SELECT
+                    scope,
+                    total_packets,
+                    text_packets,
+                    position_packets,
+                    telemetry_packets,
+                    mqtt_packets,
+                    direct_packets,
+                    relayed_packets
+                FROM packet_traffic_rollups
+                ORDER BY scope
+                """
+            )
+        }
+        route_observation_count = derived_connection.execute(
+            "SELECT COUNT(*) FROM route_observations"
+        ).fetchone()[0]
+        route_activity = {
+            row[0]: (row[1], row[2])
+            for row in derived_connection.execute(
+                """
+                SELECT node_num, last_route_seen_at, last_primary_route_seen_at
+                FROM route_node_activity
+                ORDER BY node_num
+                """
+            )
+        }
+        autotrace_state = derived_connection.execute(
+            """
+            SELECT target_node_num, last_activity_at, last_status, ack_only_streak
+            FROM autotrace_target_state
+            WHERE target_node_num = 202
+            """
+        ).fetchone()
+
+    routes = repo.get_mesh_routes(primary_only=True)
+
+    assert rollups == {
+        "all": {
+            "total_packets": 3,
+            "text_packets": 2,
+            "position_packets": 0,
+            "telemetry_packets": 0,
+            "mqtt_packets": 0,
+            "direct_packets": 3,
+            "relayed_packets": 0,
+        },
+        "primary": {
+            "total_packets": 2,
+            "text_packets": 1,
+            "position_packets": 0,
+            "telemetry_packets": 0,
+            "mqtt_packets": 0,
+            "direct_packets": 2,
+            "relayed_packets": 0,
+        },
+    }
+    assert route_observation_count == 2
+    assert route_activity == {
+        101: ("2026-03-30T11:40:00Z", "2026-03-30T11:40:00Z"),
+        303: ("2026-03-30T11:40:00Z", "2026-03-30T11:40:00Z"),
+    }
+    assert autotrace_state == (202, "2026-03-30T05:30:05Z", "ack_only", 2)
+    assert routes["stats"] == {"total": 2, "forward": 1, "return": 1}
+    assert routes["routes"][0]["path_node_nums"] == [101, 202, 303]
+
+
+def test_repository_tracks_autotrace_target_state_during_pending_and_completion(tmp_path):
+    repo = MeshRepository(tmp_path / "mesh.db")
+
+    first_attempt_id = repo.start_traceroute_attempt(
+        target_node_num=202,
+        requested_at="2026-03-30T05:30:00Z",
+        hop_limit=3,
+    )
+    with sqlite3.connect(tmp_path / "mesh.db") as connection:
+        pending_state = connection.execute(
+            """
+            SELECT last_activity_at, last_status, ack_only_streak
+            FROM autotrace_target_state
+            WHERE target_node_num = 202
+            """
+        ).fetchone()
+
+    repo.complete_traceroute_attempt(
+        first_attempt_id,
+        completed_at="2026-03-30T05:30:05Z",
+        status="ack_only",
+        request_mesh_packet_id=11,
+        response_mesh_packet_id=12,
+        detail="ack only",
+    )
+
+    second_attempt_id = repo.start_traceroute_attempt(
+        target_node_num=202,
+        requested_at="2026-03-30T07:30:00Z",
+        hop_limit=3,
+    )
+    repo.complete_traceroute_attempt(
+        second_attempt_id,
+        completed_at="2026-03-30T07:30:05Z",
+        status="ack_only",
+        request_mesh_packet_id=13,
+        response_mesh_packet_id=14,
+        detail="ack only",
+    )
+
+    with sqlite3.connect(tmp_path / "mesh.db") as connection:
+        final_state = connection.execute(
+            """
+            SELECT last_activity_at, last_status, ack_only_streak
+            FROM autotrace_target_state
+            WHERE target_node_num = 202
+            """
+        ).fetchone()
+
+    assert pending_state == ("2026-03-30T05:30:00Z", "pending", 0)
+    assert final_state == ("2026-03-30T07:30:05Z", "ack_only", 2)
+
+
+def test_repository_includes_top_senders_only_when_requested(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "meshradar.storage.utc_now",
+        lambda: datetime(2026, 3, 30, 12, 30, tzinfo=UTC),
+    )
+
+    repo = MeshRepository(tmp_path / "mesh.db")
+    for node_num, short_name in ((202, "BETA"), (303, "GAMMA")):
+        repo.upsert_node(
+            NodeRecord(
+                node_num=node_num,
+                node_id=f"!{node_num:08x}",
+                short_name=short_name,
+                long_name=f"{short_name} Node",
+                hardware_model="TBEAM",
+                role="CLIENT",
+                channel_index=0,
+                last_heard_at="2026-03-30T12:00:00Z",
+                last_snr=4.0,
+                latitude=None,
+                longitude=None,
+                altitude=None,
+                battery_level=None,
+                channel_utilization=None,
+                air_util_tx=None,
+                raw_json=f'{{"num":{node_num}}}',
+                updated_at="2026-03-30T12:00:00Z",
+                hops_away=1,
+                via_mqtt=False,
+            )
+        )
+
+    for mesh_packet_id, from_node_num in ((11, 202), (12, 202), (13, 303)):
+        repo.insert_packet(
+            PacketRecord(
+                mesh_packet_id=mesh_packet_id,
+                received_at=f"2026-03-30T12:{mesh_packet_id:02d}:00Z",
+                from_node_num=from_node_num,
+                to_node_num=BROADCAST_NODE_NUM,
+                portnum="TEXT_MESSAGE_APP",
+                channel_index=0,
+                hop_limit=1,
+                hop_start=1,
+                rx_snr=4.0,
+                rx_rssi=-90,
+                text_preview="hello",
+                payload_base64=None,
+                raw_json="{}",
+                via_mqtt=False,
+            )
+        )
+
+    summary = repo.get_mesh_summary(primary_only=True)
+    detailed = repo.get_mesh_summary(primary_only=True, include_top_senders=True, top_n=1)
+
+    assert "top_senders" not in summary
+    assert detailed["top_senders"] == [
+        {
+            "node_num": 202,
+            "short_name": "BETA",
+            "long_name": "BETA Node",
+            "node_id": "!000000ca",
+            "packet_count": 2,
+            "mqtt_packets": 0,
+            "direct_packets": 2,
+            "relayed_packets": 0,
+            "avg_rx_snr": 4.0,
+            "last_heard_at": "2026-03-30T12:12:00Z",
+        }
+    ]

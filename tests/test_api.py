@@ -231,12 +231,27 @@ def test_api_routes_and_filters(tmp_path):
     assert health.json()["perspective"]["label"] == "ALFA"
     assert "database" not in health.json()
     assert packets.json()[0]["text_preview"] == "hello mesh"
+    assert packets.json()[0]["path_label"] == "Direct"
+    assert packets.json()[0]["path_tone"] == "direct"
+    assert "mesh_packet_id" not in packets.json()[0]
+    assert "channel_index" not in packets.json()[0]
+    assert "hop_limit" not in packets.json()[0]
+    assert "hop_start" not in packets.json()[0]
+    assert "rx_snr" not in packets.json()[0]
+    assert "via_mqtt" not in packets.json()[0]
+    assert "from_node_id" not in packets.json()[0]
     assert "payload_base64" not in packets.json()[0]
     assert "raw_json" not in packets.json()[0]
     assert len(chat.json()) == 1
     assert chat.json()[0]["text_preview"] == "hello mesh"
+    assert chat.json()[0]["sender_label"] == "ALFA"
+    assert chat.json()[0]["path_label"] == "Direct"
+    assert "from_node_num" not in chat.json()[0]
+    assert "mesh_packet_id" not in chat.json()[0]
     assert node.json()["node"]["node_num"] == 101
     assert "raw_json" not in node.json()["node"]
+    assert node.json()["recent_packets"][0]["path_label"] == "Direct"
+    assert "hop_limit" not in node.json()["recent_packets"][0]
     assert "payload_base64" not in node.json()["recent_packets"][0]
     assert hidden_node.status_code == 404
     assert admin_packet.json()["mesh_packet_id"] == 11
@@ -1633,7 +1648,13 @@ def test_default_collector_callbacks_persist_and_broadcast(tmp_path):
     status_message = next(message for message in messages if message["type"] == "collector_status")
 
     assert message_types == {"packet_received", "node_updated", "collector_status"}
-    assert packet_message["data"]["mesh_packet_id"] == 22
+    assert packet_message["data"]["text_preview"] == "ping"
+    assert packet_message["data"]["path_label"] == "Unknown"
+    assert packet_message["data"]["path_tone"] == "unknown"
+    assert "mesh_packet_id" not in packet_message["data"]
+    assert "channel_index" not in packet_message["data"]
+    assert "hop_limit" not in packet_message["data"]
+    assert "via_mqtt" not in packet_message["data"]
     assert "payload_base64" not in packet_message["data"]
     assert "raw_json" not in packet_message["data"]
     assert node_message["data"]["short_name"] == "NODE7"
@@ -1645,6 +1666,9 @@ def test_default_collector_callbacks_persist_and_broadcast(tmp_path):
     assert hidden_packet.status_code == 404
     assert hidden_node.status_code == 404
     assert chat.json()[0]["text_preview"] == "ping"
+    assert chat.json()[0]["sender_label"] == "NODE7"
+    assert chat.json()[0]["path_label"] == "Unknown"
+    assert "from_node_num" not in chat.json()[0]
     assert "raw_json" not in chat.json()[0]
     assert missing_packet.status_code == 404
     assert missing_node.status_code == 404

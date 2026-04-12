@@ -22,6 +22,7 @@ from meshradar.events import EventBroker, EventSubscriptionOverflow, TooManySubs
 from meshradar.models import NodeRecord, PacketRecord
 from meshradar.public_api import (
     collector_status_payload,
+    public_chat_messages_payload,
     public_mesh_summary_payload,
     public_node_detail_payload,
     public_nodes_payload,
@@ -319,7 +320,7 @@ def create_app(
 
     @public_router.get("/api/chat")
     async def list_chat_messages(limit: int = Query(default=50, ge=1, le=500)) -> list[dict[str, Any]]:
-        return public_packets_payload(repository.list_chat_messages(limit=limit, primary_only=True))
+        return public_chat_messages_payload(repository.list_chat_messages(limit=limit, primary_only=True))
 
     @public_router.get("/api/mesh/summary")
     async def mesh_summary() -> dict[str, Any]:

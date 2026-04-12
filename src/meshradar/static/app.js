@@ -383,6 +383,7 @@ function observePacketNode(packet) {
 
   const receivedAt = packet?.received_at || null;
   const packetHops = packetHopsTaken(packet);
+  const pathTone = packetPathTone(packet);
   const existing = nodeByNum(nodeNum);
   if (!existing) {
     const nextNode = syncRosterNodeMeta({
@@ -392,9 +393,9 @@ function observePacketNode(packet) {
       long_name: null,
       hardware_model: null,
       role: null,
-      channel_index: packet?.channel_index ?? null,
+      channel_index: null,
       last_heard_at: receivedAt,
-      last_snr: packet?.rx_snr ?? null,
+      last_snr: null,
       latitude: null,
       longitude: null,
       altitude: null,
@@ -404,7 +405,7 @@ function observePacketNode(packet) {
       raw_json: "{}",
       updated_at: receivedAt,
       hops_away: packetHops,
-      via_mqtt: packet?.via_mqtt ?? null,
+      via_mqtt: pathTone === "mqtt" ? true : null,
       activity_count_60m: 1,
     });
     state.nodes = [nextNode, ...state.nodes];
@@ -413,15 +414,9 @@ function observePacketNode(packet) {
 
   if (!existing.last_heard_at || (receivedAt && existing.last_heard_at <= receivedAt)) {
     existing.last_heard_at = receivedAt;
-    if (packet?.rx_snr != null) {
-      existing.last_snr = packet.rx_snr;
-    }
   }
-  if (existing.channel_index == null && packet?.channel_index != null) {
-    existing.channel_index = packet.channel_index;
-  }
-  if (existing.via_mqtt == null && packet?.via_mqtt != null) {
-    existing.via_mqtt = packet.via_mqtt;
+  if (existing.via_mqtt == null && pathTone === "mqtt") {
+    existing.via_mqtt = true;
   }
   if (existing.hops_away == null && packetHops != null) {
     existing.hops_away = packetHops;
@@ -456,40 +451,27 @@ function packetHopsTaken(packet) {
   if (!packet) {
     return null;
   }
-  const hopStart = Number(packet.hop_start);
-  const hopLimit = Number(packet.hop_limit);
-  if (Number.isNaN(hopStart) || Number.isNaN(hopLimit) || hopStart < hopLimit) {
+  const pathTone = packetPathTone(packet);
+  if (pathTone === "mqtt" || pathTone === "unknown") {
     return null;
   }
-  return hopStart - hopLimit;
+  if (pathTone === "direct") {
+    return 0;
+  }
+  const match = String(packetPathLabel(packet)).match(/^(\d+)/);
+  if (!match) {
+    return null;
+  }
+  const hops = Number(match[1]);
+  return Number.isFinite(hops) ? hops : null;
 }
 
 function packetPathTone(packet) {
-  if (packet?.via_mqtt) {
-    return "mqtt";
-  }
-  const hops = packetHopsTaken(packet);
-  if (hops == null) {
-    return "unknown";
-  }
-  return hops === 0 ? "direct" : "relayed";
+  return packet?.path_tone || "unknown";
 }
 
 function packetPathLabel(packet) {
-  if (packet?.via_mqtt) {
-    return "MQTT";
-  }
-  const hops = packetHopsTaken(packet);
-  if (hops == null) {
-    return "Unknown";
-  }
-  if (hops === 0) {
-    return "Direct";
-  }
-  if (hops === 1) {
-    return "1 Hop";
-  }
-  return `${hops} Hops`;
+  return packet?.path_label || "Unknown";
 }
 
 function packetPathDetails(packet) {
@@ -497,28 +479,20 @@ function packetPathDetails(packet) {
     return "";
   }
 
-  const details = [];
-  if (packet.via_mqtt) {
-    details.push("Seen via MQTT bridge");
-  } else {
-    const hops = packetHopsTaken(packet);
-    if (hops === 0) {
-      details.push("Heard by receiver without relay");
-    } else if (hops === 1) {
-      details.push("Arrived after 1 relay hop");
-    } else if (hops != null) {
-      details.push(`Arrived after ${hops} relay hops`);
-    }
+  if (packetPathTone(packet) === "mqtt") {
+    return "Seen via MQTT bridge";
   }
-
-  if (packet.relay_node != null) {
-    details.push(`Relay #${packet.relay_node}`);
+  const hops = packetHopsTaken(packet);
+  if (hops === 0) {
+    return "Heard by receiver without relay";
   }
-  if (packet.next_hop != null) {
-    details.push(`Next hop #${packet.next_hop}`);
+  if (hops === 1) {
+    return "Arrived after 1 relay hop";
   }
-
-  return details.join(" · ");
+  if (hops != null) {
+    return `Arrived after ${hops} relay hops`;
+  }
+  return "";
 }
 
 function nodePathTone(node) {
@@ -796,9 +770,6 @@ function rankRosterNodes(items) {
 
 function fromNodeLabel(packet) {
   return nodeLabel(nodeByNum(packet.from_node_num) || {
-    short_name: packet.from_short_name,
-    long_name: packet.from_long_name,
-    node_id: packet.from_node_id,
     node_num: packet.from_node_num,
   });
 }
@@ -2267,20 +2238,11 @@ function renderMeshRoutes(data) {
   refreshKpiTicker();
 }
 
-function hopSegmentedBar(hops, maxHops = 6) {
-  if (hops == null || hops < 1) return "";
-  const filled = Math.min(hops, maxHops);
-  const segments = Array.from({ length: maxHops }, (_, i) =>
-    `<span class="hop-bar-seg${i < filled ? " filled" : ""}"></span>`
-  ).join("");
-  return `<span class="hop-bar">${segments}</span>`;
-}
-
 function packetRowMarkup(packet) {
   const category = portCategory(packet.portnum);
   const hops = packetHopsTaken(packet);
-  const isMqtt = Boolean(packet?.via_mqtt);
-  const isDirect = hops === 0 && !isMqtt;
+  const pathTone = packetPathTone(packet);
+  const isMqtt = pathTone === "mqtt";
   const isUnknown = hops == null && !isMqtt;
   const isHighHop = hops != null && hops >= 4;
   const pathCellClass = isHighHop ? " path-cell-high" : "";
@@ -2288,20 +2250,7 @@ function packetRowMarkup(packet) {
   const fromName = fromNodeLabel(packet);
   const fromId = packet.from_node_num != null ? `#${packet.from_node_num}` : "";
 
-  let pathContent;
-  if (isMqtt) {
-    pathContent = `<span class="path-inferred">MQTT</span>`;
-  } else if (isDirect) {
-    pathContent = `<span class="path-inferred">Direct</span>`;
-  } else if (isUnknown) {
-    pathContent = `<span class="path-inferred">Inferred local</span>`;
-  } else {
-    const relayLabel = packet.relay_node != null ? `<span class="path-sub">relay #${escapeHtml(packet.relay_node)}</span>` : "";
-    pathContent = `
-      <div class="path-cell-bar">${hopSegmentedBar(hops)}<span class="path-hop-label">${hops} ${hops === 1 ? "hop" : "hops"}</span></div>
-      ${relayLabel}
-    `;
-  }
+  const pathContent = `<span class="path-badge ${pathTone}">${escapeHtml(isUnknown ? "Unknown" : packetPathLabel(packet))}</span>`;
 
   const previewText = packet.text_preview;
   const previewHtml = previewText
@@ -2426,15 +2375,13 @@ function renderChat(items) {
 
   const ordered = [...items].reverse();
   chatFeed.innerHTML = ordered.map((item) => {
-    const sender = fromNodeLabel(item);
-    const senderNode = item.from_node_num == null ? "Unknown" : `#${item.from_node_num}`;
+    const sender = item.sender_label || "Unknown";
     const pathTone = packetPathTone(item);
     return `
       <article class="chat-message ${pathTone}">
         <div class="chat-meta">
           <div class="chat-identity">
             <span class="chat-author">${escapeHtml(sender)}</span>
-            <span class="chat-node mono-text">${escapeHtml(senderNode)}</span>
             <span class="path-badge ${pathTone}">${escapeHtml(packetPathLabel(item))}</span>
           </div>
           <span class="chat-time mono-text">${escapeHtml(formatTime(item.received_at))}</span>
@@ -2502,6 +2449,12 @@ async function loadHealth() {
 async function loadNodes() {
   state.nodes = (await fetchJson("/api/nodes/roster")).map((node) => syncRosterNodeMeta(node));
   renderNodesView();
+  if (Array.isArray(state.packets)) {
+    renderPackets(state.packets);
+  }
+  if (Array.isArray(state.chat)) {
+    renderChat(state.chat);
+  }
 }
 
 async function loadPackets() {

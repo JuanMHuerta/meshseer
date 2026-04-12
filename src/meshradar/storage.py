@@ -95,7 +95,15 @@ class MeshRepository:
     def _backfill_packet_metadata(cls, connection: sqlite3.Connection) -> None:
         rows = connection.execute(
             """
-            SELECT id, raw_json
+            SELECT
+                id,
+                hop_start,
+                rx_rssi,
+                next_hop,
+                relay_node,
+                via_mqtt,
+                transport_mechanism,
+                raw_json
             FROM packets
             WHERE hop_start IS NULL
                OR rx_rssi IS NULL
@@ -113,12 +121,16 @@ class MeshRepository:
                 continue
             updates.append(
                 (
-                    cls._coerce_optional_int(raw.get("hopStart")),
-                    cls._coerce_optional_int(raw.get("rxRssi")),
-                    cls._coerce_optional_int(raw.get("nextHop")),
-                    cls._coerce_optional_int(raw.get("relayNode")),
-                    cls._coerce_optional_bool(raw.get("viaMqtt")),
-                    cls._coerce_optional_string(raw.get("transportMechanism")),
+                    row["hop_start"] if row["hop_start"] is not None else cls._coerce_optional_int(raw.get("hopStart")),
+                    row["rx_rssi"] if row["rx_rssi"] is not None else cls._coerce_optional_int(raw.get("rxRssi")),
+                    row["next_hop"] if row["next_hop"] is not None else cls._coerce_optional_int(raw.get("nextHop")),
+                    row["relay_node"] if row["relay_node"] is not None else cls._coerce_optional_int(raw.get("relayNode")),
+                    row["via_mqtt"] if row["via_mqtt"] is not None else cls._coerce_optional_bool(raw.get("viaMqtt")),
+                    (
+                        row["transport_mechanism"]
+                        if row["transport_mechanism"] is not None
+                        else cls._coerce_optional_string(raw.get("transportMechanism"))
+                    ),
                     row["id"],
                 )
             )
@@ -141,7 +153,7 @@ class MeshRepository:
     def _backfill_node_metadata(cls, connection: sqlite3.Connection) -> None:
         rows = connection.execute(
             """
-            SELECT node_num, raw_json
+            SELECT node_num, hops_away, via_mqtt, raw_json
             FROM nodes
             WHERE hops_away IS NULL
                OR via_mqtt IS NULL
@@ -155,8 +167,8 @@ class MeshRepository:
                 continue
             updates.append(
                 (
-                    cls._coerce_optional_int(raw.get("hopsAway")),
-                    cls._coerce_optional_bool(raw.get("viaMqtt")),
+                    row["hops_away"] if row["hops_away"] is not None else cls._coerce_optional_int(raw.get("hopsAway")),
+                    row["via_mqtt"] if row["via_mqtt"] is not None else cls._coerce_optional_bool(raw.get("viaMqtt")),
                     row["node_num"],
                 )
             )
@@ -335,7 +347,7 @@ class MeshRepository:
 
     @classmethod
     def _backfill_node_activity_from_packets(cls, connection: sqlite3.Connection) -> None:
-        rows = connection.execute(
+        cursor = connection.execute(
             f"""
             SELECT *
             FROM packets
@@ -343,10 +355,10 @@ class MeshRepository:
               AND {cls._primary_channel_clause()}
             ORDER BY received_at DESC, id DESC
             """
-        ).fetchall()
+        )
 
         observed_node_nums: set[int] = set()
-        for row in rows:
+        for row in cursor:
             packet = cls._row_to_dict(row)
             if packet is None:
                 continue
@@ -379,6 +391,186 @@ class MeshRepository:
                 node.air_util_tx,
             ),
         )
+
+    @classmethod
+    def _is_primary_channel_value(cls, value: Any) -> bool:
+        channel_index = cls._coerce_optional_int(value)
+        return channel_index is None or channel_index == 0
+
+    @staticmethod
+    def _empty_packet_traffic_rollup() -> dict[str, int]:
+        return {
+            "total_packets": 0,
+            "text_packets": 0,
+            "position_packets": 0,
+            "telemetry_packets": 0,
+            "mqtt_packets": 0,
+            "direct_packets": 0,
+            "relayed_packets": 0,
+        }
+
+    @classmethod
+    def _packet_traffic_counts(cls, packet: Mapping[str, Any]) -> dict[str, int]:
+        counters = cls._empty_packet_traffic_rollup()
+        counters["total_packets"] = 1
+
+        portnum = packet.get("portnum")
+        if isinstance(portnum, str) and portnum == "TEXT_MESSAGE_APP":
+            counters["text_packets"] = 1
+        if isinstance(portnum, str) and "POSITION" in portnum:
+            counters["position_packets"] = 1
+        if isinstance(portnum, str) and any(
+            marker in portnum
+            for marker in (
+                "TELEMETRY",
+                "NODEINFO",
+                "NEIGHBORINFO",
+                "STORE_FORWARD",
+                "PAXCOUNTER",
+                "AIRQUALITY",
+            )
+        ):
+            counters["telemetry_packets"] = 1
+
+        is_mqtt = bool(packet.get("via_mqtt"))
+        if is_mqtt:
+            counters["mqtt_packets"] = 1
+
+        hops_taken = cls._hops_taken(
+            cls._coerce_optional_int(packet.get("hop_start")),
+            cls._coerce_optional_int(packet.get("hop_limit")),
+        )
+        if not is_mqtt and hops_taken == 0:
+            counters["direct_packets"] = 1
+        if not is_mqtt and isinstance(hops_taken, int) and hops_taken > 0:
+            counters["relayed_packets"] = 1
+        return counters
+
+    @classmethod
+    def _upsert_packet_traffic_rollup(
+        cls,
+        connection: sqlite3.Connection,
+        *,
+        scope: str,
+        counters: Mapping[str, int],
+    ) -> None:
+        connection.execute(
+            """
+            INSERT INTO packet_traffic_rollups (
+                scope,
+                total_packets,
+                text_packets,
+                position_packets,
+                telemetry_packets,
+                mqtt_packets,
+                direct_packets,
+                relayed_packets
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(scope) DO UPDATE SET
+                total_packets = packet_traffic_rollups.total_packets + excluded.total_packets,
+                text_packets = packet_traffic_rollups.text_packets + excluded.text_packets,
+                position_packets = packet_traffic_rollups.position_packets + excluded.position_packets,
+                telemetry_packets = packet_traffic_rollups.telemetry_packets + excluded.telemetry_packets,
+                mqtt_packets = packet_traffic_rollups.mqtt_packets + excluded.mqtt_packets,
+                direct_packets = packet_traffic_rollups.direct_packets + excluded.direct_packets,
+                relayed_packets = packet_traffic_rollups.relayed_packets + excluded.relayed_packets
+            """,
+            (
+                scope,
+                int(counters.get("total_packets", 0)),
+                int(counters.get("text_packets", 0)),
+                int(counters.get("position_packets", 0)),
+                int(counters.get("telemetry_packets", 0)),
+                int(counters.get("mqtt_packets", 0)),
+                int(counters.get("direct_packets", 0)),
+                int(counters.get("relayed_packets", 0)),
+            ),
+        )
+
+    @classmethod
+    def _record_packet_traffic(cls, connection: sqlite3.Connection, packet: Mapping[str, Any]) -> None:
+        counters = cls._packet_traffic_counts(packet)
+        cls._upsert_packet_traffic_rollup(connection, scope="all", counters=counters)
+        if cls._is_primary_channel_value(packet.get("channel_index")):
+            cls._upsert_packet_traffic_rollup(connection, scope="primary", counters=counters)
+
+    @classmethod
+    def _compute_packet_traffic_rollup_row(
+        cls,
+        connection: sqlite3.Connection,
+        *,
+        primary_only: bool,
+    ) -> Mapping[str, Any]:
+        clauses: list[str] = []
+        params: list[Any] = []
+        if primary_only:
+            clauses.append(cls._primary_channel_clause("p.channel_index"))
+        where = cls._where_clause(clauses)
+        hops_taken_expr = (
+            "CASE WHEN p.hop_start IS NOT NULL AND p.hop_limit IS NOT NULL AND p.hop_start >= p.hop_limit "
+            "THEN p.hop_start - p.hop_limit END"
+        )
+        row = connection.execute(
+            f"""
+            SELECT
+                COUNT(*) AS total_packets,
+                SUM(CASE WHEN p.portnum = 'TEXT_MESSAGE_APP' THEN 1 ELSE 0 END) AS text_packets,
+                SUM(CASE WHEN p.portnum LIKE '%POSITION%' THEN 1 ELSE 0 END) AS position_packets,
+                SUM(CASE WHEN
+                    p.portnum LIKE '%TELEMETRY%'
+                    OR p.portnum LIKE '%NODEINFO%'
+                    OR p.portnum LIKE '%NEIGHBORINFO%'
+                    OR p.portnum LIKE '%STORE_FORWARD%'
+                    OR p.portnum LIKE '%PAXCOUNTER%'
+                    OR p.portnum LIKE '%AIRQUALITY%'
+                THEN 1 ELSE 0 END) AS telemetry_packets,
+                SUM(CASE WHEN COALESCE(p.via_mqtt, 0) = 1 THEN 1 ELSE 0 END) AS mqtt_packets,
+                SUM(CASE WHEN COALESCE(p.via_mqtt, 0) = 0 AND {hops_taken_expr} = 0 THEN 1 ELSE 0 END) AS direct_packets,
+                SUM(CASE WHEN COALESCE(p.via_mqtt, 0) = 0 AND {hops_taken_expr} > 0 THEN 1 ELSE 0 END) AS relayed_packets
+            FROM packets AS p
+            {where}
+            """,
+            params,
+        ).fetchone()
+        return row or {}
+
+    @classmethod
+    def _backfill_packet_traffic_rollups(cls, connection: sqlite3.Connection) -> None:
+        scopes = {
+            row["scope"]
+            for row in connection.execute("SELECT scope FROM packet_traffic_rollups").fetchall()
+            if row is not None and isinstance(row["scope"], str)
+        }
+        if {"all", "primary"}.issubset(scopes):
+            return
+
+        connection.execute("DELETE FROM packet_traffic_rollups")
+        for scope, primary_only in (("all", False), ("primary", True)):
+            row = cls._compute_packet_traffic_rollup_row(connection, primary_only=primary_only)
+            connection.execute(
+                """
+                INSERT INTO packet_traffic_rollups (
+                    scope,
+                    total_packets,
+                    text_packets,
+                    position_packets,
+                    telemetry_packets,
+                    mqtt_packets,
+                    direct_packets,
+                    relayed_packets
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    scope,
+                    int(row["total_packets"] or 0) if row else 0,
+                    int(row["text_packets"] or 0) if row else 0,
+                    int(row["position_packets"] or 0) if row else 0,
+                    int(row["telemetry_packets"] or 0) if row else 0,
+                    int(row["mqtt_packets"] or 0) if row else 0,
+                    int(row["direct_packets"] or 0) if row else 0,
+                    int(row["relayed_packets"] or 0) if row else 0,
+                ),
+            )
 
     def _initialize(self) -> None:
         with self._connect() as connection:
@@ -446,6 +638,45 @@ class MeshRepository:
                     response_mesh_packet_id INTEGER,
                     detail TEXT
                 );
+
+                CREATE TABLE IF NOT EXISTS packet_traffic_rollups (
+                    scope TEXT PRIMARY KEY,
+                    total_packets INTEGER NOT NULL DEFAULT 0,
+                    text_packets INTEGER NOT NULL DEFAULT 0,
+                    position_packets INTEGER NOT NULL DEFAULT 0,
+                    telemetry_packets INTEGER NOT NULL DEFAULT 0,
+                    mqtt_packets INTEGER NOT NULL DEFAULT 0,
+                    direct_packets INTEGER NOT NULL DEFAULT 0,
+                    relayed_packets INTEGER NOT NULL DEFAULT 0
+                );
+
+                CREATE TABLE IF NOT EXISTS route_observations (
+                    packet_id INTEGER NOT NULL,
+                    mesh_packet_id INTEGER,
+                    received_at TEXT NOT NULL,
+                    channel_index INTEGER,
+                    portnum TEXT NOT NULL,
+                    variant TEXT NOT NULL,
+                    direction TEXT NOT NULL,
+                    source_node_num INTEGER NOT NULL,
+                    destination_node_num INTEGER NOT NULL,
+                    path_node_nums_json TEXT NOT NULL,
+                    edge_snr_db_json TEXT NOT NULL,
+                    hop_count INTEGER NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS route_node_activity (
+                    node_num INTEGER PRIMARY KEY,
+                    last_route_seen_at TEXT,
+                    last_primary_route_seen_at TEXT
+                );
+
+                CREATE TABLE IF NOT EXISTS autotrace_target_state (
+                    target_node_num INTEGER PRIMARY KEY,
+                    last_activity_at TEXT NOT NULL,
+                    last_status TEXT NOT NULL,
+                    ack_only_streak INTEGER NOT NULL DEFAULT 0
+                );
                 """
             )
             self._ensure_column(connection, "packets", "hop_start", "INTEGER")
@@ -462,6 +693,10 @@ class MeshRepository:
             self._backfill_node_metadata(connection)
             self._backfill_node_activity_from_packets(connection)
             self._backfill_node_metric_history(connection)
+            self._backfill_packet_traffic_rollups(connection)
+            self._backfill_route_observations(connection)
+            self._backfill_route_node_activity(connection)
+            self._backfill_autotrace_target_state(connection)
             connection.executescript(
                 """
                 CREATE INDEX IF NOT EXISTS idx_packets_received_at ON packets(received_at DESC);
@@ -472,14 +707,27 @@ class MeshRepository:
                 CREATE INDEX IF NOT EXISTS idx_nodes_last_heard_at ON nodes(last_heard_at DESC);
                 CREATE INDEX IF NOT EXISTS idx_nodes_channel_index ON nodes(channel_index);
                 CREATE INDEX IF NOT EXISTS idx_nodes_hops_away ON nodes(hops_away);
+                CREATE INDEX IF NOT EXISTS idx_nodes_primary_last_heard
+                    ON nodes(COALESCE(last_heard_at, '') DESC, node_num ASC)
+                    WHERE COALESCE(channel_index, 0) = 0;
                 CREATE UNIQUE INDEX IF NOT EXISTS idx_node_metric_history_node_recorded_at
                     ON node_metric_history(node_num, recorded_at);
                 CREATE INDEX IF NOT EXISTS idx_node_metric_history_recorded_at
                     ON node_metric_history(recorded_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_packets_primary_recent_sender
+                    ON packets(received_at DESC, from_node_num)
+                    WHERE COALESCE(channel_index, 0) = 0
+                      AND from_node_num IS NOT NULL;
+                CREATE INDEX IF NOT EXISTS idx_traceroute_attempts_last_activity
+                    ON traceroute_attempts(COALESCE(completed_at, requested_at) DESC, id DESC);
                 CREATE INDEX IF NOT EXISTS idx_traceroute_attempts_target_requested_at
                     ON traceroute_attempts(target_node_num, requested_at DESC);
                 CREATE INDEX IF NOT EXISTS idx_traceroute_attempts_requested_at
                     ON traceroute_attempts(requested_at DESC);
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_route_observations_packet_direction
+                    ON route_observations(packet_id, direction);
+                CREATE INDEX IF NOT EXISTS idx_route_observations_received_at_packet
+                    ON route_observations(received_at DESC, packet_id DESC);
                 """
             )
 
@@ -808,14 +1056,272 @@ class MeshRepository:
 
         return routes
 
+    @staticmethod
+    def _json_text(value: Any) -> str:
+        return json.dumps(value, separators=(",", ":"))
+
+    @classmethod
+    def _upsert_route_node_activity(
+        cls,
+        connection: sqlite3.Connection,
+        *,
+        node_num: int,
+        received_at: str,
+        primary_only: bool,
+    ) -> None:
+        primary_received_at = received_at if primary_only else None
+        connection.execute(
+            """
+            INSERT INTO route_node_activity (
+                node_num,
+                last_route_seen_at,
+                last_primary_route_seen_at
+            ) VALUES (?, ?, ?)
+            ON CONFLICT(node_num) DO UPDATE SET
+                last_route_seen_at = CASE
+                    WHEN route_node_activity.last_route_seen_at IS NULL
+                         OR route_node_activity.last_route_seen_at < excluded.last_route_seen_at
+                    THEN excluded.last_route_seen_at
+                    ELSE route_node_activity.last_route_seen_at
+                END,
+                last_primary_route_seen_at = CASE
+                    WHEN excluded.last_primary_route_seen_at IS NULL THEN route_node_activity.last_primary_route_seen_at
+                    WHEN route_node_activity.last_primary_route_seen_at IS NULL
+                         OR route_node_activity.last_primary_route_seen_at < excluded.last_primary_route_seen_at
+                    THEN excluded.last_primary_route_seen_at
+                    ELSE route_node_activity.last_primary_route_seen_at
+                END
+            """,
+            (node_num, received_at, primary_received_at),
+        )
+
+    @classmethod
+    def _store_route_observations(
+        cls,
+        connection: sqlite3.Connection,
+        packet: Mapping[str, Any],
+    ) -> None:
+        routes = cls._routes_from_packet(dict(packet))
+        if not routes:
+            return
+
+        is_primary = cls._is_primary_channel_value(packet.get("channel_index"))
+        for route in routes:
+            connection.execute(
+                """
+                INSERT OR IGNORE INTO route_observations (
+                    packet_id,
+                    mesh_packet_id,
+                    received_at,
+                    channel_index,
+                    portnum,
+                    variant,
+                    direction,
+                    source_node_num,
+                    destination_node_num,
+                    path_node_nums_json,
+                    edge_snr_db_json,
+                    hop_count
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    route.get("packet_id"),
+                    route.get("mesh_packet_id"),
+                    route.get("received_at"),
+                    packet.get("channel_index"),
+                    route.get("portnum"),
+                    route.get("variant"),
+                    route.get("direction"),
+                    route.get("source_node_num"),
+                    route.get("destination_node_num"),
+                    cls._json_text(route.get("path_node_nums") or []),
+                    cls._json_text(route.get("edge_snr_db") or []),
+                    route.get("hop_count") or 0,
+                ),
+            )
+            received_at = route.get("received_at")
+            if not isinstance(received_at, str) or not received_at:
+                continue
+            for key in ("source_node_num", "destination_node_num"):
+                node_num = cls._coerce_optional_int(route.get(key))
+                if node_num is None:
+                    continue
+                cls._upsert_route_node_activity(
+                    connection,
+                    node_num=node_num,
+                    received_at=received_at,
+                    primary_only=is_primary,
+                )
+
+    @classmethod
+    def _backfill_route_observations(cls, connection: sqlite3.Connection) -> None:
+        if connection.execute("SELECT 1 FROM route_observations LIMIT 1").fetchone() is not None:
+            return
+
+        cursor = connection.execute(
+            """
+            SELECT *
+            FROM packets
+            WHERE portnum IN (?, ?)
+            ORDER BY id ASC
+            """,
+            ("TRACEROUTE_APP", "ROUTING_APP"),
+        )
+        for row in cursor:
+            packet = cls._row_to_dict(row)
+            if packet is None:
+                continue
+            cls._store_route_observations(connection, packet)
+
+    @classmethod
+    def _backfill_route_node_activity(cls, connection: sqlite3.Connection) -> None:
+        if connection.execute("SELECT 1 FROM route_node_activity LIMIT 1").fetchone() is not None:
+            return
+
+        connection.execute(
+            """
+            INSERT INTO route_node_activity (
+                node_num,
+                last_route_seen_at,
+                last_primary_route_seen_at
+            )
+            SELECT
+                node_num,
+                MAX(received_at) AS last_route_seen_at,
+                MAX(CASE WHEN COALESCE(channel_index, 0) = 0 THEN received_at END) AS last_primary_route_seen_at
+            FROM (
+                SELECT source_node_num AS node_num, received_at, channel_index
+                FROM route_observations
+                UNION ALL
+                SELECT destination_node_num AS node_num, received_at, channel_index
+                FROM route_observations
+            )
+            GROUP BY node_num
+            """
+        )
+
+    @staticmethod
+    def _upsert_autotrace_target_state(
+        connection: sqlite3.Connection,
+        *,
+        target_node_num: int,
+        last_activity_at: str,
+        last_status: str,
+        ack_only_streak: int,
+    ) -> None:
+        connection.execute(
+            """
+            INSERT INTO autotrace_target_state (
+                target_node_num,
+                last_activity_at,
+                last_status,
+                ack_only_streak
+            ) VALUES (?, ?, ?, ?)
+            ON CONFLICT(target_node_num) DO UPDATE SET
+                last_activity_at = excluded.last_activity_at,
+                last_status = excluded.last_status,
+                ack_only_streak = excluded.ack_only_streak
+            """,
+            (target_node_num, last_activity_at, last_status, ack_only_streak),
+        )
+
+    @classmethod
+    def _backfill_autotrace_target_state(cls, connection: sqlite3.Connection) -> None:
+        if connection.execute("SELECT 1 FROM autotrace_target_state LIMIT 1").fetchone() is not None:
+            return
+
+        cursor = connection.execute(
+            """
+            SELECT
+                target_node_num,
+                status,
+                COALESCE(completed_at, requested_at) AS last_activity_at
+            FROM traceroute_attempts
+            ORDER BY target_node_num ASC, last_activity_at DESC, id DESC
+            """
+        )
+        current_node_num: int | None = None
+        current_status: str | None = None
+        current_last_activity_at: str | None = None
+        ack_only_streak = 0
+        counting_ack_only = False
+
+        for row in cursor:
+            node_num = cls._coerce_optional_int(row["target_node_num"])
+            last_activity_at = row["last_activity_at"]
+            status = row["status"]
+            if node_num is None or not isinstance(last_activity_at, str) or not isinstance(status, str):
+                continue
+
+            if node_num != current_node_num:
+                if (
+                    current_node_num is not None
+                    and current_status is not None
+                    and current_last_activity_at is not None
+                ):
+                    cls._upsert_autotrace_target_state(
+                        connection,
+                        target_node_num=current_node_num,
+                        last_activity_at=current_last_activity_at,
+                        last_status=current_status,
+                        ack_only_streak=ack_only_streak,
+                    )
+                current_node_num = node_num
+                current_status = status
+                current_last_activity_at = last_activity_at
+                counting_ack_only = status == "ack_only"
+                ack_only_streak = 1 if counting_ack_only else 0
+                continue
+
+            if counting_ack_only and status == "ack_only":
+                ack_only_streak += 1
+            else:
+                counting_ack_only = False
+
+        if (
+            current_node_num is not None
+            and current_status is not None
+            and current_last_activity_at is not None
+        ):
+            cls._upsert_autotrace_target_state(
+                connection,
+                target_node_num=current_node_num,
+                last_activity_at=current_last_activity_at,
+                last_status=current_status,
+                ack_only_streak=ack_only_streak,
+            )
+
+    @classmethod
+    def _route_observation_row_to_dict(cls, row: sqlite3.Row | None) -> dict[str, Any] | None:
+        payload = cls._row_to_dict(row)
+        if payload is None:
+            return None
+        try:
+            path_node_nums = json.loads(payload.pop("path_node_nums_json", "[]"))
+        except (TypeError, ValueError):
+            path_node_nums = []
+        try:
+            edge_snr_db = json.loads(payload.pop("edge_snr_db_json", "[]"))
+        except (TypeError, ValueError):
+            edge_snr_db = []
+        return {
+            **payload,
+            "path_node_nums": cls._coerce_optional_int_list(path_node_nums),
+            "edge_snr_db": [
+                cls._coerce_optional_float(value)
+                if value is not None else None
+                for value in edge_snr_db
+            ],
+        }
+
     def get_mesh_routes(
         self,
         *,
         since: str | None = None,
         primary_only: bool = False,
     ) -> dict[str, Any]:
-        clauses = ["portnum IN (?, ?)"]
-        params: list[Any] = ["TRACEROUTE_APP", "ROUTING_APP"]
+        clauses: list[str] = []
+        params: list[Any] = []
         if since is not None:
             clauses.append("received_at >= ?")
             params.append(since)
@@ -826,29 +1332,29 @@ class MeshRepository:
         with self._connect() as connection:
             rows = connection.execute(
                 f"""
-                SELECT *
-                FROM packets
+                SELECT
+                    packet_id,
+                    mesh_packet_id,
+                    received_at,
+                    portnum,
+                    variant,
+                    direction,
+                    source_node_num,
+                    destination_node_num,
+                    path_node_nums_json,
+                    edge_snr_db_json,
+                    hop_count
+                FROM route_observations
                 {where}
-                ORDER BY received_at DESC, id DESC
+                ORDER BY
+                    received_at DESC,
+                    packet_id DESC,
+                    CASE WHEN direction = 'forward' THEN 1 ELSE 0 END DESC
                 """,
                 params,
             ).fetchall()
 
-        routes: list[dict[str, Any]] = []
-        for row in rows:
-            packet = self._row_to_dict(row)
-            if packet is None:
-                continue
-            routes.extend(self._routes_from_packet(packet))
-
-        routes.sort(
-            key=lambda item: (
-                item["received_at"] or "",
-                item["packet_id"] or 0,
-                int(item["direction"] == "forward"),
-            ),
-            reverse=True,
-        )
+        routes = [route for row in rows if (route := self._route_observation_row_to_dict(row)) is not None]
 
         return {
             "routes": routes,
@@ -1016,53 +1522,47 @@ class MeshRepository:
                 """
                 SELECT
                     target_node_num,
-                    status,
-                    COALESCE(completed_at, requested_at) AS last_activity_at
-                FROM traceroute_attempts
-                ORDER BY target_node_num ASC, last_activity_at DESC, id DESC
+                    last_activity_at,
+                    last_status,
+                    ack_only_streak
+                FROM autotrace_target_state
                 """
             ).fetchall()
-        attempts_by_node: dict[int, list[dict[str, Any]]] = {}
+
+        activity: dict[int, dict[str, Any]] = {}
         for row in rows:
             node_num = self._coerce_optional_int(row["target_node_num"])
             if node_num is None:
                 continue
             last_activity_at = row["last_activity_at"]
-            if isinstance(last_activity_at, str) and last_activity_at:
-                attempts_by_node.setdefault(node_num, []).append(
-                    {
-                        "last_activity_at": last_activity_at,
-                        "status": row["status"],
-                    }
-                )
-        activity: dict[int, dict[str, Any]] = {}
-        for node_num, attempts in attempts_by_node.items():
-            latest = attempts[0]
-            ack_only_streak = 0
-            if latest.get("status") == "ack_only":
-                for attempt in attempts:
-                    if attempt.get("status") != "ack_only":
-                        break
-                    ack_only_streak += 1
+            status = row["last_status"]
+            if not isinstance(last_activity_at, str) or not last_activity_at or not isinstance(status, str):
+                continue
             activity[node_num] = {
-                "last_activity_at": latest["last_activity_at"],
-                "status": latest["status"],
-                "ack_only_streak": ack_only_streak,
+                "last_activity_at": last_activity_at,
+                "status": status,
+                "ack_only_streak": int(row["ack_only_streak"] or 0),
             }
         return activity
 
     def _route_activity_by_node(self, *, primary_only: bool = False) -> dict[int, str]:
-        activity: dict[int, str] = {}
-        for route in self.get_mesh_routes(primary_only=primary_only)["routes"]:
-            observed_at = route.get("received_at")
-            if not isinstance(observed_at, str) or not observed_at:
-                continue
-            for key in ("source_node_num", "destination_node_num"):
-                node_num = self._coerce_optional_int(route.get(key))
-                if node_num is None:
-                    continue
-                activity[node_num] = self._max_timestamp(activity.get(node_num), observed_at) or observed_at
-        return activity
+        observed_column = "last_primary_route_seen_at" if primary_only else "last_route_seen_at"
+        with self._connect() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT node_num, {observed_column} AS observed_at
+                FROM route_node_activity
+                WHERE {observed_column} IS NOT NULL
+                """
+            ).fetchall()
+        return {
+            int(row["node_num"]): row["observed_at"]
+            for row in rows
+            if row is not None
+            and row["node_num"] is not None
+            and isinstance(row["observed_at"], str)
+            and row["observed_at"]
+        }
 
     def _eligible_autotrace_nodes(
         self,
@@ -1224,6 +1724,14 @@ class MeshRepository:
                 """,
                 (target_node_num, requested_at, hop_limit),
             )
+            cls = type(self)
+            cls._upsert_autotrace_target_state(
+                connection,
+                target_node_num=target_node_num,
+                last_activity_at=requested_at,
+                last_status="pending",
+                ack_only_streak=0,
+            )
             return int(cursor.lastrowid)
 
     def complete_traceroute_attempt(
@@ -1255,6 +1763,48 @@ class MeshRepository:
                     detail,
                     attempt_id,
                 ),
+            )
+            row = connection.execute(
+                """
+                SELECT
+                    target_node_num,
+                    status,
+                    COALESCE(completed_at, requested_at) AS last_activity_at
+                FROM traceroute_attempts
+                WHERE id = ?
+                """,
+                (attempt_id,),
+            ).fetchone()
+            target_node_num = self._coerce_optional_int(None if row is None else row["target_node_num"])
+            last_activity_at = None if row is None else row["last_activity_at"]
+            latest_status = None if row is None else row["status"]
+            if target_node_num is None or not isinstance(last_activity_at, str) or not isinstance(latest_status, str):
+                return
+
+            ack_only_streak = 0
+            if latest_status == "ack_only":
+                ack_only_streak = 1
+                prior_rows = connection.execute(
+                    """
+                    SELECT status
+                    FROM traceroute_attempts
+                    WHERE target_node_num = ?
+                      AND id != ?
+                    ORDER BY COALESCE(completed_at, requested_at) DESC, id DESC
+                    """,
+                    (target_node_num, attempt_id),
+                )
+                for prior_row in prior_rows:
+                    if prior_row["status"] != "ack_only":
+                        break
+                    ack_only_streak += 1
+
+            type(self)._upsert_autotrace_target_state(
+                connection,
+                target_node_num=target_node_num,
+                last_activity_at=last_activity_at,
+                last_status=latest_status,
+                ack_only_streak=ack_only_streak,
             )
 
     def list_recent_traceroute_attempts(self, *, limit: int = 10) -> list[dict[str, Any]]:
@@ -1323,7 +1873,14 @@ class MeshRepository:
                     packet.raw_json,
                 ),
             )
-            return int(cursor.lastrowid)
+            packet_id = int(cursor.lastrowid)
+            stored_packet = {
+                **packet.to_dict(),
+                "id": packet_id,
+            }
+            self._record_packet_traffic(connection, stored_packet)
+            self._store_route_observations(connection, stored_packet)
+            return packet_id
 
     def upsert_node(self, node: NodeRecord) -> None:
         with self._connect() as connection:
@@ -1563,10 +2120,7 @@ class MeshRepository:
         local_node_num: int | None = None,
     ) -> list[dict[str, Any]]:
         node_where = f"WHERE {self._primary_channel_clause()}" if primary_only else ""
-        packet_clauses = ["from_node_num IS NOT NULL"]
-        if primary_only:
-            packet_clauses.append(self._primary_channel_clause())
-        packet_where = self._where_clause(packet_clauses)
+        node_from = "FROM nodes INDEXED BY idx_nodes_primary_last_heard" if primary_only else "FROM nodes"
 
         now = utc_now().astimezone(UTC).replace(microsecond=0)
         packet_activity_since_iso = to_utc_iso(now - timedelta(minutes=ROSTER_ACTIVITY_COUNT_WINDOW_MINUTES))
@@ -1575,22 +2129,46 @@ class MeshRepository:
             node_rows = connection.execute(
                 f"""
                 SELECT *
-                FROM nodes
+                {node_from}
                 {node_where}
                 ORDER BY COALESCE(last_heard_at, '') DESC, node_num ASC
                 """
             ).fetchall()
-            packet_rows = connection.execute(
-                f"""
-                SELECT
-                    from_node_num AS node_num,
-                    SUM(CASE WHEN received_at >= ? THEN 1 ELSE 0 END) AS activity_count_60m
-                FROM packets
-                {packet_where}
-                GROUP BY from_node_num
-                """,
-                [packet_activity_since_iso],
-            ).fetchall()
+            if primary_only:
+                packet_rows = connection.execute(
+                    """
+                    WITH recent_packets AS MATERIALIZED (
+                        SELECT from_node_num
+                        FROM packets INDEXED BY idx_packets_primary_recent_sender
+                        WHERE from_node_num IS NOT NULL
+                          AND COALESCE(channel_index, 0) = 0
+                          AND received_at >= ?
+                    )
+                    SELECT
+                        from_node_num AS node_num,
+                        COUNT(*) AS activity_count_60m
+                    FROM recent_packets
+                    GROUP BY from_node_num
+                    """,
+                    [packet_activity_since_iso],
+                ).fetchall()
+            else:
+                packet_rows = connection.execute(
+                    """
+                    WITH recent_packets AS MATERIALIZED (
+                        SELECT from_node_num
+                        FROM packets
+                        WHERE from_node_num IS NOT NULL
+                          AND received_at >= ?
+                    )
+                    SELECT
+                        from_node_num AS node_num,
+                        COUNT(*) AS activity_count_60m
+                    FROM recent_packets
+                    GROUP BY from_node_num
+                    """,
+                    [packet_activity_since_iso],
+                ).fetchall()
 
         packet_stats_by_node_num = {
             int(row["node_num"]): {
@@ -1816,17 +2394,13 @@ class MeshRepository:
         primary_only: bool = False,
         top_n: int = 5,
         window_minutes: int = 60,
+        include_top_senders: bool = False,
     ) -> dict[str, Any]:
         node_clauses: list[str] = []
         if primary_only:
             node_clauses.append(self._primary_channel_clause())
         node_where = self._where_clause(node_clauses)
 
-        packet_clauses: list[str] = []
-        packet_params: list[Any] = []
-        if primary_only:
-            packet_clauses.append(self._primary_channel_clause("p.channel_index"))
-        packet_where = self._where_clause(packet_clauses)
         hops_taken_expr = "CASE WHEN p.hop_start IS NOT NULL AND p.hop_limit IS NOT NULL AND p.hop_start >= p.hop_limit THEN p.hop_start - p.hop_limit END"
         now = utc_now().astimezone(UTC).replace(microsecond=0)
         current_window_start = now - timedelta(minutes=window_minutes)
@@ -1859,153 +2433,84 @@ class MeshRepository:
                 [active_nodes_window_start_iso, current_window_end_iso],
             ).fetchone()
             traffic_row = connection.execute(
-                f"""
+                """
                 SELECT
-                    COUNT(*) AS total_packets,
-                    SUM(CASE WHEN portnum = 'TEXT_MESSAGE_APP' THEN 1 ELSE 0 END) AS text_packets,
-                    SUM(CASE WHEN portnum LIKE '%POSITION%' THEN 1 ELSE 0 END) AS position_packets,
-                    SUM(CASE WHEN
-                        portnum LIKE '%TELEMETRY%'
-                        OR portnum LIKE '%NODEINFO%'
-                        OR portnum LIKE '%NEIGHBORINFO%'
-                        OR portnum LIKE '%STORE_FORWARD%'
-                        OR portnum LIKE '%PAXCOUNTER%'
-                        OR portnum LIKE '%AIRQUALITY%'
-                    THEN 1 ELSE 0 END) AS telemetry_packets,
-                    SUM(CASE WHEN COALESCE(via_mqtt, 0) = 1 THEN 1 ELSE 0 END) AS mqtt_packets,
-                    SUM(CASE WHEN COALESCE(via_mqtt, 0) = 0 AND {hops_taken_expr} = 0 THEN 1 ELSE 0 END) AS direct_packets,
-                    SUM(CASE WHEN COALESCE(via_mqtt, 0) = 0 AND {hops_taken_expr} > 0 THEN 1 ELSE 0 END) AS relayed_packets
-                FROM packets AS p
-                {packet_where}
+                    total_packets,
+                    text_packets,
+                    position_packets,
+                    telemetry_packets,
+                    mqtt_packets,
+                    direct_packets,
+                    relayed_packets
+                FROM packet_traffic_rollups
+                WHERE scope = ?
                 """,
-                packet_params,
+                ("primary" if primary_only else "all",),
             ).fetchone()
-            window_row = connection.execute(
-                f"""
-                SELECT
-                    COUNT(CASE WHEN p.received_at >= ? AND p.received_at < ? THEN 1 END) AS current_packet_count,
-                    COUNT(CASE WHEN p.received_at >= ? AND p.received_at < ? THEN 1 END) AS previous_packet_count,
-                    COUNT(DISTINCT CASE
-                        WHEN p.received_at >= ?
-                             AND p.received_at < ?
-                             AND p.from_node_num IS NOT NULL
-                        THEN p.from_node_num
-                    END) AS current_active_nodes,
-                    COUNT(DISTINCT CASE
-                        WHEN p.received_at >= ?
-                             AND p.received_at < ?
-                             AND p.from_node_num IS NOT NULL
-                        THEN p.from_node_num
-                    END) AS previous_active_nodes,
-                    SUM(CASE
-                        WHEN p.received_at >= ?
-                             AND p.received_at < ?
-                             AND COALESCE(p.via_mqtt, 0) = 1
-                        THEN 1 ELSE 0
-                    END) AS current_mqtt_packets,
-                    SUM(CASE
-                        WHEN p.received_at >= ?
-                             AND p.received_at < ?
-                             AND COALESCE(p.via_mqtt, 0) = 1
-                        THEN 1 ELSE 0
-                    END) AS previous_mqtt_packets,
-                    SUM(CASE
-                        WHEN p.received_at >= ?
-                             AND p.received_at < ?
-                             AND COALESCE(p.via_mqtt, 0) = 0
-                             AND {hops_taken_expr} = 0
-                        THEN 1 ELSE 0
-                    END) AS current_direct_packets,
-                    SUM(CASE
-                        WHEN p.received_at >= ?
-                             AND p.received_at < ?
-                             AND COALESCE(p.via_mqtt, 0) = 0
-                             AND {hops_taken_expr} = 0
-                        THEN 1 ELSE 0
-                    END) AS previous_direct_packets,
-                    SUM(CASE
-                        WHEN p.received_at >= ?
-                             AND p.received_at < ?
-                             AND COALESCE(p.via_mqtt, 0) = 0
-                             AND {hops_taken_expr} > 0
-                        THEN 1 ELSE 0
-                    END) AS current_relayed_packets,
-                    SUM(CASE
-                        WHEN p.received_at >= ?
-                             AND p.received_at < ?
-                             AND COALESCE(p.via_mqtt, 0) = 0
-                             AND {hops_taken_expr} > 0
-                        THEN 1 ELSE 0
-                    END) AS previous_relayed_packets,
-                    AVG(CASE
-                        WHEN p.received_at >= ?
-                             AND p.received_at < ?
-                             AND COALESCE(p.via_mqtt, 0) = 0
-                             AND {hops_taken_expr} IS NOT NULL
-                        THEN {hops_taken_expr}
-                    END) AS current_avg_hops,
-                    AVG(CASE
-                        WHEN p.received_at >= ?
-                             AND p.received_at < ?
-                             AND COALESCE(p.via_mqtt, 0) = 0
-                             AND {hops_taken_expr} IS NOT NULL
-                        THEN {hops_taken_expr}
-                    END) AS previous_avg_hops
-                FROM packets AS p
-                {packet_where}
-                """,
-                [
-                    current_window_start_iso,
-                    current_window_end_iso,
-                    previous_window_start_iso,
-                    current_window_start_iso,
-                    current_window_start_iso,
-                    current_window_end_iso,
-                    previous_window_start_iso,
-                    current_window_start_iso,
-                    current_window_start_iso,
-                    current_window_end_iso,
-                    previous_window_start_iso,
-                    current_window_start_iso,
-                    current_window_start_iso,
-                    current_window_end_iso,
-                    previous_window_start_iso,
-                    current_window_start_iso,
-                    current_window_start_iso,
-                    current_window_end_iso,
-                    previous_window_start_iso,
-                    current_window_start_iso,
-                    current_window_start_iso,
-                    current_window_end_iso,
-                    previous_window_start_iso,
-                    current_window_start_iso,
-                ],
-            ).fetchone()
-            top_rows = connection.execute(
-                f"""
-                SELECT
-                    p.from_node_num AS node_num,
-                    n.short_name,
-                    n.long_name,
-                    n.node_id,
-                    COUNT(*) AS packet_count,
-                    SUM(CASE WHEN COALESCE(p.via_mqtt, 0) = 1 THEN 1 ELSE 0 END) AS mqtt_packets,
-                    SUM(CASE WHEN COALESCE(p.via_mqtt, 0) = 0 AND {hops_taken_expr} = 0 THEN 1 ELSE 0 END) AS direct_packets,
-                    SUM(CASE WHEN COALESCE(p.via_mqtt, 0) = 0 AND {hops_taken_expr} > 0 THEN 1 ELSE 0 END) AS relayed_packets,
-                    AVG(p.rx_snr) AS avg_rx_snr,
-                    MAX(p.received_at) AS last_heard_at
-                FROM packets AS p
-                LEFT JOIN nodes AS n ON n.node_num = p.from_node_num
-                {packet_where} {"AND" if packet_where else "WHERE"} p.from_node_num IS NOT NULL
-                GROUP BY p.from_node_num
-                ORDER BY packet_count DESC, last_heard_at DESC
-                LIMIT ?
-                """,
-                [*packet_params, top_n],
-            ).fetchall()
+            def window_row_for(start_iso: str, end_iso: str) -> sqlite3.Row | None:
+                clauses = [
+                    "p.received_at >= ?",
+                    "p.received_at < ?",
+                ]
+                params: list[Any] = [start_iso, end_iso]
+                if primary_only:
+                    clauses.append(self._primary_channel_clause("p.channel_index"))
+                where = self._where_clause(clauses)
+                return connection.execute(
+                    f"""
+                    SELECT
+                        COUNT(*) AS packet_count,
+                        COUNT(DISTINCT p.from_node_num) AS active_nodes,
+                        SUM(CASE WHEN COALESCE(p.via_mqtt, 0) = 1 THEN 1 ELSE 0 END) AS mqtt_packets,
+                        SUM(CASE WHEN COALESCE(p.via_mqtt, 0) = 0 AND {hops_taken_expr} = 0 THEN 1 ELSE 0 END) AS direct_packets,
+                        SUM(CASE WHEN COALESCE(p.via_mqtt, 0) = 0 AND {hops_taken_expr} > 0 THEN 1 ELSE 0 END) AS relayed_packets,
+                        AVG(CASE
+                            WHEN COALESCE(p.via_mqtt, 0) = 0
+                                 AND {hops_taken_expr} IS NOT NULL
+                            THEN {hops_taken_expr}
+                        END) AS avg_hops
+                    FROM packets AS p
+                    {where}
+                    """,
+                    params,
+                ).fetchone()
+
+            current_window_row = window_row_for(current_window_start_iso, current_window_end_iso)
+            previous_window_row = window_row_for(previous_window_start_iso, current_window_start_iso)
+
+            top_rows: list[sqlite3.Row] = []
+            if include_top_senders:
+                packet_clauses: list[str] = ["p.from_node_num IS NOT NULL"]
+                packet_params: list[Any] = []
+                if primary_only:
+                    packet_clauses.append(self._primary_channel_clause("p.channel_index"))
+                packet_where = self._where_clause(packet_clauses)
+                top_rows = connection.execute(
+                    f"""
+                    SELECT
+                        p.from_node_num AS node_num,
+                        n.short_name,
+                        n.long_name,
+                        n.node_id,
+                        COUNT(*) AS packet_count,
+                        SUM(CASE WHEN COALESCE(p.via_mqtt, 0) = 1 THEN 1 ELSE 0 END) AS mqtt_packets,
+                        SUM(CASE WHEN COALESCE(p.via_mqtt, 0) = 0 AND {hops_taken_expr} = 0 THEN 1 ELSE 0 END) AS direct_packets,
+                        SUM(CASE WHEN COALESCE(p.via_mqtt, 0) = 0 AND {hops_taken_expr} > 0 THEN 1 ELSE 0 END) AS relayed_packets,
+                        AVG(p.rx_snr) AS avg_rx_snr,
+                        MAX(p.received_at) AS last_heard_at
+                    FROM packets AS p
+                    LEFT JOIN nodes AS n ON n.node_num = p.from_node_num
+                    {packet_where}
+                    GROUP BY p.from_node_num
+                    ORDER BY packet_count DESC, last_heard_at DESC
+                    LIMIT ?
+                    """,
+                    [*packet_params, top_n],
+                ).fetchall()
 
         def window_payload(prefix: str) -> dict[str, Any]:
-            if window_row is None:
+            row = current_window_row if prefix == "current" else previous_window_row
+            if row is None:
                 return {
                     "active_nodes": 0,
                     "packet_count": 0,
@@ -2015,15 +2520,15 @@ class MeshRepository:
                     "avg_hops": None,
                 }
             return {
-                "active_nodes": int(window_row[f"{prefix}_active_nodes"] or 0),
-                "packet_count": int(window_row[f"{prefix}_packet_count"] or 0),
-                "direct_packets": int(window_row[f"{prefix}_direct_packets"] or 0),
-                "relayed_packets": int(window_row[f"{prefix}_relayed_packets"] or 0),
-                "mqtt_packets": int(window_row[f"{prefix}_mqtt_packets"] or 0),
-                "avg_hops": window_row[f"{prefix}_avg_hops"],
+                "active_nodes": int(row["active_nodes"] or 0),
+                "packet_count": int(row["packet_count"] or 0),
+                "direct_packets": int(row["direct_packets"] or 0),
+                "relayed_packets": int(row["relayed_packets"] or 0),
+                "mqtt_packets": int(row["mqtt_packets"] or 0),
+                "avg_hops": row["avg_hops"],
             }
 
-        return {
+        summary = {
             "nodes": {
                 "total": int(node_row["total_nodes"] or 0) if node_row is not None else 0,
                 "active_3h": int(node_row["active_nodes_3h"] or 0) if node_row is not None else 0,
@@ -2048,7 +2553,9 @@ class MeshRepository:
                 "current": window_payload("current"),
                 "previous": window_payload("previous"),
             },
-            "top_senders": [
+        }
+        if include_top_senders:
+            summary["top_senders"] = [
                 {
                     "node_num": row["node_num"],
                     "short_name": row["short_name"],
@@ -2062,5 +2569,5 @@ class MeshRepository:
                     "last_heard_at": row["last_heard_at"],
                 }
                 for row in top_rows
-            ],
-        }
+            ]
+        return summary

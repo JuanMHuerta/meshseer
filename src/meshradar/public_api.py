@@ -5,22 +5,17 @@ from typing import Any, Mapping
 
 PUBLIC_PACKET_FIELDS = (
     "id",
-    "mesh_packet_id",
     "received_at",
     "from_node_num",
     "to_node_num",
     "portnum",
-    "channel_index",
-    "hop_limit",
-    "hop_start",
-    "rx_snr",
-    "relay_node",
-    "next_hop",
     "text_preview",
-    "via_mqtt",
-    "from_short_name",
-    "from_long_name",
-    "from_node_id",
+)
+
+PUBLIC_CHAT_FIELDS = (
+    "id",
+    "received_at",
+    "text_preview",
 )
 
 PUBLIC_NODE_FIELDS = (
@@ -68,6 +63,62 @@ def _pick(mapping: Mapping[str, Any], fields: tuple[str, ...]) -> dict[str, Any]
     return {field: mapping.get(field) for field in fields}
 
 
+def _coerce_int(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value) if value.is_integer() else None
+    if isinstance(value, str) and value.strip():
+        try:
+            return int(value)
+        except ValueError:
+            return None
+    return None
+
+
+def _packet_path_tone(packet: Mapping[str, Any]) -> str:
+    if packet.get("via_mqtt"):
+        return "mqtt"
+    hop_start = _coerce_int(packet.get("hop_start"))
+    hop_limit = _coerce_int(packet.get("hop_limit"))
+    if hop_start is None or hop_limit is None or hop_start < hop_limit:
+        return "unknown"
+    return "direct" if hop_start == hop_limit else "relayed"
+
+
+def _packet_path_label(packet: Mapping[str, Any]) -> str:
+    tone = _packet_path_tone(packet)
+    if tone == "mqtt":
+        return "MQTT"
+    if tone == "unknown":
+        return "Unknown"
+    hop_start = _coerce_int(packet.get("hop_start"))
+    hop_limit = _coerce_int(packet.get("hop_limit"))
+    if hop_start is None or hop_limit is None:
+        return "Unknown"
+    hops_taken = hop_start - hop_limit
+    if hops_taken == 0:
+        return "Direct"
+    if hops_taken == 1:
+        return "1 Hop"
+    return f"{hops_taken} Hops"
+
+
+def _sender_label(packet: Mapping[str, Any]) -> str:
+    short_name = packet.get("from_short_name")
+    if isinstance(short_name, str) and short_name.strip():
+        return short_name
+    long_name = packet.get("from_long_name")
+    if isinstance(long_name, str) and long_name.strip():
+        return long_name
+    from_node_num = _coerce_int(packet.get("from_node_num"))
+    if from_node_num is not None:
+        return f"Node {from_node_num}"
+    return "Unknown"
+
+
 def collector_status_payload(status: Mapping[str, Any]) -> dict[str, Any]:
     return {
         "state": status.get("state"),
@@ -76,11 +127,26 @@ def collector_status_payload(status: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def public_packet_payload(packet: Mapping[str, Any]) -> dict[str, Any]:
-    return _pick(packet, PUBLIC_PACKET_FIELDS)
+    payload = _pick(packet, PUBLIC_PACKET_FIELDS)
+    payload["path_tone"] = _packet_path_tone(packet)
+    payload["path_label"] = _packet_path_label(packet)
+    return payload
 
 
 def public_packets_payload(items: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
     return [public_packet_payload(item) for item in items]
+
+
+def public_chat_message_payload(packet: Mapping[str, Any]) -> dict[str, Any]:
+    payload = _pick(packet, PUBLIC_CHAT_FIELDS)
+    payload["sender_label"] = _sender_label(packet)
+    payload["path_tone"] = _packet_path_tone(packet)
+    payload["path_label"] = _packet_path_label(packet)
+    return payload
+
+
+def public_chat_messages_payload(items: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    return [public_chat_message_payload(item) for item in items]
 
 
 def public_node_payload(node: Mapping[str, Any]) -> dict[str, Any]:

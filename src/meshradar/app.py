@@ -149,6 +149,8 @@ def create_app(
         if start_autotrace_service:
             autotrace_service.start()
             app.state.autotrace_service_started = True
+            if settings.autotrace_enabled:
+                autotrace_service.enable()
         try:
             yield
         finally:
@@ -210,10 +212,7 @@ def create_app(
     @app.get("/api/mesh/summary")
     async def mesh_summary() -> dict[str, Any]:
         local_node_num = _resolved_local_node_num(settings, collector)
-        summary = repository.get_mesh_summary(
-            primary_only=True,
-            exclude_node_num=local_node_num,
-        )
+        summary = repository.get_mesh_summary(primary_only=True)
         receiver_node = None
         receiver_history: list[dict[str, Any]] = []
         receiver_windowed_utilization = {

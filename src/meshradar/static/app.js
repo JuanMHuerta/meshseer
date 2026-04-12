@@ -1,13 +1,12 @@
 const BROADCAST_NODE_NUM = 4294967295;
 
 const collectorCard = document.getElementById("collector-card");
-const collectorState = document.getElementById("collector-state");
 const collectorDetail = document.getElementById("collector-detail");
 const perspectiveLabel = document.getElementById("perspective-label");
 const kpiTicker = document.getElementById("kpi-ticker");
+const statsRow = document.getElementById("stats-row");
 const nodesPanelCount = document.getElementById("nodes-panel-count");
 const intelPanelCount = document.getElementById("intel-panel-count");
-const railNodeCount = document.getElementById("rail-node-count");
 const mapRoot = document.getElementById("leaflet-map");
 const mapEmpty = document.getElementById("map-empty");
 const mapNote = document.getElementById("map-note");
@@ -25,25 +24,20 @@ const packetFilters = document.getElementById("packet-filters");
 const nodeFilters = document.getElementById("node-filters");
 const nodeSearch = document.getElementById("node-search");
 const routeToggle = document.getElementById("route-toggle");
-const auxTabs = document.getElementById("aux-tabs");
-const intelView = document.getElementById("intel-view");
-const chatView = document.getElementById("mesh-chat");
-const opsSummary = document.getElementById("ops-summary");
 const mapPanel = document.getElementById("mesh-map");
 const nodesPanel = document.getElementById("mesh-nodes");
 const intelPanel = document.getElementById("mesh-intel");
+const chatPanel = document.getElementById("mesh-chat");
 const trafficPanel = document.getElementById("mesh-traffic");
 
 const mapViewport = document.querySelector(".map-viewport");
 const nodeRail = document.getElementById("node-rail");
 const inspectorPanel = document.querySelector(".inspector-shell");
 const closeInspectorBtn = document.getElementById("close-inspector");
-const commandMenuTrigger = document.getElementById("command-menu-trigger");
-const commandMenu = document.getElementById("command-menu");
 const railToggleNodes = document.getElementById("rail-toggle-nodes");
+const railToggleChat = document.getElementById("rail-toggle-chat");
 const railToggleSignals = document.getElementById("rail-toggle-signals");
 const railToggleTraffic = document.getElementById("rail-toggle-traffic");
-const nodeSearchToggle = document.getElementById("node-search-toggle");
 const rosterToolbar = document.getElementById("roster-toolbar");
 
 const timeFormatter = new Intl.DateTimeFormat(undefined, {
@@ -59,7 +53,8 @@ const wholeNumberFormatter = new Intl.NumberFormat(undefined);
 const NODE_DECAY_WINDOW_MINUTES = 24 * 60;
 const DECAY_REPAINT_INTERVAL_MS = 60_000;
 const AUTOTRACE_REFRESH_INTERVAL_MS = 60_000;
-const DEFAULT_ACTIVITY_WINDOW_MINUTES = 60;
+const DEFAULT_RECENT_ACTIVITY_WINDOW_MINUTES = 60;
+const DEFAULT_NODE_ACTIVE_WINDOW_MINUTES = 180;
 const NETWORK_ROUTE_WINDOW_MINUTES = 7 * 24 * 60;
 const SELECTED_ROUTE_WINDOW_MINUTES = 7 * 24 * 60;
 const MAX_ACTIVITY_PACKETS = 500;
@@ -68,11 +63,15 @@ const NODE_MAX_OPACITY = 0.94;
 const NODE_MIN_OPACITY = 0.14;
 const ROUTE_MAX_OPACITY = 0.55;
 const ROUTE_MIN_OPACITY = 0.08;
+const CHAT_STICKY_THRESHOLD_PX = 16;
 
 const pulseTimers = new WeakMap();
 const inflightNodeDetails = new Set();
 let decayRefreshTimerId = null;
 let autotraceRefreshTimerId = null;
+let chatStickToBottom = true;
+let chatPendingScrollBehavior = null;
+let chatLastMessageKey = null;
 
 const state = {
   nodes: [],
@@ -86,7 +85,6 @@ const state = {
   packetFilter: "all",
   nodeFilters: new Set(),
   nodeQuery: "",
-  activeAuxTab: "intel",
   showRoutes: true,
   meshSummary: null,
   meshRoutes: { routes: [], stats: { total: 0, forward: 0, return: 0 } },
@@ -112,6 +110,8 @@ const mapState = {
   initialViewApplied: false,
   zoomListenerBound: false,
 };
+
+const reducedMotionQuery = window.matchMedia ? window.matchMedia("(prefers-reduced-motion: reduce)") : null;
 
 function escapeHtml(value) {
   return String(value ?? "")
@@ -225,8 +225,12 @@ function ageMinutesSince(value, nowMs = Date.now()) {
   return Math.max(0, (nowMs - parsedMs) / 60000);
 }
 
-function activityWindowMinutes() {
-  return Number(state.meshSummary?.windowed_activity?.window_minutes) || DEFAULT_ACTIVITY_WINDOW_MINUTES;
+function recentPacketWindowMinutes() {
+  return Number(state.meshSummary?.windowed_activity?.window_minutes) || DEFAULT_RECENT_ACTIVITY_WINDOW_MINUTES;
+}
+
+function nodeActiveWindowMinutes() {
+  return Number(state.meshSummary?.nodes?.active_window_minutes) || DEFAULT_NODE_ACTIVE_WINDOW_MINUTES;
 }
 
 function isoMinutesAgo(minutes, nowMs = Date.now()) {
@@ -337,18 +341,11 @@ function nodeIsMqtt(node) {
   return nodeStatus(node) === "mqtt";
 }
 
-function nodeMobility(node) {
-  if (node?.mobility === "mobile" || node?.mobility === "stationary") {
-    return node.mobility;
-  }
-  return nodeType(node) === "mobile" ? "mobile" : "stationary";
-}
-
 function nodeIsActive(node, nowMs = Date.now()) {
   if (!node) {
     return false;
   }
-  const windowMinutes = activityWindowMinutes();
+  const windowMinutes = nodeActiveWindowMinutes();
   const heardAgeMinutes = ageMinutesSince(node?.last_heard_at, nowMs);
   return heardAgeMinutes != null && heardAgeMinutes <= windowMinutes;
 }
@@ -361,10 +358,6 @@ function nodeIsStale(node) {
   return minutes != null && minutes > 1440;
 }
 
-function nodeHasTextTraffic(node) {
-  return Boolean(node?.has_text_traffic);
-}
-
 function syncRosterNodeMeta(node) {
   if (!node) {
     return node;
@@ -375,8 +368,6 @@ function syncRosterNodeMeta(node) {
   node.is_mapped = nodeHasCoordinates(node);
   node.is_mqtt = nodeIsMqtt(node);
   node.is_stale = nodeFreshness(node) === "stale";
-  node.mobility = nodeMobility(node);
-  node.has_text_traffic = nodeHasTextTraffic(node);
   node.activity_count_60m = intValue(node.activity_count_60m);
   return node;
 }
@@ -411,7 +402,6 @@ function observePacketNode(packet) {
       updated_at: receivedAt,
       hops_away: packetHops,
       via_mqtt: packet?.via_mqtt ?? null,
-      has_text_traffic: packet?.portnum === "TEXT_MESSAGE_APP",
       activity_count_60m: 1,
     });
     state.nodes = [nextNode, ...state.nodes];
@@ -432,9 +422,6 @@ function observePacketNode(packet) {
   }
   if (existing.hops_away == null && packetHops != null) {
     existing.hops_away = packetHops;
-  }
-  if (packet?.portnum === "TEXT_MESSAGE_APP") {
-    existing.has_text_traffic = true;
   }
   existing.activity_count_60m = intValue(existing.activity_count_60m) + 1;
   syncRosterNodeMeta(existing);
@@ -922,37 +909,38 @@ function refreshKpiTicker() {
 }
 
 function renderKpiTicker(summary) {
-  if (!kpiTicker) {
-    return;
-  }
-
   renderConnectionIndicator();
 
-  if (!summary) {
+  if (!statsRow || !summary) {
     return;
   }
 
   const nodes = summary?.nodes || {};
+  const traffic = summary?.traffic || {};
   const currentWindow = summary?.windowed_activity?.current || null;
-  const windowMinutes = Number(summary?.windowed_activity?.window_minutes) || DEFAULT_ACTIVITY_WINDOW_MINUTES;
+  const windowMinutes = Number(summary?.windowed_activity?.window_minutes) || DEFAULT_RECENT_ACTIVITY_WINDOW_MINUTES;
+  const totalNodes = intValue(nodes.total);
   const activeNodes3h = intValue(nodes.active_3h);
   const currentPacketCount = intValue(currentWindow?.packet_count);
   const currentPacketsRate = packetsPerMinute(currentPacketCount, windowMinutes);
-  const directPackets = intValue(currentWindow?.direct_packets);
-  const directShare = sharePercentage(directPackets, currentPacketCount);
+  const meshPaths = intValue(state.meshRoutes?.stats?.total);
 
-  const tickActive = kpiTicker.querySelector("#kpi-tick-active");
-  const tickTraffic = kpiTicker.querySelector("#kpi-tick-traffic");
-  const tickPath = kpiTicker.querySelector("#kpi-tick-path");
+  const statNodes = statsRow.querySelector("#stat-nodes .stat-value");
+  const statActive = statsRow.querySelector("#stat-active .stat-value");
+  const statTraffic = statsRow.querySelector("#stat-traffic .stat-value");
+  const statPaths = statsRow.querySelector("#stat-paths .stat-value");
 
-  if (tickActive) {
-    tickActive.querySelector(".kpi-tick-value").textContent = formatWholeNumber(activeNodes3h);
+  if (statNodes) {
+    statNodes.textContent = formatWholeNumber(totalNodes);
   }
-  if (tickTraffic) {
-    tickTraffic.querySelector(".kpi-tick-value").textContent = currentPacketCount ? formatNumber(currentPacketsRate, 1) : "--";
+  if (statActive) {
+    statActive.textContent = formatWholeNumber(activeNodes3h);
   }
-  if (tickPath) {
-    tickPath.querySelector(".kpi-tick-value").textContent = directShare != null ? `${directShare}%` : "--";
+  if (statTraffic) {
+    statTraffic.textContent = currentPacketCount ? formatNumber(currentPacketsRate, 1) : "--";
+  }
+  if (statPaths) {
+    statPaths.textContent = meshPaths ? formatWholeNumber(meshPaths) : "--";
   }
 }
 
@@ -1359,21 +1347,19 @@ function renderAutotraceStatus() {
     }
   }
 
+  const shortCopy = copy.length > 40 ? copy.replace(/^No eligible nodes qualify for a new sweep right now\.?/, "No eligible nodes.") : copy;
+
   autotraceStatusCard.innerHTML = `
     <article class="autotrace-bar ${tone}">
       <div class="autotrace-head">
         <div>
-          <p class="autotrace-kicker">Auto-Traceroute</p>
           <div class="autotrace-line">
-            <strong class="autotrace-title">Primary route sweeps</strong>
+            <strong class="autotrace-title" style="font-size:12px">Primary route sweeps</strong>
             <span class="autotrace-pill ${tone}">${escapeHtml(stateLabel)}</span>
           </div>
         </div>
-        ${autotraceData?.local_node_num != null ? `
-          <span class="autotrace-receiver mono-text">RX #${escapeHtml(autotraceData.local_node_num)}</span>
-        ` : ""}
       </div>
-      <p class="autotrace-copy">${escapeHtml(copy)}</p>
+      <p class="autotrace-copy" style="font-size:11px">${escapeHtml(shortCopy)}</p>
       ${metaItems.length ? `
         <div class="autotrace-meta">
           ${metaItems.map((item) => `<span class="autotrace-chip mono-text">${escapeHtml(item)}</span>`).join("")}
@@ -1546,8 +1532,7 @@ function renderConnectionIndicator() {
   const title = connectionStateTitle();
   const detail = connectionStateDetail();
   collectorCard.dataset.state = connectionVisualState();
-  collectorState.textContent = title;
-  collectorDetail.textContent = detail;
+  if (collectorDetail) collectorDetail.textContent = detail;
   collectorCard.setAttribute("aria-label", `${title}. ${detail}`);
 }
 
@@ -1628,7 +1613,11 @@ function portBadgeText(portnum) {
 }
 
 function packetFilterMatches(packet) {
-  return state.packetFilter === "all" || portCategory(packet.portnum) === state.packetFilter;
+  const category = portCategory(packet.portnum);
+  if (category === "admin") {
+    return false;
+  }
+  return state.packetFilter === "all" || category === state.packetFilter;
 }
 
 function nodeMatchesQuery(node) {
@@ -1668,15 +1657,6 @@ function nodeMatchesActiveFilter(node) {
     }
     if (filterKey === "stale") {
       return nodeIsStale(node);
-    }
-    if (filterKey === "mobile") {
-      return nodeMobility(node) === "mobile";
-    }
-    if (filterKey === "stationary") {
-      return nodeMobility(node) === "stationary";
-    }
-    if (filterKey === "has-text-traffic") {
-      return nodeHasTextTraffic(node);
     }
     return true;
   });
@@ -1812,16 +1792,10 @@ function routeModeSummary(routes) {
 
 function updateOverviewStats() {
   const nodeTotal = state.nodes.length;
-  const nodeFilterActive = state.nodeFilters.size > 0 || Boolean(state.nodeQuery.trim());
-  const visibleNodes = visibleNodeItems();
+  const activeCount = state.nodes.filter((n) => nodeIsActive(n)).length;
 
   if (nodesPanelCount) {
-    nodesPanelCount.textContent = nodeFilterActive
-      ? `${formatWholeNumber(visibleNodes.length)}/${formatWholeNumber(nodeTotal)}`
-      : `${formatWholeNumber(nodeTotal)}`;
-  }
-  if (railNodeCount) {
-    railNodeCount.textContent = String(nodeTotal);
+    nodesPanelCount.textContent = `${formatWholeNumber(nodeTotal)} heard · ${formatWholeNumber(activeCount)} active`;
   }
   renderMapHud();
 }
@@ -1935,6 +1909,16 @@ function nodeRowChromeStyle(node, nowMs = Date.now()) {
   ].join("; ");
 }
 
+function nodeProximityTone(node) {
+  const status = nodeStatus(node);
+  if (status === "mqtt") return "mqtt";
+  if (status === "direct" || isLocalNode(node)) return "direct";
+  const hops = Number(node.hops_away);
+  if (hops <= 1) return "direct";
+  if (hops === 2) return "relayed";
+  return "relayed";
+}
+
 function renderNodeList() {
   const items = visibleNodeItems();
   if (!items.length) {
@@ -1953,30 +1937,32 @@ function renderNodeList() {
     <div class="node-list-body">
       ${items.map((node) => {
         const status = nodeStatus(node);
+        const proxTone = nodeProximityTone(node);
         const selectedClass = node.node_num === state.selectedNodeNum ? " selected" : "";
-        const rowStyle = selectedClass ? "" : ` style="${nodeRowChromeStyle(node, nowMs)}"`;
-        const hopsLabel = status === "mqtt"
-          ? "MQTT"
-          : `${node.hops_away == null ? "Path n/a" : `${node.hops_away} ${Number(node.hops_away) === 1 ? "hop" : "hops"}`}`;
-        const badgeLabel = {
-          direct: "Direct",
-          relayed: "Relayed",
-          mqtt: "MQTT",
-        }[status] || "Relayed";
+        const hops = Number(node.hops_away);
+        const isDirect = proxTone === "direct";
+        const hopPill = isDirect
+          ? ""
+          : (status === "mqtt"
+            ? `<span class="node-row-hop">MQTT</span>`
+            : (node.hops_away != null
+              ? `<span class="node-row-hop">${hops} ${hops === 1 ? "hop" : "hops"}</span>`
+              : ""));
+        const nodeId = node.node_id ? `!${escapeHtml(node.node_id)}` : (node.node_num ? `#${node.node_num}` : "");
         return `
           <button
             type="button"
             class="node-row${selectedClass}"
             data-node-num="${node.node_num}"
-            ${rowStyle}
           >
-            <span class="node-row-top">
+            <span class="node-row-dot ${proxTone}"></span>
+            <span class="node-row-left">
               <span class="node-row-main">${escapeHtml(nodeLabel(node))}</span>
-              <span class="node-row-badge ${status}">${escapeHtml(badgeLabel)}</span>
+              <span class="node-row-id">${nodeId}</span>
             </span>
-            <span class="node-row-meta">
-              <span>${escapeHtml(formatRelativeTime(node.last_heard_at, nowMs))}</span>
-              <span>${escapeHtml(hopsLabel)}</span>
+            <span class="node-row-right">
+              ${hopPill}
+              <span class="node-row-time">${escapeHtml(formatRelativeTime(node.last_heard_at, nowMs))}</span>
             </span>
           </button>
         `;
@@ -2159,6 +2145,7 @@ function syncMapSize() {
 
 function renderRailView() {
   const expanded = state.nodesDrawerOpen;
+  const chatVisible = expanded && state.activeDrawerView === "chat";
   if (nodeRail) {
     nodeRail.dataset.state = expanded ? "expanded" : "collapsed";
   }
@@ -2168,6 +2155,9 @@ function renderRailView() {
   if (intelPanel) {
     intelPanel.hidden = state.activeDrawerView !== "signals" || !expanded;
   }
+  if (chatPanel) {
+    chatPanel.hidden = !chatVisible;
+  }
   if (mapViewport) {
     mapViewport.classList.toggle("rail-expanded", expanded);
   }
@@ -2175,13 +2165,21 @@ function renderRailView() {
     railToggleNodes.classList.toggle("active", expanded && state.activeDrawerView === "nodes");
     railToggleNodes.setAttribute("aria-expanded", String(expanded && state.activeDrawerView === "nodes"));
   }
+  if (railToggleChat) {
+    railToggleChat.classList.toggle("active", expanded && state.activeDrawerView === "chat");
+    railToggleChat.setAttribute("aria-expanded", String(expanded && state.activeDrawerView === "chat"));
+  }
   if (railToggleSignals) {
     railToggleSignals.classList.toggle("active", expanded && state.activeDrawerView === "signals");
+    railToggleSignals.setAttribute("aria-expanded", String(expanded && state.activeDrawerView === "signals"));
+  }
+  if (chatVisible && chatPendingScrollBehavior) {
+    scheduleChatScrollToBottom(chatPendingScrollBehavior);
   }
 }
 
 function setDrawerView(nextView) {
-  state.activeDrawerView = nextView === "signals" ? "signals" : "nodes";
+  state.activeDrawerView = nextView === "signals" || nextView === "chat" ? nextView : "nodes";
   renderRailView();
   syncMapSize();
 }
@@ -2384,8 +2382,10 @@ function renderMeshSummary(data) {
   const dominantPath = dominantSegment(pathSegments);
 
   if (intelPanelCount) {
-    intelPanelCount.textContent = `${formatWholeNumber(totalPackets)} ${totalPackets === 1 ? "pkt" : "pkts"}`;
+    intelPanelCount.textContent = `${formatWholeNumber(totalPackets)} total packets`;
   }
+
+  // S-04/S-05: 2-column RF Coverage metric grid (first section)
   intelGrid.innerHTML = [
     intelStat(
       "Heard Nodes",
@@ -2395,32 +2395,8 @@ function renderMeshSummary(data) {
     intelStat(
       "Direct RF",
       directShare == null ? "n/a" : `${directShare}%`,
-      directPackets ? `${formatWholeNumber(directPackets)} packets` : "No direct traffic",
+      directPackets ? `${formatWholeNumber(directPackets)} pkts` : "No direct traffic",
       "direct"
-    ),
-    intelStat(
-      "Relay Load",
-      relayShare == null ? "n/a" : `${relayShare}%`,
-      relayedPackets ? `${formatWholeNumber(relayedPackets)} packets` : "No relayed traffic",
-      "relayed"
-    ),
-    intelStat(
-      "MQTT Presence",
-      mqttShare == null ? "n/a" : `${mqttShare}%`,
-      mqttPackets ? `${formatWholeNumber(mqttPackets)} packets` : "No MQTT traffic",
-      "mqtt"
-    ),
-    intelStat(
-      "Ch Util",
-      formatNumber(receiver?.channel_utilization, 1, "%"),
-      receiverDetail,
-      "channel"
-    ),
-    intelStat(
-      "Air TX",
-      formatNumber(receiver?.air_util_tx, 1, "%"),
-      receiverDetail,
-      "air"
     ),
   ].join("");
 
@@ -2435,9 +2411,32 @@ function renderMeshSummary(data) {
     return;
   }
 
+  // S-06/S-07/S-08: Proportional bar chart for packet breakdown
+  const breakdownTypes = [
+    { label: "ACK only", value: otherPackets, tone: "ack" },
+    { label: "Telemetry", value: telemetryPackets, tone: "telemetry" },
+    { label: "Position", value: positionPackets, tone: "position" },
+  ];
+  const maxBreakdown = Math.max(...breakdownTypes.map((t) => t.value), 1);
+
+  const breakdownHtml = `
+    <div class="packet-breakdown">
+      ${breakdownTypes.map((t) => {
+        const barWidth = Math.round((t.value / maxBreakdown) * 80);
+        return `
+          <div class="breakdown-row">
+            <span class="breakdown-label">${escapeHtml(t.label)}</span>
+            <span class="breakdown-bar"><span class="breakdown-bar-fill ${t.tone}" style="width:${barWidth}px"></span></span>
+            <span class="breakdown-count mono-text">${formatWholeNumber(t.value)}</span>
+          </div>
+        `;
+      }).join("")}
+    </div>
+  `;
+
+  // S-01: Reorder: RF coverage (intelGrid) → packet breakdown → traceroute (rendered separately) → last event
   intelStory.innerHTML = [
-    intelMeter("Path Mix", "How packets arrived", pathSegments, "Waiting for passive packets."),
-    intelMeter("Channel Mix", "What the receiver is hearing", channelSegments, "Waiting for passive packets."),
+    `<article class="intel-story-card">${breakdownHtml}</article>`,
     receiverTelemetryCard(receiver),
     `
       <article class="intel-story-card readout">
@@ -2459,11 +2458,6 @@ function renderMeshSummary(data) {
             totalNodes ? `${coverageShare}% mapped` : "Waiting",
             totalNodes ? `${formatWholeNumber(mappedNodes)} of ${formatWholeNumber(totalNodes)} heard nodes` : "No node roster yet"
           )}
-          ${intelReadoutRow(
-            "Broadcast text",
-            textPackets ? `${formatWholeNumber(textPackets)} messages` : "Quiet",
-            totalPackets ? `${chatShare ?? 0}% of observed traffic` : "No passive packets yet"
-          )}
         </div>
       </article>
     `,
@@ -2476,17 +2470,58 @@ function renderMeshRoutes(data) {
   if (state.nodes.length) {
     renderMap(state.nodes);
   }
+  // Update paths stat in top bar (T-06)
+  refreshKpiTicker();
+}
+
+function hopSegmentedBar(hops, maxHops = 6) {
+  if (hops == null || hops < 1) return "";
+  const filled = Math.min(hops, maxHops);
+  const segments = Array.from({ length: maxHops }, (_, i) =>
+    `<span class="hop-bar-seg${i < filled ? " filled" : ""}"></span>`
+  ).join("");
+  return `<span class="hop-bar">${segments}</span>`;
 }
 
 function packetRowMarkup(packet) {
   const category = portCategory(packet.portnum);
+  const hops = packetHopsTaken(packet);
+  const isMqtt = Boolean(packet?.via_mqtt);
+  const isDirect = hops === 0 && !isMqtt;
+  const isUnknown = hops == null && !isMqtt;
+  const isHighHop = hops != null && hops >= 4;
+  const pathCellClass = isHighHop ? " path-cell-high" : "";
+
+  const fromName = fromNodeLabel(packet);
+  const fromId = packet.from_node_num != null ? `#${packet.from_node_num}` : "";
+
+  let pathContent;
+  if (isMqtt) {
+    pathContent = `<span class="path-inferred">MQTT</span>`;
+  } else if (isDirect) {
+    pathContent = `<span class="path-inferred">Direct</span>`;
+  } else if (isUnknown) {
+    pathContent = `<span class="path-inferred">Inferred local</span>`;
+  } else {
+    const relayLabel = packet.relay_node != null ? `<span class="path-sub">relay #${escapeHtml(packet.relay_node)}</span>` : "";
+    pathContent = `
+      <div class="path-cell-bar">${hopSegmentedBar(hops)}<span class="path-hop-label">${hops} ${hops === 1 ? "hop" : "hops"}</span></div>
+      ${relayLabel}
+    `;
+  }
+
+  const previewText = packet.text_preview;
+  const previewHtml = previewText
+    ? `<td class="preview-cell">${escapeHtml(previewText)}</td>`
+    : `<td class="preview-cell preview-cell--empty">\u2014</td>`;
+
   return `
     <tr class="packet-row ${category}">
       <td class="mono-text">${escapeHtml(formatTime(packet.received_at))}</td>
       <td>
         <div class="table-node">
-          <span class="table-node-main">${escapeHtml(fromNodeLabel(packet))}</span>
-          <span class="table-node-sub mono-text">#${escapeHtml(packet.from_node_num ?? "n/a")}</span>
+          <span class="table-node-main">${escapeHtml(fromName)}</span>
+          <span class="table-node-sub mono-text">${escapeHtml(fromId)}</span>
         </div>
       </td>
       <td>
@@ -2498,16 +2533,12 @@ function packetRowMarkup(packet) {
       <td>
         <div class="port-cell">
           <span class="port-badge ${category}">${escapeHtml(portBadgeText(packet.portnum))}</span>
-          <span class="table-port-name">${escapeHtml(titleCase(String(packet.portnum || "").replace(/_APP$/, "")))}</span>
         </div>
       </td>
-      <td>
-        <div class="port-cell">
-          <span class="path-badge ${packetPathTone(packet)}">${escapeHtml(packetPathLabel(packet))}</span>
-          <span class="table-port-name">${escapeHtml(packetPathDetails(packet) || "Receiver-local inference")}</span>
-        </div>
+      <td class="${pathCellClass}">
+        <div class="port-cell">${pathContent}</div>
       </td>
-      <td class="preview-cell" title="${escapeHtml(packet.text_preview || "No text preview")}">${escapeHtml(packet.text_preview || "No text preview")}</td>
+      ${previewHtml}
     </tr>
   `;
 }
@@ -2522,17 +2553,6 @@ function updateNodeFilterButtons() {
   nodeFilters.querySelectorAll("[data-node-filter]").forEach((button) => {
     button.classList.toggle("active", state.nodeFilters.has(button.dataset.nodeFilter));
   });
-}
-
-function renderAuxTabs() {
-  auxTabs.querySelectorAll("[data-aux-tab]").forEach((button) => {
-    button.classList.toggle("active", button.dataset.auxTab === state.activeAuxTab);
-  });
-  intelView.hidden = state.activeAuxTab !== "intel";
-  chatView.hidden = state.activeAuxTab !== "chat";
-  opsSummary.textContent = state.activeAuxTab === "intel"
-    ? "Passive RF mix from this receiver."
-    : "Read-only LongFast broadcast chat.";
 }
 
 function renderPackets(items) {
@@ -2553,8 +2573,51 @@ function renderPackets(items) {
   updateOverviewStats();
 }
 
+function chatIsNearBottom() {
+  if (!chatFeed) {
+    return true;
+  }
+  return chatFeed.scrollHeight - chatFeed.scrollTop - chatFeed.clientHeight <= CHAT_STICKY_THRESHOLD_PX;
+}
+
+function chatMessageKey(item) {
+  return item?.mesh_packet_id ?? item?.id ?? item?.received_at ?? null;
+}
+
+function resolvedChatScrollBehavior(behavior) {
+  return behavior === "smooth" && !reducedMotionQuery?.matches ? "smooth" : "auto";
+}
+
+function scheduleChatScrollToBottom(behavior = "auto") {
+  if (!chatFeed) {
+    return;
+  }
+
+  const nextBehavior = resolvedChatScrollBehavior(behavior);
+  if (chatPanel?.hidden || !state.nodesDrawerOpen || state.activeDrawerView !== "chat") {
+    chatPendingScrollBehavior = nextBehavior;
+    return;
+  }
+
+  window.requestAnimationFrame(() => {
+    if (chatPanel?.hidden || !state.nodesDrawerOpen || state.activeDrawerView !== "chat") {
+      chatPendingScrollBehavior = nextBehavior;
+      return;
+    }
+    if (nextBehavior === "smooth" && !chatStickToBottom) {
+      chatPendingScrollBehavior = null;
+      return;
+    }
+    chatFeed.scrollTo({ top: chatFeed.scrollHeight, behavior: nextBehavior });
+    chatStickToBottom = true;
+    chatPendingScrollBehavior = null;
+  });
+}
+
 function renderChat(items) {
-  const shouldStick = chatFeed.scrollHeight - chatFeed.scrollTop - chatFeed.clientHeight < 72;
+  const shouldStick = chatStickToBottom;
+  const latestMessageKey = chatMessageKey(items[0]);
+  const hasNewLatestMessage = chatLastMessageKey != null && latestMessageKey != null && latestMessageKey !== chatLastMessageKey;
 
   if (!items.length) {
     chatFeed.innerHTML = `
@@ -2563,6 +2626,7 @@ function renderChat(items) {
         <p>Broadcast LongFast messages will stream here when heard by this receiver.</p>
       </div>
     `;
+    chatLastMessageKey = null;
     updateOverviewStats();
     return;
   }
@@ -2587,10 +2651,12 @@ function renderChat(items) {
     `;
   }).join("");
 
-  if (shouldStick || !chatFeed.dataset.hydrated) {
-    chatFeed.scrollTop = chatFeed.scrollHeight;
+  if (shouldStick) {
+    scheduleChatScrollToBottom(hasNewLatestMessage ? "smooth" : "auto");
+  } else {
+    chatPendingScrollBehavior = null;
   }
-  chatFeed.dataset.hydrated = "true";
+  chatLastMessageKey = latestMessageKey;
   updateOverviewStats();
 }
 
@@ -2655,7 +2721,7 @@ async function loadPackets() {
 }
 
 async function loadRecentActivityPackets() {
-  const since = encodeURIComponent(isoMinutesAgo(activityWindowMinutes()));
+  const since = encodeURIComponent(isoMinutesAgo(recentPacketWindowMinutes()));
   state.recentActivityPackets = await fetchJson(`/api/packets?limit=${MAX_ACTIVITY_PACKETS}&since=${since}`);
   setLastPacketReceivedAt(state.recentActivityPackets[0]?.received_at);
   if (state.nodes.length) {
@@ -2809,7 +2875,7 @@ function recordRecentActivityPacket(packet) {
   if (!packet) {
     return;
   }
-  const cutoffMs = Date.now() - (activityWindowMinutes() * 60_000);
+  const cutoffMs = Date.now() - (recentPacketWindowMinutes() * 60_000);
   state.recentActivityPackets = [
     packet,
     ...recentActivityPackets().filter((item) => item?.id !== packet.id && (parseUtcDateMs(item?.received_at) || 0) >= cutoffMs),
@@ -2853,8 +2919,8 @@ function connectEvents() {
         && payload.data.to_node_num === BROADCAST_NODE_NUM
       ) {
         void loadChat().catch(handleLoadError);
-        const chatPulseTarget = auxTabs.querySelector('[data-aux-tab="chat"]');
-        pulsePanel(chatPulseTarget, "chat");
+        pulsePanel(railToggleChat, "chat");
+        pulsePanel(chatPanel, "chat");
       }
     } else if (payload.type === "node_updated") {
       void loadNodes().catch(handleLoadError);
@@ -2898,7 +2964,6 @@ function initializeStaticUI() {
   renderPerspectiveLabel();
   renderConnectionIndicator();
   refreshKpiTicker();
-  renderAuxTabs();
   renderAutotraceStatus();
   renderRouteToggle();
   updatePacketFilterButtons();
@@ -2938,12 +3003,6 @@ nodeFilters.addEventListener("click", (event) => {
   if (state.nodeFilters.has(nextFilter)) {
     state.nodeFilters.delete(nextFilter);
   } else {
-    if (nextFilter === "mobile") {
-      state.nodeFilters.delete("stationary");
-    }
-    if (nextFilter === "stationary") {
-      state.nodeFilters.delete("mobile");
-    }
     state.nodeFilters.add(nextFilter);
   }
   updateNodeFilterButtons();
@@ -2957,24 +3016,17 @@ nodeSearch.addEventListener("input", (event) => {
   updateOverviewStats();
 });
 
+chatFeed?.addEventListener("scroll", () => {
+  chatStickToBottom = chatIsNearBottom();
+  if (!chatStickToBottom) {
+    chatPendingScrollBehavior = null;
+  }
+});
+
 routeToggle.addEventListener('click', () => {
   state.showRoutes = !state.showRoutes;
   renderRouteToggle();
   renderMap(state.nodes);
-});
-
-auxTabs.addEventListener("click", (event) => {
-  const button = event.target.closest("[data-aux-tab]");
-  if (!button) {
-    return;
-  }
-  const nextTab = button.dataset.auxTab;
-  if (!nextTab || nextTab === state.activeAuxTab) {
-    return;
-  }
-  state.activeAuxTab = nextTab;
-  renderAuxTabs();
-  syncMapSize();
 });
 
 refreshDashboard.addEventListener("click", () => {
@@ -2994,6 +3046,15 @@ railToggleNodes?.addEventListener("click", () => {
   setNodeRailOpen(true);
 });
 
+railToggleChat?.addEventListener("click", () => {
+  if (state.nodesDrawerOpen && state.activeDrawerView === "chat") {
+    setNodeRailOpen(false);
+    return;
+  }
+  setDrawerView("chat");
+  setNodeRailOpen(true);
+});
+
 railToggleSignals?.addEventListener("click", () => {
   if (state.nodesDrawerOpen && state.activeDrawerView === "signals") {
     setNodeRailOpen(false);
@@ -3007,27 +3068,7 @@ railToggleTraffic?.addEventListener("click", () => {
   setTrafficDrawerOpen(!state.trafficDrawerOpen);
 });
 
-commandMenuTrigger?.addEventListener("click", () => {
-  const open = commandMenu.hidden;
-  commandMenu.hidden = !open;
-  commandMenuTrigger.setAttribute("aria-expanded", String(open));
-});
-
-document.addEventListener("click", (event) => {
-  if (!commandMenu.hidden && !commandMenuTrigger.contains(event.target) && !commandMenu.contains(event.target)) {
-    commandMenu.hidden = true;
-    commandMenuTrigger.setAttribute("aria-expanded", "false");
-  }
-});
-
-nodeSearchToggle?.addEventListener("click", () => {
-  const open = rosterToolbar.hidden;
-  rosterToolbar.hidden = !open;
-  nodeSearchToggle.setAttribute("aria-expanded", String(open));
-  if (open) {
-    nodeSearch.focus();
-  }
-});
+/* Search toggle removed — search bar always visible (N-02) */
 
 closeInspectorBtn?.addEventListener("click", () => {
   state.selectedNodeNum = null;

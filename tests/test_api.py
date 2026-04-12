@@ -9,7 +9,7 @@ from meshradar.channels import BROADCAST_NODE_NUM
 from meshradar.collector import CollectorStatus
 from meshradar.config import Settings
 from meshradar.models import NodeRecord, PacketRecord
-from meshradar.storage import MeshRepository
+from meshradar.storage import KPI_ACTIVE_NODES_WINDOW_MINUTES, MeshRepository
 
 
 class StubCollector:
@@ -223,7 +223,7 @@ def test_api_routes_and_filters(tmp_path):
     assert "Meshradar" in index.text
 
 
-def test_nodes_roster_exposes_filter_metadata(tmp_path, monkeypatch):
+def test_nodes_roster_exposes_supported_filter_metadata(tmp_path, monkeypatch):
     monkeypatch.setattr(
         "meshradar.storage.utc_now",
         lambda: datetime(2026, 3, 30, 12, 30, tzinfo=UTC),
@@ -314,6 +314,27 @@ def test_nodes_roster_exposes_filter_metadata(tmp_path, monkeypatch):
             updated_at="2026-03-30T12:26:00Z",
             hops_away=None,
             via_mqtt=True,
+        ),
+        NodeRecord(
+            node_num=505,
+            node_id="!000001f9",
+            short_name="MID",
+            long_name="Midrange Node",
+            hardware_model="TBEAM",
+            role="CLIENT",
+            channel_index=0,
+            last_heard_at="2026-03-30T10:31:00Z",
+            last_snr=2.9,
+            latitude=10.33,
+            longitude=-84.15,
+            altitude=17.0,
+            battery_level=None,
+            channel_utilization=None,
+            air_util_tx=None,
+            raw_json='{"num":505}',
+            updated_at="2026-03-30T10:31:00Z",
+            hops_away=2,
+            via_mqtt=False,
         ),
         NodeRecord(
             node_num=909,
@@ -443,27 +464,27 @@ def test_nodes_roster_exposes_filter_metadata(tmp_path, monkeypatch):
 
     assert roster.status_code == 200
     items = {item["node_num"]: item for item in roster.json()}
-    assert set(items) == {101, 202, 303, 404}
+    assert set(items) == {101, 202, 303, 404, 505}
     assert items[101]["status"] == "local"
     assert items[101]["is_active"] is True
     assert items[101]["is_direct_rf"] is False
-    assert items[101]["mobility"] == "stationary"
     assert items[101]["is_mapped"] is True
     assert items[202]["status"] == "direct"
     assert items[202]["is_direct_rf"] is True
     assert items[202]["is_active"] is True
-    assert items[202]["has_text_traffic"] is True
     assert items[202]["activity_count_60m"] == 2
     assert items[303]["status"] == "relayed"
-    assert items[303]["mobility"] == "mobile"
     assert items[303]["is_active"] is False
     assert items[303]["is_stale"] is True
-    assert items[303]["has_text_traffic"] is True
     assert items[303]["activity_count_60m"] == 0
     assert items[404]["status"] == "mqtt"
     assert items[404]["is_mqtt"] is True
-    assert items[404]["has_text_traffic"] is True
     assert items[404]["activity_count_60m"] == 1
+    assert items[505]["status"] == "relayed"
+    assert items[505]["is_active"] is True
+    assert items[505]["activity_count_60m"] == 0
+    assert "mobility" not in items[101]
+    assert "has_text_traffic" not in items[202]
 
 
 def test_health_uses_collector_local_node_num_when_env_override_is_absent(tmp_path):
@@ -977,7 +998,8 @@ def test_mesh_summary_exposes_windowed_activity(tmp_path, monkeypatch):
         summary = client.get("/api/mesh/summary")
 
     assert summary.status_code == 200
-    assert summary.json()["nodes"]["active_3h"] == 6
+    assert summary.json()["nodes"]["active_3h"] == 7
+    assert summary.json()["nodes"]["active_window_minutes"] == KPI_ACTIVE_NODES_WINDOW_MINUTES
     assert summary.json()["windowed_activity"] == {
         "window_minutes": 60,
         "current": {
@@ -1053,8 +1075,9 @@ def test_mesh_summary_counts_active_nodes_over_last_3_hours(tmp_path, monkeypatc
         summary = client.get("/api/mesh/summary")
 
     assert summary.status_code == 200
-    assert summary.json()["nodes"]["total"] == 3
-    assert summary.json()["nodes"]["active_3h"] == 2
+    assert summary.json()["nodes"]["total"] == 4
+    assert summary.json()["nodes"]["active_3h"] == 3
+    assert summary.json()["nodes"]["active_window_minutes"] == KPI_ACTIVE_NODES_WINDOW_MINUTES
 
 
 def test_mesh_summary_exposes_empty_receiver_windowed_utilization_when_stale(tmp_path, monkeypatch):
@@ -1379,6 +1402,34 @@ def test_autotrace_api_exposes_status_and_runtime_toggle(tmp_path):
     assert disabled.status_code == 200
     assert disabled.json()["enabled"] is False
     assert disabled.json()["running"] is False
+
+
+def test_lifespan_enables_autotrace_when_requested_by_settings(tmp_path):
+    repo = MeshRepository(tmp_path / "mesh.db")
+    collector = StubCollector(local_node_num=101)
+    autotrace_service = StubAutotraceService()
+    app = create_app(
+        Settings.from_env(
+            {
+                "MESHRADAR_DB_PATH": str(tmp_path / "mesh.db"),
+                "MESHRADAR_AUTOTRACE_ENABLED": "true",
+            }
+        ),
+        repository=repo,
+        collector=collector,
+        autotrace_service=autotrace_service,
+        start_collector=False,
+        start_autotrace_service=True,
+    )
+
+    with TestClient(app) as client:
+        status = client.get("/api/mesh/autotrace")
+        assert autotrace_service.started is True
+        assert status.status_code == 200
+        assert status.json()["enabled"] is True
+        assert status.json()["running"] is True
+
+    assert autotrace_service.stopped is True
 
 
 def test_websocket_receives_events(tmp_path):

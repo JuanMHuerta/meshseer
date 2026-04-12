@@ -4,6 +4,13 @@ set -eu
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 cd "$SCRIPT_DIR"
 
+if [ -f ./.env ]; then
+  set -a
+  # shellcheck disable=SC1091
+  . ./.env
+  set +a
+fi
+
 if ! command -v uv >/dev/null 2>&1; then
   echo "uv is required but was not found in PATH." >&2
   exit 1

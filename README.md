@@ -12,7 +12,7 @@ Set `MESHRADAR_LOCAL_NODE_NUM` if you want the UI and API to identify which node
 
 Meshradar treats the receiver's primary channel as LongFast and filters packets and nodes to that scope.
 
-Run the server with `./start.sh`. Override bind host, port, database path, Meshtastic host, and local node settings with the corresponding `MESHRADAR_*` environment variables before starting it.
+Run the server with `./start.sh`. Meshradar loads `.env` on startup if it exists, so local defaults can live there. Use `.env.example` as the committed template, or override bind host, port, database path, Meshtastic host, local node, and autotrace settings with the corresponding `MESHRADAR_*` environment variables before starting it.
 
 ## Headless Preview
 
@@ -68,13 +68,14 @@ When enabled, Meshradar:
 
 Default settings:
 
+- `MESHRADAR_AUTOTRACE_ENABLED=false`
 - `MESHRADAR_AUTOTRACE_INTERVAL_SECONDS=300`
 - `MESHRADAR_AUTOTRACE_TARGET_WINDOW_HOURS=24`
 - `MESHRADAR_AUTOTRACE_COOLDOWN_HOURS=24`
 - `MESHRADAR_AUTOTRACE_ACK_ONLY_COOLDOWN_HOURS=6`
 - `MESHRADAR_AUTOTRACE_RESPONSE_TIMEOUT_SECONDS=20`
 
-Auto-traceroute starts disabled on each process start. It must be enabled at runtime through the API.
+Auto-traceroute now respects `MESHRADAR_AUTOTRACE_ENABLED` during process startup. The runtime API still works for turning it on or off after boot. The repository `.env` and `.env.example` set it to `true` as the local default template.
 
 ### Runtime API
 

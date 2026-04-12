@@ -8,6 +8,11 @@ from typing import Literal, Sequence
 from urllib.error import URLError
 from urllib.request import urlopen
 
+from meshradar.env import load_env_file
+
+
+load_env_file()
+
 
 ProbeStatus = Literal["free", "meshradar", "busy"]
 

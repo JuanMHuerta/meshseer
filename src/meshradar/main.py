@@ -6,6 +6,10 @@ import uvicorn
 
 from meshradar.app import create_app
 from meshradar.config import Settings
+from meshradar.env import load_env_file
+
+
+load_env_file()
 
 
 def build_app():
@@ -18,4 +22,3 @@ app = build_app()
 def run() -> None:
     settings = Settings.from_env(os.environ)
     uvicorn.run(app, host=settings.bind_host, port=settings.bind_port)
-

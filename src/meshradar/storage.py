@@ -15,6 +15,7 @@ from meshradar.models import NodeRecord, PacketRecord
 
 
 KPI_ACTIVE_NODES_WINDOW_MINUTES = 180
+ROSTER_ACTIVITY_COUNT_WINDOW_MINUTES = 60
 
 
 class MeshRepository:
@@ -1518,11 +1519,6 @@ class MeshRepository:
         return node.get("latitude") is not None and node.get("longitude") is not None
 
     @classmethod
-    def _node_is_mobile(cls, node: Mapping[str, Any]) -> bool:
-        hardware = str(node.get("hardware_model") or "").upper()
-        return "TRACKER" in hardware or "T1000" in hardware
-
-    @classmethod
     def _node_is_active(
         cls,
         node: Mapping[str, Any],
@@ -1565,8 +1561,6 @@ class MeshRepository:
         *,
         primary_only: bool = False,
         local_node_num: int | None = None,
-        activity_window_minutes: int = 60,
-        text_window_hours: int = 24,
     ) -> list[dict[str, Any]]:
         node_where = f"WHERE {self._primary_channel_clause()}" if primary_only else ""
         packet_clauses = ["from_node_num IS NOT NULL"]
@@ -1575,8 +1569,7 @@ class MeshRepository:
         packet_where = self._where_clause(packet_clauses)
 
         now = utc_now().astimezone(UTC).replace(microsecond=0)
-        activity_since_iso = to_utc_iso(now - timedelta(minutes=activity_window_minutes))
-        text_since_iso = to_utc_iso(now - timedelta(hours=text_window_hours))
+        packet_activity_since_iso = to_utc_iso(now - timedelta(minutes=ROSTER_ACTIVITY_COUNT_WINDOW_MINUTES))
 
         with self._connect() as connection:
             node_rows = connection.execute(
@@ -1591,23 +1584,17 @@ class MeshRepository:
                 f"""
                 SELECT
                     from_node_num AS node_num,
-                    SUM(CASE WHEN received_at >= ? THEN 1 ELSE 0 END) AS activity_count_60m,
-                    SUM(CASE
-                        WHEN received_at >= ?
-                             AND portnum = 'TEXT_MESSAGE_APP'
-                        THEN 1 ELSE 0
-                    END) AS text_count_24h
+                    SUM(CASE WHEN received_at >= ? THEN 1 ELSE 0 END) AS activity_count_60m
                 FROM packets
                 {packet_where}
                 GROUP BY from_node_num
                 """,
-                [activity_since_iso, text_since_iso],
+                [packet_activity_since_iso],
             ).fetchall()
 
         packet_stats_by_node_num = {
             int(row["node_num"]): {
                 "activity_count_60m": int(row["activity_count_60m"] or 0),
-                "has_text_traffic": int(row["text_count_24h"] or 0) > 0,
             }
             for row in packet_rows
             if row is not None and row["node_num"] is not None
@@ -1620,7 +1607,6 @@ class MeshRepository:
                 continue
             packet_stats = packet_stats_by_node_num.get(int(node["node_num"]), {})
             status = self._node_status(node, local_node_num=local_node_num)
-            is_mobile = self._node_is_mobile(node)
             items.append(
                 {
                     **node,
@@ -1628,14 +1614,12 @@ class MeshRepository:
                     "is_active": self._node_is_active(
                         node,
                         now=now,
-                        window_minutes=activity_window_minutes,
+                        window_minutes=KPI_ACTIVE_NODES_WINDOW_MINUTES,
                     ),
                     "is_direct_rf": status == "direct",
                     "is_mapped": self._node_has_coordinates(node),
                     "is_mqtt": bool(node.get("via_mqtt")),
                     "is_stale": self._node_is_stale(node, now=now),
-                    "mobility": "mobile" if is_mobile else "stationary",
-                    "has_text_traffic": bool(packet_stats.get("has_text_traffic", False)),
                     "activity_count_60m": int(packet_stats.get("activity_count_60m", 0)),
                 }
             )
@@ -1830,17 +1814,12 @@ class MeshRepository:
         self,
         *,
         primary_only: bool = False,
-        exclude_node_num: int | None = None,
         top_n: int = 5,
         window_minutes: int = 60,
     ) -> dict[str, Any]:
         node_clauses: list[str] = []
-        node_params: list[Any] = []
         if primary_only:
             node_clauses.append(self._primary_channel_clause())
-        if exclude_node_num is not None:
-            node_clauses.append("node_num != ?")
-            node_params.append(exclude_node_num)
         node_where = self._where_clause(node_clauses)
 
         packet_clauses: list[str] = []
@@ -1877,7 +1856,7 @@ class MeshRepository:
                 FROM nodes
                 {node_where}
                 """,
-                [active_nodes_window_start_iso, current_window_end_iso, *node_params],
+                [active_nodes_window_start_iso, current_window_end_iso],
             ).fetchone()
             traffic_row = connection.execute(
                 f"""
@@ -1910,14 +1889,12 @@ class MeshRepository:
                         WHEN p.received_at >= ?
                              AND p.received_at < ?
                              AND p.from_node_num IS NOT NULL
-                             AND (? IS NULL OR p.from_node_num != ?)
                         THEN p.from_node_num
                     END) AS current_active_nodes,
                     COUNT(DISTINCT CASE
                         WHEN p.received_at >= ?
                              AND p.received_at < ?
                              AND p.from_node_num IS NOT NULL
-                             AND (? IS NULL OR p.from_node_num != ?)
                         THEN p.from_node_num
                     END) AS previous_active_nodes,
                     SUM(CASE
@@ -1984,12 +1961,8 @@ class MeshRepository:
                     current_window_start_iso,
                     current_window_start_iso,
                     current_window_end_iso,
-                    exclude_node_num,
-                    exclude_node_num,
                     previous_window_start_iso,
                     current_window_start_iso,
-                    exclude_node_num,
-                    exclude_node_num,
                     current_window_start_iso,
                     current_window_end_iso,
                     previous_window_start_iso,
@@ -2054,6 +2027,7 @@ class MeshRepository:
             "nodes": {
                 "total": int(node_row["total_nodes"] or 0) if node_row is not None else 0,
                 "active_3h": int(node_row["active_nodes_3h"] or 0) if node_row is not None else 0,
+                "active_window_minutes": KPI_ACTIVE_NODES_WINDOW_MINUTES,
                 "mapped": int(node_row["mapped_nodes"] or 0) if node_row is not None else 0,
                 "direct": int(node_row["direct_nodes"] or 0) if node_row is not None else 0,
                 "multi_hop": int(node_row["multi_hop_nodes"] or 0) if node_row is not None else 0,

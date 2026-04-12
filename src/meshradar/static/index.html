@@ -34,72 +34,76 @@
             role="status"
             tabindex="0"
           >
-            <span class="status-badge-dot" aria-hidden="true"></span>
-            <span class="status-badge-label" id="collector-state">Offline</span>
+            <span class="live-pip" aria-hidden="true"></span>
             <span class="status-badge-tooltip" role="tooltip">
               <span class="status-badge-tooltip-title">Receiver link</span>
               <span class="status-badge-tooltip-copy" id="collector-detail">Waiting for status.</span>
               <span class="status-badge-tooltip-copy" id="perspective-label"></span>
             </span>
           </div>
+          <span class="command-strip-divider" aria-hidden="true"></span>
+          <div class="stats-row" id="stats-row" aria-label="Mesh stats" aria-live="polite">
+            <div class="stat-item" id="stat-nodes">
+              <span class="stat-value stat-value--amber mono-text">--</span>
+              <span class="stat-label">Nodes</span>
+            </div>
+            <div class="stat-item" id="stat-active">
+              <span class="stat-value mono-text">--</span>
+              <span class="stat-label">Active</span>
+            </div>
+            <div class="stat-item" id="stat-traffic">
+              <span class="stat-value mono-text">--</span>
+              <span class="stat-label">Pkt/m</span>
+            </div>
+            <div class="stat-item" id="stat-paths">
+              <span class="stat-value mono-text">--</span>
+              <span class="stat-label">Paths</span>
+            </div>
+          </div>
         </div>
         <div class="command-strip-actions">
-          <button type="button" class="command-menu-trigger" id="command-menu-trigger" aria-expanded="false" aria-controls="command-menu">
-            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-              <circle cx="8" cy="3" r="1.5" fill="currentColor"/>
-              <circle cx="8" cy="8" r="1.5" fill="currentColor"/>
-              <circle cx="8" cy="13" r="1.5" fill="currentColor"/>
+          <button type="button" class="command-icon-btn" id="node-search-global" aria-label="Search nodes">
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+              <circle cx="6" cy="6" r="4.5" stroke="currentColor" stroke-width="1.5" fill="none"/>
+              <line x1="9.5" y1="9.5" x2="13" y2="13" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
             </svg>
           </button>
-          <div class="command-menu" id="command-menu" hidden>
-            <button type="button" id="refresh-dashboard">Refresh</button>
-            <button type="button" id="route-toggle" aria-pressed="true">Hide Routes</button>
-            <button type="button" id="reset-map">Recenter</button>
-          </div>
+          <button type="button" class="command-icon-btn" id="reset-map" aria-label="Zoom to fit">
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+              <path d="M1 5V1h4M9 1h4v4M13 9v4H9M5 13H1V9" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+          </button>
+          <button type="button" class="command-icon-btn" id="refresh-dashboard" aria-label="Refresh">
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+              <path d="M1.5 7a5.5 5.5 0 019.37-3.9M12.5 7a5.5 5.5 0 01-9.37 3.9" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+              <path d="M11 0v3.5H7.5M3 14v-3.5h3.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+          </button>
+          <button type="button" id="route-toggle" aria-pressed="true" hidden>Hide Routes</button>
         </div>
       </header>
 
       <!-- MAP VIEWPORT (full bleed below command strip) -->
       <div class="map-viewport">
 
-        <!-- KPI TICKER (floating top-left) -->
-        <div class="kpi-ticker" id="kpi-ticker" aria-label="Mesh indicators" aria-live="polite">
-          <div class="kpi-tick" id="kpi-tick-active">
-            <span class="kpi-tick-value mono-text">--</span>
-            <span class="kpi-tick-label">active</span>
-          </div>
-          <div class="kpi-tick" id="kpi-tick-traffic">
-            <span class="kpi-tick-value mono-text">--</span>
-            <span class="kpi-tick-label">pkt/m</span>
-          </div>
-          <div class="kpi-tick" id="kpi-tick-path">
-            <span class="kpi-tick-value mono-text">--</span>
-            <span class="kpi-tick-label">direct</span>
-          </div>
-        </div>
-
         <!-- FULL-SCREEN MAP -->
         <div class="map-shell" id="mesh-map">
           <div id="leaflet-map" aria-label="LongFast node map"></div>
           <div class="map-empty" id="map-empty">Waiting for LongFast node locations.</div>
           <div class="map-note" id="map-note" hidden></div>
-          <section class="map-legend" aria-label="Traceroute overlay legend">
-            <div class="map-legend-items">
-              <div class="map-legend-item">
-                <span class="legend-link route-forward" aria-hidden="true"></span>
-                <span>Forward</span>
-              </div>
-              <div class="map-legend-item">
-                <span class="legend-link route-return" aria-hidden="true"></span>
-                <span>Return</span>
-              </div>
-              <div class="map-legend-item">
-                <span class="legend-link route-stale" aria-hidden="true"></span>
-                <span>Older</span>
-              </div>
-            </div>
-            <p class="map-legend-copy" id="map-legend-copy">Recent routes only</p>
-          </section>
+        </div>
+
+        <!-- STATUS BAR (bottom, replaces floating legend) -->
+        <div class="status-bar" id="status-bar">
+          <div class="status-bar-legend">
+            <span class="status-bar-dot" style="background:var(--amber)"></span>
+            <span class="status-bar-legend-label">Forward</span>
+            <span class="status-bar-dot" style="background:var(--amber-dim)"></span>
+            <span class="status-bar-legend-label">Return</span>
+            <span class="status-bar-dot" style="background:rgba(255,255,255,0.2)"></span>
+            <span class="status-bar-legend-label">Older</span>
+          </div>
+          <span class="status-bar-copy" id="map-legend-copy">Recent routes only</span>
         </div>
 
         <!-- NODE RAIL (left edge, collapsed by default shows icons, expandable) -->
@@ -111,18 +115,35 @@
                 <circle cx="9" cy="5" r="3" stroke="currentColor" stroke-width="1.5" fill="none"/>
                 <path d="M3 16c0-3.3 2.7-6 6-6s6 2.7 6 6" stroke="currentColor" stroke-width="1.5" fill="none"/>
               </svg>
-              <span class="rail-count" id="rail-node-count">0</span>
+              <span class="rail-icon-label">Nodes</span>
+            </button>
+            <button type="button" class="rail-icon" id="rail-toggle-chat" aria-label="Toggle chat panel" aria-expanded="false">
+              <svg width="18" height="18" viewBox="0 0 18 18" fill="none" aria-hidden="true">
+                <path d="M4 4.5h10a1.5 1.5 0 0 1 1.5 1.5v5A1.5 1.5 0 0 1 14 12.5H8.2L5 15v-2.5H4A1.5 1.5 0 0 1 2.5 11V6A1.5 1.5 0 0 1 4 4.5Z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" fill="none"/>
+                <path d="M5.5 7.5h7M5.5 9.75h4.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+              </svg>
+              <span class="rail-icon-label">Chat</span>
             </button>
             <button type="button" class="rail-icon" id="rail-toggle-signals" aria-label="Toggle signals panel">
               <svg width="18" height="18" viewBox="0 0 18 18" fill="none" aria-hidden="true">
                 <path d="M3 14l4-5 3 3 5-7" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
               </svg>
+              <span class="rail-icon-label">Signals</span>
             </button>
             <button type="button" class="rail-icon" id="rail-toggle-traffic" aria-label="Toggle traffic panel">
               <svg width="18" height="18" viewBox="0 0 18 18" fill="none" aria-hidden="true">
                 <rect x="2" y="3" width="14" height="12" rx="2" stroke="currentColor" stroke-width="1.5" fill="none"/>
                 <line x1="2" y1="7" x2="16" y2="7" stroke="currentColor" stroke-width="1.5"/>
               </svg>
+              <span class="rail-icon-label">Traffic</span>
+            </button>
+            <div class="rail-spacer"></div>
+            <button type="button" class="rail-icon" id="rail-toggle-settings" aria-label="Settings">
+              <svg width="18" height="18" viewBox="0 0 18 18" fill="none" aria-hidden="true">
+                <circle cx="9" cy="9" r="2.5" stroke="currentColor" stroke-width="1.5" fill="none"/>
+                <path d="M9 1.5v2M9 14.5v2M1.5 9h2M14.5 9h2M3.1 3.1l1.4 1.4M13.5 13.5l1.4 1.4M3.1 14.9l1.4-1.4M13.5 4.5l1.4-1.4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+              </svg>
+              <span class="rail-icon-label">Settings</span>
             </button>
           </div>
 
@@ -130,28 +151,32 @@
           <section class="rail-panel nodes-panel" id="mesh-nodes">
             <div class="rail-panel-head">
               <h2>Nodes</h2>
-              <span class="rail-panel-count mono-text" id="nodes-panel-count">0</span>
-              <button type="button" class="rail-search-toggle" id="node-search-toggle" aria-label="Toggle search" aria-expanded="false">
-                <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+              <span class="rail-panel-subtitle mono-text" id="nodes-panel-count">0 heard · 0 active</span>
+            </div>
+
+            <div class="node-search-bar">
+              <label class="node-search-shell" for="node-search">
+                <svg class="node-search-icon" width="12" height="12" viewBox="0 0 14 14" fill="none" aria-hidden="true">
                   <circle cx="6" cy="6" r="4.5" stroke="currentColor" stroke-width="1.5" fill="none"/>
                   <line x1="9.5" y1="9.5" x2="13" y2="13" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
                 </svg>
-              </button>
+                <input id="node-search" type="search" placeholder="Filter by name or ID…">
+              </label>
             </div>
 
-            <div class="roster-toolbar" id="roster-toolbar" hidden>
-              <label class="search-shell" for="node-search">
-                <input id="node-search" type="search" placeholder="Callsign / node ID">
-              </label>
+            <div class="proximity-legend">
+              <span class="proximity-legend-item"><span class="proximity-dot proximity-dot--direct"></span> Direct</span>
+              <span class="proximity-legend-item"><span class="proximity-dot proximity-dot--1hop"></span> 1 hop</span>
+              <span class="proximity-legend-item"><span class="proximity-dot proximity-dot--far"></span> 2+ hops</span>
+            </div>
+
+            <div class="roster-toolbar" id="roster-toolbar">
               <div class="filter-strip compact" id="node-filters" aria-label="Node filters">
                 <button type="button" class="filter-chip" data-node-filter="active">Active</button>
                 <button type="button" class="filter-chip" data-node-filter="direct-rf">Direct RF</button>
                 <button type="button" class="filter-chip" data-node-filter="mapped">Mapped</button>
                 <button type="button" class="filter-chip" data-node-filter="mqtt">MQTT</button>
                 <button type="button" class="filter-chip" data-node-filter="stale">Stale</button>
-                <button type="button" class="filter-chip" data-node-filter="mobile">Mobile</button>
-                <button type="button" class="filter-chip" data-node-filter="stationary">Stationary</button>
-                <button type="button" class="filter-chip" data-node-filter="has-text-traffic">Has text traffic</button>
               </div>
             </div>
 
@@ -162,23 +187,19 @@
           <section class="rail-panel ops-panel" id="mesh-intel" hidden>
             <div class="rail-panel-head">
               <h2>Signals</h2>
-              <span class="rail-panel-count mono-text" id="intel-panel-count">0 pkts</span>
-              <div class="segmented-control tabs" id="aux-tabs" aria-label="Signals tabs">
-                <button type="button" class="segment active" data-aux-tab="intel">Intel</button>
-                <button type="button" class="segment" data-aux-tab="chat">Chat</button>
-              </div>
+              <span class="rail-panel-subtitle mono-text" id="intel-panel-count">0 total packets</span>
             </div>
-            <p class="panel-copy" id="ops-summary">Passive route patterns and broadcast traffic.</p>
             <div class="autotrace-status" id="autotrace-status"></div>
+            <div class="intel-grid" id="intel-grid"></div>
+            <div class="intel-story" id="intel-story"></div>
+          </section>
 
-            <section class="aux-view" id="intel-view">
-              <div class="intel-grid" id="intel-grid"></div>
-              <div class="intel-story" id="intel-story"></div>
-            </section>
-
-            <section class="aux-view" id="mesh-chat" hidden>
-              <div class="chat-feed" id="chat-feed"></div>
-            </section>
+          <section class="rail-panel chat-panel" id="mesh-chat" hidden>
+            <div class="rail-panel-head">
+              <h2>Chat</h2>
+              <span class="rail-panel-subtitle mono-text">Broadcast</span>
+            </div>
+            <div class="chat-feed" id="chat-feed"></div>
           </section>
         </nav>
 
@@ -206,7 +227,6 @@
                 <button type="button" class="filter-chip" data-filter="text">Text</button>
                 <button type="button" class="filter-chip" data-filter="position">Position</button>
                 <button type="button" class="filter-chip" data-filter="telemetry">Telemetry</button>
-                <button type="button" class="filter-chip" data-filter="admin">Admin</button>
                 <button type="button" class="filter-chip" data-filter="other">Other</button>
               </div>
             </div>

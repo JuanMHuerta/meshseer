@@ -16,7 +16,6 @@ const nodeList = document.getElementById("node-list");
 const intelGrid = document.getElementById("intel-grid");
 const intelStory = document.getElementById("intel-story");
 const chatFeed = document.getElementById("chat-feed");
-const autotraceStatusCard = document.getElementById("autotrace-status");
 const packetsBody = document.getElementById("packets-body");
 const refreshDashboard = document.getElementById("refresh-dashboard");
 const resetMap = document.getElementById("reset-map");
@@ -52,7 +51,6 @@ const wholeNumberFormatter = new Intl.NumberFormat(undefined);
 
 const NODE_DECAY_WINDOW_MINUTES = 24 * 60;
 const DECAY_REPAINT_INTERVAL_MS = 60_000;
-const AUTOTRACE_REFRESH_INTERVAL_MS = 60_000;
 const DEFAULT_RECENT_ACTIVITY_WINDOW_MINUTES = 60;
 const DEFAULT_NODE_ACTIVE_WINDOW_MINUTES = 180;
 const NETWORK_ROUTE_WINDOW_MINUTES = 7 * 24 * 60;
@@ -68,7 +66,6 @@ const CHAT_STICKY_THRESHOLD_PX = 16;
 const pulseTimers = new WeakMap();
 const inflightNodeDetails = new Set();
 let decayRefreshTimerId = null;
-let autotraceRefreshTimerId = null;
 let chatStickToBottom = true;
 let chatPendingScrollBehavior = null;
 let chatLastMessageKey = null;
@@ -88,7 +85,6 @@ const state = {
   showRoutes: true,
   meshSummary: null,
   meshRoutes: { routes: [], stats: { total: 0, forward: 0, return: 0 } },
-  autotrace: { status: "loading", data: null, error: null },
   nodeDetails: new Map(),
   nodeDetailLoadingNodeNum: null,
   nodeDetailErrorNodeNum: null,
@@ -1142,248 +1138,6 @@ function receiverTelemetryCard(receiver) {
   `;
 }
 
-function formatDurationSeconds(value) {
-  const seconds = intValue(value);
-  if (!seconds) {
-    return "0s";
-  }
-  if (seconds % 3600 === 0) {
-    return `${formatWholeNumber(seconds / 3600)}h`;
-  }
-  if (seconds % 60 === 0) {
-    return `${formatWholeNumber(seconds / 60)}m`;
-  }
-  return `${formatWholeNumber(seconds)}s`;
-}
-
-function formatDurationHours(value) {
-  const hours = intValue(value);
-  return `${formatWholeNumber(hours)}h`;
-}
-
-function autotraceAttemptLabel(status) {
-  if (status === "success") {
-    return "Route";
-  }
-  if (status === "ack_only") {
-    return "Ack Only";
-  }
-  if (status === "timeout") {
-    return "Timeout";
-  }
-  if (status === "no_route") {
-    return "No Route";
-  }
-  if (status === "pending") {
-    return "Pending";
-  }
-  if (status === "error") {
-    return "Error";
-  }
-  return titleCase(status || "unknown");
-}
-
-function autotraceAttemptTone(status) {
-  if (status === "success") {
-    return "live";
-  }
-  if (status === "pending") {
-    return "idle";
-  }
-  if (status === "ack_only" || status === "no_route") {
-    return "warn";
-  }
-  if (status === "timeout" || status === "error") {
-    return "off";
-  }
-  return "idle";
-}
-
-function autotraceTargetLabel(attempt) {
-  if (!attempt) {
-    return "Unknown target";
-  }
-  if (attempt.target_short_name) {
-    return attempt.target_short_name;
-  }
-  if (attempt.target_long_name) {
-    return attempt.target_long_name;
-  }
-  if (attempt.target_node_id) {
-    return attempt.target_node_id;
-  }
-  if (attempt.target_node_num != null) {
-    return `#${attempt.target_node_num}`;
-  }
-  return "Unknown target";
-}
-
-function autotraceRecentYieldLabel(attempts) {
-  const recentAttempts = Array.isArray(attempts) ? attempts : [];
-  if (!recentAttempts.length) {
-    return null;
-  }
-  const routeHits = recentAttempts.filter((attempt) => attempt?.status === "success").length;
-  const total = recentAttempts.length;
-  return `${formatWholeNumber(routeHits)}/${formatWholeNumber(total)} route ${routeHits === 1 ? "hit" : "hits"}`;
-}
-
-function autotraceStateTone(data) {
-  if (!data) {
-    return state.autotrace.status === "error" ? "off" : "idle";
-  }
-  if (!data.enabled) {
-    return "off";
-  }
-  if (!data.running) {
-    return "warn";
-  }
-  if ((state.collectorStatus && !state.collectorStatus.connected) || data.local_node_num == null) {
-    return "idle";
-  }
-  return intValue(data.eligible_targets) > 0 ? "live" : "idle";
-}
-
-function autotraceStateLabel(data) {
-  if (!data) {
-    return state.autotrace.status === "error" ? "Unavailable" : "Checking";
-  }
-  if (!data.enabled) {
-    return "Off";
-  }
-  if (!data.running) {
-    return "Paused";
-  }
-  if ((state.collectorStatus && !state.collectorStatus.connected) || data.local_node_num == null) {
-    return "Waiting";
-  }
-  return intValue(data.eligible_targets) > 0 ? "Live" : "Idle";
-}
-
-function autotraceStateCopy(data) {
-  if (!data) {
-    return state.autotrace.status === "error"
-      ? "Autotrace status unavailable from the backend."
-      : "Checking scheduler state.";
-  }
-
-  let copy = "";
-  if (!data.enabled) {
-    copy = "Scheduler off. Enable through the local API when you want active probing.";
-  } else if (!data.running) {
-    copy = "Scheduler enabled, but the worker thread is not active.";
-  } else if (state.collectorStatus && !state.collectorStatus.connected) {
-    copy = "Scheduler armed. Waiting for the receiver link.";
-  } else if (data.local_node_num == null) {
-    copy = "Scheduler armed. Waiting for receiver identity.";
-  } else if (intValue(data.eligible_targets) > 0) {
-    const eligible = intValue(data.eligible_targets);
-    copy = `Scheduler live. ${formatWholeNumber(eligible)} eligible ${eligible === 1 ? "node is" : "nodes are"} queued for the next sweep.`;
-  } else {
-    copy = "No eligible nodes qualify for a new sweep right now.";
-  }
-
-  if (state.autotrace.status === "error" && state.autotrace.error) {
-    return `${copy} Showing the last known state after a refresh failure.`;
-  }
-  return copy;
-}
-
-function autotraceAttemptDetail(attempt) {
-  if (!attempt) {
-    return "No probe attempts recorded yet.";
-  }
-  if (attempt.detail) {
-    return attempt.detail;
-  }
-
-  const target = autotraceTargetLabel(attempt);
-  if (attempt.status === "success") {
-    return `Route payload captured for ${target}.`;
-  }
-  if (attempt.status === "ack_only") {
-    return `Probe reached ${target} without a route payload.`;
-  }
-  if (attempt.status === "timeout") {
-    return `Probe to ${target} timed out before the response window closed.`;
-  }
-  if (attempt.status === "no_route") {
-    return `Probe to ${target} returned without route data.`;
-  }
-  if (attempt.status === "pending") {
-    return `Probe to ${target} is still in flight.`;
-  }
-  if (attempt.status === "error") {
-    return `Probe to ${target} failed.`;
-  }
-  return `Last probe result for ${target}: ${autotraceAttemptLabel(attempt.status)}.`;
-}
-
-function renderAutotraceStatus() {
-  if (!autotraceStatusCard) {
-    return;
-  }
-
-  const autotraceData = state.autotrace.data;
-  const tone = autotraceStateTone(autotraceData);
-  const stateLabel = autotraceStateLabel(autotraceData);
-  const copy = autotraceStateCopy(autotraceData);
-  const lastAttempt = autotraceData?.last_attempt || null;
-  const recentYield = autotraceRecentYieldLabel(autotraceData?.recent_attempts);
-  const metaItems = [];
-
-  if (autotraceData) {
-    metaItems.push(`${formatWholeNumber(intValue(autotraceData.eligible_targets))} eligible`);
-    metaItems.push(`${formatDurationSeconds(autotraceData.interval_seconds)} cadence`);
-    const standardCooldown = formatDurationHours(autotraceData.cooldown_hours);
-    const ackOnlyCooldown = intValue(autotraceData.ack_only_cooldown_hours);
-    metaItems.push(
-      ackOnlyCooldown > 0 && ackOnlyCooldown !== intValue(autotraceData.cooldown_hours)
-        ? `${standardCooldown} cooldown • ${formatDurationHours(ackOnlyCooldown)}-${standardCooldown} ack-only backoff`
-        : `${standardCooldown} cooldown`
-    );
-    if (recentYield) {
-      metaItems.push(recentYield);
-    }
-  }
-
-  const shortCopy = copy.length > 40 ? copy.replace(/^No eligible nodes qualify for a new sweep right now\.?/, "No eligible nodes.") : copy;
-
-  autotraceStatusCard.innerHTML = `
-    <article class="autotrace-bar ${tone}">
-      <div class="autotrace-head">
-        <div>
-          <div class="autotrace-line">
-            <strong class="autotrace-title" style="font-size:12px">Primary route sweeps</strong>
-            <span class="autotrace-pill ${tone}">${escapeHtml(stateLabel)}</span>
-          </div>
-        </div>
-      </div>
-      <p class="autotrace-copy" style="font-size:11px">${escapeHtml(shortCopy)}</p>
-      ${metaItems.length ? `
-        <div class="autotrace-meta">
-          ${metaItems.map((item) => `<span class="autotrace-chip mono-text">${escapeHtml(item)}</span>`).join("")}
-        </div>
-      ` : ""}
-      <div class="autotrace-last">
-        ${lastAttempt ? `
-          <div class="autotrace-line">
-            <span class="autotrace-pill ${autotraceAttemptTone(lastAttempt.status)}">${escapeHtml(autotraceAttemptLabel(lastAttempt.status))}</span>
-            <span class="autotrace-target">${escapeHtml(autotraceTargetLabel(lastAttempt))}</span>
-            <span class="mono-text">${escapeHtml(formatTime(lastAttempt.completed_at || lastAttempt.requested_at))}</span>
-          </div>
-        ` : `
-          <div class="autotrace-line">
-            <span class="autotrace-pill idle">Waiting</span>
-            <span class="autotrace-target">No recorded attempts</span>
-          </div>
-        `}
-        <p class="autotrace-detail">${escapeHtml(autotraceAttemptDetail(lastAttempt))}</p>
-      </div>
-    </article>
-  `;
-}
-
 function metric(label, value, tone = "") {
   return `
     <div class="hud-metric${tone ? ` ${tone}` : ""}">
@@ -1552,7 +1306,6 @@ function setCollectorStatus(data) {
   state.collectorStatus = data || null;
   renderConnectionIndicator();
   refreshKpiTicker();
-  renderAutotraceStatus();
 }
 
 function setPerspective(data) {
@@ -2744,27 +2497,6 @@ async function loadMeshRoutes() {
   renderMeshRoutes(payload);
 }
 
-async function loadAutotraceStatus() {
-  if (!state.autotrace.data) {
-    state.autotrace.status = "loading";
-    state.autotrace.error = null;
-    renderAutotraceStatus();
-  }
-
-  try {
-    const payload = await fetchJson("/api/mesh/autotrace");
-    state.autotrace = { status: "ready", data: payload, error: null };
-  } catch (error) {
-    state.autotrace = {
-      status: "error",
-      data: state.autotrace.data,
-      error: error instanceof Error ? error.message : "Unable to load auto-traceroute status",
-    };
-  }
-
-  renderAutotraceStatus();
-}
-
 async function loadAll() {
   const results = await Promise.allSettled([
     loadHealth(),
@@ -2774,9 +2506,8 @@ async function loadAll() {
     loadChat(),
     loadMeshSummary(),
     loadMeshRoutes(),
-    loadAutotraceStatus(),
   ]);
-  if (results.slice(0, 7).some((result) => result.status === "fulfilled")) {
+  if (results.some((result) => result.status === "fulfilled")) {
     markUpdated();
   }
   return results
@@ -2803,15 +2534,6 @@ function startDecayRefreshLoop() {
   }, DECAY_REPAINT_INTERVAL_MS);
 }
 
-function startAutotraceRefreshLoop() {
-  if (autotraceRefreshTimerId != null) {
-    return;
-  }
-  autotraceRefreshTimerId = window.setInterval(() => {
-    void loadAutotraceStatus();
-  }, AUTOTRACE_REFRESH_INTERVAL_MS);
-}
-
 function handleLoadError(error) {
   state.collectorStatus = {
     connected: false,
@@ -2819,7 +2541,6 @@ function handleLoadError(error) {
     state: "error",
   };
   setSocketState("error");
-  renderAutotraceStatus();
 }
 
 function selectNode(nodeNum, { flyTo = false, openTooltip = false } = {}) {
@@ -2909,9 +2630,7 @@ function connectEvents() {
       maybeRefreshSelectedNodeDetail(payload.data);
       if (payload.data.portnum === "TRACEROUTE_APP" || payload.data.portnum === "ROUTING_APP") {
         void loadMeshRoutes().catch(handleLoadError);
-        void loadAutotraceStatus();
         pulsePanel(mapPanel, "map");
-        pulsePanel(autotraceStatusCard, "map");
       }
       if (
         payload.data.portnum === "TEXT_MESSAGE_APP"
@@ -2964,7 +2683,6 @@ function initializeStaticUI() {
   renderPerspectiveLabel();
   renderConnectionIndicator();
   refreshKpiTicker();
-  renderAutotraceStatus();
   renderRouteToggle();
   updatePacketFilterButtons();
   updateNodeFilterButtons();
@@ -3083,7 +2801,6 @@ initializeStaticUI();
 loadAll()
   .then((failures) => {
     startDecayRefreshLoop();
-    startAutotraceRefreshLoop();
     connectEvents();
     reportLoadFailures(failures);
   })

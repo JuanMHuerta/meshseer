@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import asyncio
 import json
+import secrets
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -17,6 +18,15 @@ from meshradar.collector import CollectorCallbacks, CollectorStatus, MeshtasticR
 from meshradar.config import Settings
 from meshradar.events import EventBroker
 from meshradar.models import NodeRecord, PacketRecord
+from meshradar.public_api import (
+    collector_status_payload,
+    public_mesh_summary_payload,
+    public_node_detail_payload,
+    public_nodes_payload,
+    public_packet_payload,
+    public_packets_payload,
+    public_receiver_payload,
+)
 from meshradar.storage import MeshRepository
 
 
@@ -104,7 +114,13 @@ def create_app(
         stored = repository.get_packet(packet_id)
         if stored is None:
             return
-        event_broker.publish({"type": "packet_received", "ts": utc_now_iso(), "data": stored})
+        event_broker.publish(
+            {
+                "type": "packet_received",
+                "ts": utc_now_iso(),
+                "data": public_packet_payload(stored),
+            }
+        )
 
     def handle_node(node: dict[str, Any]) -> None:
         if not _is_longfast_node(node):
@@ -113,10 +129,22 @@ def create_app(
         stored = repository.get_node(node["node_num"], primary_only=True)
         if stored is None:
             return
-        event_broker.publish({"type": "node_updated", "ts": utc_now_iso(), "data": stored})
+        event_broker.publish(
+            {
+                "type": "node_updated",
+                "ts": utc_now_iso(),
+                "data": public_nodes_payload([stored])[0],
+            }
+        )
 
     def handle_status(status: CollectorStatus) -> None:
-        event_broker.publish({"type": "collector_status", "ts": utc_now_iso(), "data": _status_payload(status)})
+        event_broker.publish(
+            {
+                "type": "collector_status",
+                "ts": utc_now_iso(),
+                "data": collector_status_payload(_status_payload(status)),
+            }
+        )
 
     collector = collector or MeshtasticReceiver(
         host=settings.meshtastic_host,
@@ -172,44 +200,61 @@ def create_app(
     app.state.autotrace_service = autotrace_service
     app.state.start_autotrace_service = start_autotrace_service
     app.state.autotrace_service_started = False
+    app.state.admin_api_enabled = settings.admin_bearer_token is not None
 
-    @app.get("/")
+    def admin_unauthorized() -> HTTPException:
+        return HTTPException(
+            status_code=401,
+            detail="admin authorization required",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    def require_admin_bearer(authorization: str | None = Header(default=None)) -> None:
+        expected = settings.admin_bearer_token
+        if expected is None:
+            raise HTTPException(status_code=404, detail="not found")
+        scheme, _, token = (authorization or "").partition(" ")
+        if scheme.lower() != "bearer" or not token or not secrets.compare_digest(token, expected):
+            raise admin_unauthorized()
+
+    public_router = APIRouter()
+
+    @public_router.get("/")
     async def index() -> FileResponse:
         return FileResponse(STATIC_DIR / "index.html")
 
-    @app.get("/api/health")
+    @public_router.get("/api/health")
     async def health() -> dict[str, Any]:
         status = collector.current_status()
+        ready = repository.healthcheck()
         return {
-            "status": "ok" if repository.healthcheck() else "error",
-            "collector": _status_payload(status),
+            "status": "ok" if ready else "error",
+            "collector": collector_status_payload(_status_payload(status)),
             "perspective": _perspective_payload(settings, repository, collector),
-            "database": {
-                "ready": repository.healthcheck(),
-                "path": str(settings.db_path),
-            },
         }
 
-    @app.get("/api/packets")
+    @public_router.get("/api/packets")
     async def list_packets(
         limit: int = Query(default=50, ge=1, le=500),
         since: str | None = None,
         from_node: int | None = None,
         portnum: str | None = None,
     ) -> list[dict[str, Any]]:
-        return repository.list_packets(
-            limit=limit,
-            since=since,
-            from_node=from_node,
-            portnum=portnum,
-            primary_only=True,
+        return public_packets_payload(
+            repository.list_packets(
+                limit=limit,
+                since=since,
+                from_node=from_node,
+                portnum=portnum,
+                primary_only=True,
+            )
         )
 
-    @app.get("/api/chat")
+    @public_router.get("/api/chat")
     async def list_chat_messages(limit: int = Query(default=50, ge=1, le=500)) -> list[dict[str, Any]]:
-        return repository.list_chat_messages(limit=limit, primary_only=True)
+        return public_packets_payload(repository.list_chat_messages(limit=limit, primary_only=True))
 
-    @app.get("/api/mesh/summary")
+    @public_router.get("/api/mesh/summary")
     async def mesh_summary() -> dict[str, Any]:
         local_node_num = _resolved_local_node_num(settings, collector)
         summary = repository.get_mesh_summary(primary_only=True)
@@ -234,72 +279,40 @@ def create_app(
                 window_minutes=RECEIVER_UTILIZATION_WINDOW_MINUTES,
             )
 
-        summary["receiver"] = {
-            "node_num": local_node_num,
-            "label": _perspective_label(local_node_num, receiver_node),
-            "node_id": None if receiver_node is None else receiver_node.get("node_id"),
-            "short_name": None if receiver_node is None else receiver_node.get("short_name"),
-            "long_name": None if receiver_node is None else receiver_node.get("long_name"),
-            "updated_at": None if receiver_node is None else receiver_node.get("updated_at"),
-            "channel_utilization": None if receiver_node is None else receiver_node.get("channel_utilization"),
-            "air_util_tx": None if receiver_node is None else receiver_node.get("air_util_tx"),
-            "history": receiver_history,
-            "windowed_utilization": receiver_windowed_utilization,
-        }
-        return summary
+        receiver = public_receiver_payload(
+            local_node_num=local_node_num,
+            label=_perspective_label(local_node_num, receiver_node),
+            receiver_node=receiver_node,
+            history=receiver_history,
+            windowed_utilization=receiver_windowed_utilization,
+        )
+        return public_mesh_summary_payload(summary, receiver=receiver)
 
-    @app.get("/api/mesh/links")
-    async def mesh_links() -> dict[str, Any]:
-        return repository.get_mesh_links(primary_only=True)
-
-    @app.get("/api/mesh/routes")
+    @public_router.get("/api/mesh/routes")
     async def mesh_routes(since: str | None = None) -> dict[str, Any]:
         return repository.get_mesh_routes(since=since, primary_only=True)
 
-    @app.get("/api/mesh/autotrace")
-    async def autotrace_status() -> dict[str, Any]:
-        return autotrace_service.status()
-
-    @app.post("/api/mesh/autotrace/enable")
-    async def autotrace_enable() -> dict[str, Any]:
-        autotrace_service.enable()
-        return autotrace_service.status()
-
-    @app.post("/api/mesh/autotrace/disable")
-    async def autotrace_disable() -> dict[str, Any]:
-        autotrace_service.disable()
-        return autotrace_service.status()
-
-    @app.get("/api/packets/{packet_id}")
-    async def get_packet(packet_id: int) -> dict[str, Any]:
-        packet = repository.get_packet(packet_id, primary_only=True)
-        if packet is None:
-            raise HTTPException(status_code=404, detail="packet not found")
-        return packet
-
-    @app.get("/api/nodes")
-    async def list_nodes() -> list[dict[str, Any]]:
-        return repository.list_nodes(primary_only=True)
-
-    @app.get("/api/nodes/roster")
+    @public_router.get("/api/nodes/roster")
     async def list_nodes_roster() -> list[dict[str, Any]]:
-        return repository.list_nodes_roster(
-            primary_only=True,
-            local_node_num=_resolved_local_node_num(settings, collector),
+        return public_nodes_payload(
+            repository.list_nodes_roster(
+                primary_only=True,
+                local_node_num=_resolved_local_node_num(settings, collector),
+            )
         )
 
-    @app.get("/api/nodes/{node_num}")
+    @public_router.get("/api/nodes/{node_num}")
     async def get_node(node_num: int) -> dict[str, Any]:
         node = repository.get_node(node_num, primary_only=True)
         if node is None:
             raise HTTPException(status_code=404, detail="node not found")
-        return {
-            "node": node,
-            "recent_packets": repository.list_packets_for_node(node_num, limit=20, primary_only=True),
-            "insights": repository.get_node_insights(node_num, primary_only=True),
-        }
+        return public_node_detail_payload(
+            node,
+            recent_packets=repository.list_packets_for_node(node_num, limit=20, primary_only=True),
+            insights=repository.get_node_insights(node_num, primary_only=True),
+        )
 
-    @app.websocket("/ws/events")
+    @public_router.websocket("/ws/events")
     async def websocket_events(websocket: WebSocket) -> None:
         await websocket.accept()
         try:
@@ -309,5 +322,57 @@ def create_app(
                     await websocket.send_text(json.dumps(event))
         except WebSocketDisconnect:
             return
+
+    app.include_router(public_router)
+
+    if settings.admin_bearer_token is not None:
+        admin_router = APIRouter(
+            prefix="/api/admin",
+            dependencies=[Depends(require_admin_bearer)],
+        )
+
+        @admin_router.get("/health")
+        async def admin_health() -> dict[str, Any]:
+            status = collector.current_status()
+            return {
+                "status": "ok" if repository.healthcheck() else "error",
+                "collector": _status_payload(status),
+                "perspective": _perspective_payload(settings, repository, collector),
+                "database": {
+                    "ready": repository.healthcheck(),
+                    "path": str(settings.db_path),
+                },
+            }
+
+        @admin_router.get("/mesh/links")
+        async def admin_mesh_links() -> dict[str, Any]:
+            return repository.get_mesh_links(primary_only=True)
+
+        @admin_router.get("/mesh/autotrace")
+        async def admin_autotrace_status() -> dict[str, Any]:
+            return autotrace_service.status()
+
+        @admin_router.post("/mesh/autotrace/enable")
+        async def admin_autotrace_enable() -> dict[str, Any]:
+            autotrace_service.enable()
+            return autotrace_service.status()
+
+        @admin_router.post("/mesh/autotrace/disable")
+        async def admin_autotrace_disable() -> dict[str, Any]:
+            autotrace_service.disable()
+            return autotrace_service.status()
+
+        @admin_router.get("/packets/{packet_id}")
+        async def admin_get_packet(packet_id: int) -> dict[str, Any]:
+            packet = repository.get_packet(packet_id, primary_only=True)
+            if packet is None:
+                raise HTTPException(status_code=404, detail="packet not found")
+            return packet
+
+        @admin_router.get("/nodes")
+        async def admin_list_nodes() -> list[dict[str, Any]]:
+            return repository.list_nodes(primary_only=True)
+
+        app.include_router(admin_router)
 
     return app

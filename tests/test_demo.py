@@ -8,7 +8,7 @@ def test_demo_app_seeds_dashboard_data(tmp_path):
 
     with TestClient(app) as client:
         health = client.get("/api/health")
-        nodes = client.get("/api/nodes")
+        nodes = client.get("/api/nodes/roster")
         chat = client.get("/api/chat")
         packets = client.get("/api/packets")
         routes = client.get("/api/mesh/routes")

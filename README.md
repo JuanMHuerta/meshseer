@@ -75,29 +75,42 @@ Default settings:
 - `MESHRADAR_AUTOTRACE_ACK_ONLY_COOLDOWN_HOURS=6`
 - `MESHRADAR_AUTOTRACE_RESPONSE_TIMEOUT_SECONDS=20`
 
-Auto-traceroute now respects `MESHRADAR_AUTOTRACE_ENABLED` during process startup. The runtime API still works for turning it on or off after boot. The repository `.env` and `.env.example` set it to `true` as the local default template.
+Auto-traceroute now respects `MESHRADAR_AUTOTRACE_ENABLED` during process startup. The runtime API still works for turning it on or off after boot, but it is mounted only when `MESHRADAR_ADMIN_BEARER_TOKEN` is set. The repository `.env` and `.env.example` set it to `true` as the local default template.
 
 ### Runtime API
 
 Endpoints:
 
-- `GET /api/mesh/autotrace`
-- `POST /api/mesh/autotrace/enable`
-- `POST /api/mesh/autotrace/disable`
+- `GET /api/admin/health`
+- `GET /api/admin/mesh/autotrace`
+- `POST /api/admin/mesh/autotrace/enable`
+- `POST /api/admin/mesh/autotrace/disable`
+- `GET /api/admin/mesh/links`
+- `GET /api/admin/nodes`
+- `GET /api/admin/packets/{packet_id}`
 
 Example:
 
 ```bash
-curl http://127.0.0.1:8000/api/mesh/autotrace
-curl -X POST http://127.0.0.1:8000/api/mesh/autotrace/enable
-curl -X POST http://127.0.0.1:8000/api/mesh/autotrace/disable
+export MESHRADAR_ADMIN_BEARER_TOKEN='replace-me'
+
+curl -H "Authorization: Bearer ${MESHRADAR_ADMIN_BEARER_TOKEN}" \
+  http://127.0.0.1:8000/api/admin/mesh/autotrace
+
+curl -X POST \
+  -H "Authorization: Bearer ${MESHRADAR_ADMIN_BEARER_TOKEN}" \
+  http://127.0.0.1:8000/api/admin/mesh/autotrace/enable
+
+curl -X POST \
+  -H "Authorization: Bearer ${MESHRADAR_ADMIN_BEARER_TOKEN}" \
+  http://127.0.0.1:8000/api/admin/mesh/autotrace/disable
 ```
 
-These endpoints are intended for a protected local or reverse-proxied surface. Meshradar does not add its own auth layer for them.
+These endpoints are intended for a protected local-only surface. Meshradar requires `Authorization: Bearer <token>` on every admin request and does not mount the admin routes unless `MESHRADAR_ADMIN_BEARER_TOKEN` is configured. The public dashboard does not expose auto-traceroute status or controls.
 
 ### Status Model
 
-`GET /api/mesh/autotrace` returns:
+`GET /api/admin/mesh/autotrace` returns:
 
 - whether the scheduler is enabled and running
 - the resolved local node number
@@ -122,3 +135,5 @@ A failed attempt still enters cooldown. This is intentional so the scheduler sta
 ### Route Visibility Caveat
 
 `success` means Meshradar saw a route-bearing reply and can usually feed the traceroute map. `ack_only` means the radio responded, but there was no route payload to extract, so no map line will appear even though the attempt itself was recorded successfully enough to count for cooldown.
+
+Production deployment notes for the public dashboard plus local-only admin topology live in [deployment.md](/home/juan/dev/meshradar/deployment.md).

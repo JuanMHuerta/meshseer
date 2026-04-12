@@ -13,6 +13,7 @@ def test_settings_defaults():
     assert settings.bind_port == 8000
     assert settings.db_path.name == "meshradar.db"
     assert settings.local_node_num is None
+    assert settings.admin_bearer_token is None
     assert settings.autotrace_enabled is False
 
 
@@ -25,6 +26,7 @@ def test_settings_override_from_env(tmp_path):
             "MESHRADAR_BIND_PORT": "9000",
             "MESHRADAR_DB_PATH": str(tmp_path / "mesh.db"),
             "MESHRADAR_LOCAL_NODE_NUM": "456",
+            "MESHRADAR_ADMIN_BEARER_TOKEN": "  secret-token  ",
             "MESHRADAR_AUTOTRACE_ENABLED": "true",
         }
     )
@@ -35,6 +37,7 @@ def test_settings_override_from_env(tmp_path):
     assert settings.bind_port == 9000
     assert settings.db_path == tmp_path / "mesh.db"
     assert settings.local_node_num == 456
+    assert settings.admin_bearer_token == "secret-token"
     assert settings.autotrace_enabled is True
 
 

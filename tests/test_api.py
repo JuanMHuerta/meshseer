@@ -12,6 +12,9 @@ from meshradar.models import NodeRecord, PacketRecord
 from meshradar.storage import KPI_ACTIVE_NODES_WINDOW_MINUTES, MeshRepository
 
 
+ADMIN_TOKEN = "test-admin-token"
+
+
 class StubCollector:
     def __init__(self, *, local_node_num=None):
         self.started = False
@@ -96,7 +99,11 @@ def encode_traceroute_payload(
     return base64.b64encode(message.SerializeToString()).decode("ascii")
 
 
-def build_app(tmp_path):
+def admin_headers(token: str = ADMIN_TOKEN) -> dict[str, str]:
+    return {"Authorization": f"Bearer {token}"}
+
+
+def build_app(tmp_path, *, admin_token: str | None = None):
     repo = MeshRepository(tmp_path / "mesh.db")
     repo.insert_packet(
         PacketRecord(
@@ -176,13 +183,14 @@ def build_app(tmp_path):
         )
     )
     collector = StubCollector()
+    env = {
+        "MESHRADAR_DB_PATH": str(tmp_path / "mesh.db"),
+        "MESHRADAR_LOCAL_NODE_NUM": "101",
+    }
+    if admin_token is not None:
+        env["MESHRADAR_ADMIN_BEARER_TOKEN"] = admin_token
     app = create_app(
-        Settings.from_env(
-            {
-                "MESHRADAR_DB_PATH": str(tmp_path / "mesh.db"),
-                "MESHRADAR_LOCAL_NODE_NUM": "101",
-            }
-        ),
+        Settings.from_env(env),
         repository=repo,
         collector=collector,
         start_collector=False,
@@ -192,34 +200,42 @@ def build_app(tmp_path):
 
 
 def test_api_routes_and_filters(tmp_path):
-    app, collector = build_app(tmp_path)
+    app, collector = build_app(tmp_path, admin_token=ADMIN_TOKEN)
 
     with TestClient(app) as client:
         health = client.get("/api/health")
         packets = client.get("/api/packets", params={"from_node": 101, "portnum": "TEXT_MESSAGE_APP"})
         chat = client.get("/api/chat")
-        packet = client.get("/api/packets/1")
-        hidden_packet = client.get("/api/packets/2")
-        nodes = client.get("/api/nodes")
         node = client.get("/api/nodes/101")
         hidden_node = client.get("/api/nodes/202")
+        admin_packet = client.get("/api/admin/packets/1", headers=admin_headers())
+        hidden_admin_packet = client.get("/api/admin/packets/2", headers=admin_headers())
+        admin_nodes = client.get("/api/admin/nodes", headers=admin_headers())
         index = client.get("/")
 
     assert collector.started is False
     assert health.status_code == 200
     assert health.json()["collector"]["state"] == "connected"
+    assert "detail" not in health.json()["collector"]
     assert health.json()["perspective"]["channel_name"] == "LongFast"
     assert health.json()["perspective"]["local_node_num"] == 101
     assert health.json()["perspective"]["label"] == "ALFA"
+    assert "database" not in health.json()
     assert packets.json()[0]["text_preview"] == "hello mesh"
+    assert "payload_base64" not in packets.json()[0]
+    assert "raw_json" not in packets.json()[0]
     assert len(chat.json()) == 1
     assert chat.json()[0]["text_preview"] == "hello mesh"
-    assert packet.json()["mesh_packet_id"] == 11
-    assert hidden_packet.status_code == 404
-    assert len(nodes.json()) == 1
-    assert nodes.json()[0]["short_name"] == "ALFA"
     assert node.json()["node"]["node_num"] == 101
+    assert "raw_json" not in node.json()["node"]
+    assert "payload_base64" not in node.json()["recent_packets"][0]
     assert hidden_node.status_code == 404
+    assert admin_packet.json()["mesh_packet_id"] == 11
+    assert admin_packet.json()["raw_json"] == '{"id":11}'
+    assert hidden_admin_packet.status_code == 404
+    assert len(admin_nodes.json()) == 1
+    assert admin_nodes.json()[0]["short_name"] == "ALFA"
+    assert admin_nodes.json()[0]["raw_json"] == '{"num":101}'
     assert "Meshradar" in index.text
 
 
@@ -627,7 +643,7 @@ def test_mesh_summary_and_node_insights_expose_passive_path_data(tmp_path):
     assert summary.json()["traffic"]["direct"] == 1
     assert summary.json()["traffic"]["relayed"] == 1
     assert summary.json()["traffic"]["mqtt"] == 1
-    assert summary.json()["top_senders"][0]["node_num"] in {101, 303, 404}
+    assert "top_senders" not in summary.json()
     assert node.json()["node"]["hops_away"] == 2
     assert node.json()["insights"]["relayed_packets"] == 1
     assert node.json()["insights"]["last_path"] == "2 hops"
@@ -696,9 +712,6 @@ def test_mesh_summary_exposes_receiver_utilization_history(tmp_path, monkeypatch
     assert summary.json()["receiver"] == {
         "node_num": 101,
         "label": "ALFA",
-        "node_id": "!00000065",
-        "short_name": "ALFA",
-        "long_name": "Alpha Node",
         "updated_at": "2026-03-30T12:15:00Z",
         "channel_utilization": 16.4,
         "air_util_tx": 2.1,
@@ -1158,7 +1171,7 @@ def test_packet_ingest_updates_node_activity_without_node_update(tmp_path):
 
 
 def test_mesh_links_exposes_mutual_neighbor_reports(tmp_path):
-    app, _collector = build_app(tmp_path)
+    app, _collector = build_app(tmp_path, admin_token=ADMIN_TOKEN)
     repo = app.state.repository
 
     repo.upsert_node(
@@ -1222,7 +1235,7 @@ def test_mesh_links_exposes_mutual_neighbor_reports(tmp_path):
     )
 
     with TestClient(app) as client:
-        links = client.get("/api/mesh/links")
+        links = client.get("/api/admin/mesh/links", headers=admin_headers())
 
     assert links.status_code == 200
     assert links.json()["stats"] == {"total": 1, "mutual": 1, "one_way": 0}
@@ -1376,12 +1389,39 @@ def test_mesh_routes_support_since_filter(tmp_path):
     assert routes.json()["routes"][0]["path_node_nums"] == [101, 202, 404]
 
 
-def test_autotrace_api_exposes_status_and_runtime_toggle(tmp_path):
+def test_admin_routes_require_bearer_and_are_absent_when_unconfigured(tmp_path):
+    app_without_admin, _collector = build_app(tmp_path)
+
+    with TestClient(app_without_admin) as client:
+        missing_admin = client.get("/api/admin/health")
+
+    assert missing_admin.status_code == 404
+
+    app_with_admin, _collector = build_app(tmp_path, admin_token=ADMIN_TOKEN)
+
+    with TestClient(app_with_admin) as client:
+        missing_header = client.get("/api/admin/health")
+        wrong_header = client.get("/api/admin/health", headers=admin_headers("wrong-token"))
+        allowed = client.get("/api/admin/health", headers=admin_headers())
+
+    assert missing_header.status_code == 401
+    assert missing_header.headers["www-authenticate"] == "Bearer"
+    assert wrong_header.status_code == 401
+    assert allowed.status_code == 200
+    assert allowed.json()["database"]["path"].endswith("mesh.db")
+
+
+def test_admin_autotrace_api_exposes_status_and_runtime_toggle(tmp_path):
     repo = MeshRepository(tmp_path / "mesh.db")
     collector = StubCollector(local_node_num=101)
     autotrace_service = StubAutotraceService()
     app = create_app(
-        Settings.from_env({"MESHRADAR_DB_PATH": str(tmp_path / "mesh.db")}),
+        Settings.from_env(
+            {
+                "MESHRADAR_DB_PATH": str(tmp_path / "mesh.db"),
+                "MESHRADAR_ADMIN_BEARER_TOKEN": ADMIN_TOKEN,
+            }
+        ),
         repository=repo,
         collector=collector,
         autotrace_service=autotrace_service,
@@ -1390,9 +1430,9 @@ def test_autotrace_api_exposes_status_and_runtime_toggle(tmp_path):
     )
 
     with TestClient(app) as client:
-        status_before = client.get("/api/mesh/autotrace")
-        enabled = client.post("/api/mesh/autotrace/enable")
-        disabled = client.post("/api/mesh/autotrace/disable")
+        status_before = client.get("/api/admin/mesh/autotrace", headers=admin_headers())
+        enabled = client.post("/api/admin/mesh/autotrace/enable", headers=admin_headers())
+        disabled = client.post("/api/admin/mesh/autotrace/disable", headers=admin_headers())
 
     assert status_before.status_code == 200
     assert status_before.json()["enabled"] is False
@@ -1412,6 +1452,7 @@ def test_lifespan_enables_autotrace_when_requested_by_settings(tmp_path):
         Settings.from_env(
             {
                 "MESHRADAR_DB_PATH": str(tmp_path / "mesh.db"),
+                "MESHRADAR_ADMIN_BEARER_TOKEN": ADMIN_TOKEN,
                 "MESHRADAR_AUTOTRACE_ENABLED": "true",
             }
         ),
@@ -1423,7 +1464,7 @@ def test_lifespan_enables_autotrace_when_requested_by_settings(tmp_path):
     )
 
     with TestClient(app) as client:
-        status = client.get("/api/mesh/autotrace")
+        status = client.get("/api/admin/mesh/autotrace", headers=admin_headers())
         assert autotrace_service.started is True
         assert status.status_code == 200
         assert status.json()["enabled"] is True
@@ -1452,7 +1493,12 @@ def test_websocket_receives_events(tmp_path):
 
 def test_default_collector_callbacks_persist_and_broadcast(tmp_path):
     app = create_app(
-        Settings.from_env({"MESHRADAR_DB_PATH": str(tmp_path / "mesh.db")}),
+        Settings.from_env(
+            {
+                "MESHRADAR_DB_PATH": str(tmp_path / "mesh.db"),
+                "MESHRADAR_ADMIN_BEARER_TOKEN": ADMIN_TOKEN,
+            }
+        ),
         start_collector=False,
         start_autotrace_service=False,
     )
@@ -1534,22 +1580,35 @@ def test_default_collector_callbacks_persist_and_broadcast(tmp_path):
             )
             collector.callbacks.on_status(CollectorStatus(state="disconnected", connected=False, detail="missing radio"))
 
-            messages = {websocket.receive_json()["type"] for _ in range(3)}
+            messages = [websocket.receive_json() for _ in range(3)]
 
-        packet = client.get("/api/packets/1")
+        packet = client.get("/api/admin/packets/1", headers=admin_headers())
         node = client.get("/api/nodes/7")
-        hidden_packet = client.get("/api/packets/2")
+        hidden_packet = client.get("/api/admin/packets/2", headers=admin_headers())
         hidden_node = client.get("/api/nodes/8")
         chat = client.get("/api/chat")
-        missing_packet = client.get("/api/packets/99")
+        missing_packet = client.get("/api/admin/packets/99", headers=admin_headers())
         missing_node = client.get("/api/nodes/999")
 
-    assert messages == {"packet_received", "node_updated", "collector_status"}
+    message_types = {message["type"] for message in messages}
+    packet_message = next(message for message in messages if message["type"] == "packet_received")
+    node_message = next(message for message in messages if message["type"] == "node_updated")
+    status_message = next(message for message in messages if message["type"] == "collector_status")
+
+    assert message_types == {"packet_received", "node_updated", "collector_status"}
+    assert packet_message["data"]["mesh_packet_id"] == 22
+    assert "payload_base64" not in packet_message["data"]
+    assert "raw_json" not in packet_message["data"]
+    assert node_message["data"]["short_name"] == "NODE7"
+    assert "raw_json" not in node_message["data"]
+    assert status_message["data"] == {"state": "disconnected", "connected": False}
     assert packet.json()["mesh_packet_id"] == 22
+    assert packet.json()["raw_json"] == "{}"
     assert node.json()["node"]["short_name"] == "NODE7"
     assert hidden_packet.status_code == 404
     assert hidden_node.status_code == 404
     assert chat.json()[0]["text_preview"] == "ping"
+    assert "raw_json" not in chat.json()[0]
     assert missing_packet.status_code == 404
     assert missing_node.status_code == 404
 

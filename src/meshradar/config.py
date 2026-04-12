@@ -12,6 +12,13 @@ def _optional_int(value: str | None) -> int | None:
     return int(value)
 
 
+def _optional_stripped(value: str | None) -> str | None:
+    if value is None:
+        return None
+    stripped = value.strip()
+    return stripped or None
+
+
 def _optional_bool(value: str | None, *, default: bool = False) -> bool:
     if value is None or value == "":
         return default
@@ -31,6 +38,7 @@ class Settings:
     bind_port: int
     db_path: Path
     local_node_num: int | None
+    admin_bearer_token: str | None
     autotrace_enabled: bool
     autotrace_interval_seconds: int
     autotrace_target_window_hours: int
@@ -48,6 +56,7 @@ class Settings:
             bind_port=int(values.get("MESHRADAR_BIND_PORT", "8000")),
             db_path=Path(values.get("MESHRADAR_DB_PATH", "./data/meshradar.db")),
             local_node_num=_optional_int(values.get("MESHRADAR_LOCAL_NODE_NUM")),
+            admin_bearer_token=_optional_stripped(values.get("MESHRADAR_ADMIN_BEARER_TOKEN")),
             autotrace_enabled=_optional_bool(values.get("MESHRADAR_AUTOTRACE_ENABLED")),
             autotrace_interval_seconds=int(values.get("MESHRADAR_AUTOTRACE_INTERVAL_SECONDS", "300")),
             autotrace_target_window_hours=int(values.get("MESHRADAR_AUTOTRACE_TARGET_WINDOW_HOURS", "24")),

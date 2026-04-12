@@ -6,17 +6,19 @@ import secrets
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+from starlette import status
 
 from meshradar.autotrace import AutoTracerouteConfig, AutoTracerouteService
 from meshradar.channels import LONGFAST_CHANNEL_NAME, is_primary_channel
 from meshradar.clock import utc_now_iso
 from meshradar.collector import CollectorCallbacks, CollectorStatus, MeshtasticReceiver
 from meshradar.config import Settings
-from meshradar.events import EventBroker
+from meshradar.events import EventBroker, EventSubscriptionOverflow, TooManySubscribers
 from meshradar.models import NodeRecord, PacketRecord
 from meshradar.public_api import (
     collector_status_payload,
@@ -92,6 +94,58 @@ def _perspective_payload(settings: Settings, repository: MeshRepository, collect
     }
 
 
+def _normalized_http_scheme(value: str) -> str:
+    normalized = value.strip().split(",", 1)[0].lower()
+    if normalized == "ws":
+        return "http"
+    if normalized == "wss":
+        return "https"
+    return normalized
+
+
+def _default_port_for_scheme(scheme: str) -> int | None:
+    if scheme == "http":
+        return 80
+    if scheme == "https":
+        return 443
+    return None
+
+
+def _websocket_origin_allowed(websocket: WebSocket) -> bool:
+    origin = websocket.headers.get("origin")
+    host = websocket.headers.get("host")
+    if not origin or not host:
+        return False
+
+    expected_scheme = _normalized_http_scheme(websocket.headers.get("x-forwarded-proto") or websocket.url.scheme)
+    if expected_scheme not in {"http", "https"}:
+        return False
+
+    try:
+        parsed_origin = urlsplit(origin)
+        parsed_host = urlsplit(f"//{host}")
+    except ValueError:
+        return False
+
+    if parsed_origin.scheme.lower() != expected_scheme:
+        return False
+    if parsed_origin.hostname is None or parsed_host.hostname is None:
+        return False
+
+    default_port = _default_port_for_scheme(expected_scheme)
+    return (
+        parsed_origin.hostname.lower() == parsed_host.hostname.lower()
+        and (parsed_origin.port or default_port) == (parsed_host.port or default_port)
+    )
+
+
+async def _close_websocket(websocket: WebSocket, *, code: int) -> None:
+    try:
+        await websocket.close(code=code)
+    except (RuntimeError, WebSocketDisconnect):
+        return
+
+
 def create_app(
     settings: Settings,
     *,
@@ -103,7 +157,10 @@ def create_app(
     start_autotrace_service: bool = True,
 ) -> FastAPI:
     repository = repository or MeshRepository(settings.db_path)
-    event_broker = event_broker or EventBroker()
+    event_broker = event_broker or EventBroker(
+        max_connections=settings.ws_max_connections,
+        queue_size=settings.ws_queue_size,
+    )
 
     def handle_packet(packet: dict[str, Any]) -> None:
         if not _is_longfast_packet(packet):
@@ -314,12 +371,28 @@ def create_app(
 
     @public_router.websocket("/ws/events")
     async def websocket_events(websocket: WebSocket) -> None:
-        await websocket.accept()
+        if not _websocket_origin_allowed(websocket):
+            await _close_websocket(websocket, code=status.WS_1008_POLICY_VIOLATION)
+            return
+
         try:
-            async with event_broker.subscription() as queue:
+            async with event_broker.subscription() as subscription:
+                await websocket.accept()
                 while True:
-                    event = await queue.get()
-                    await websocket.send_text(json.dumps(event))
+                    event = await subscription.get()
+                    await asyncio.wait_for(
+                        websocket.send_text(json.dumps(event)),
+                        timeout=settings.ws_send_timeout_seconds,
+                    )
+        except TooManySubscribers:
+            await _close_websocket(websocket, code=status.WS_1013_TRY_AGAIN_LATER)
+            return
+        except EventSubscriptionOverflow:
+            await _close_websocket(websocket, code=status.WS_1013_TRY_AGAIN_LATER)
+            return
+        except TimeoutError:
+            await _close_websocket(websocket, code=status.WS_1013_TRY_AGAIN_LATER)
+            return
         except WebSocketDisconnect:
             return
 

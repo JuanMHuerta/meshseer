@@ -62,6 +62,11 @@ const NODE_MIN_OPACITY = 0.14;
 const ROUTE_MAX_OPACITY = 0.55;
 const ROUTE_MIN_OPACITY = 0.08;
 const CHAT_STICKY_THRESHOLD_PX = 16;
+const SOCKET_POLICY_CLOSE_CODE = 1008;
+const SOCKET_TRY_AGAIN_LATER_CLOSE_CODE = 1013;
+const SOCKET_FAST_RECONNECT_DELAY_MS = 1500;
+const SOCKET_BACKOFF_BASE_DELAY_MS = 1500;
+const SOCKET_BACKOFF_MAX_DELAY_MS = 30_000;
 
 const pulseTimers = new WeakMap();
 const inflightNodeDetails = new Set();
@@ -69,6 +74,8 @@ let decayRefreshTimerId = null;
 let chatStickToBottom = true;
 let chatPendingScrollBehavior = null;
 let chatLastMessageKey = null;
+let socketReconnectTimerId = null;
+let socketReconnectAttempts = 0;
 
 const state = {
   nodes: [],
@@ -1220,6 +1227,9 @@ function connectionStateTitle() {
   if (state.socketState === "reconnecting") {
     return "Reconnecting";
   }
+  if (state.socketState === "blocked") {
+    return "Blocked";
+  }
   if (state.collectorStatus && !state.collectorStatus.connected) {
     return "Offline";
   }
@@ -1258,6 +1268,10 @@ function connectionStateDetail() {
 
   if (state.socketState === "connecting") {
     return `Opening event stream. ${packetText}. ${updatedText}.`;
+  }
+
+  if (state.socketState === "blocked") {
+    return `Event stream blocked by server policy. ${packetText}. ${updatedText}.`;
   }
 
   if (state.socketState === "error") {
@@ -1300,6 +1314,32 @@ function setSocketState(nextState) {
   state.socketState = nextState;
   renderConnectionIndicator();
   refreshKpiTicker();
+}
+
+function clearSocketReconnectTimer() {
+  if (socketReconnectTimerId == null) {
+    return;
+  }
+  window.clearTimeout(socketReconnectTimerId);
+  socketReconnectTimerId = null;
+}
+
+function nextOverloadReconnectDelayMs() {
+  const exponent = Math.min(socketReconnectAttempts, 4);
+  const baseDelay = Math.min(
+    SOCKET_BACKOFF_MAX_DELAY_MS,
+    SOCKET_BACKOFF_BASE_DELAY_MS * (2 ** exponent),
+  );
+  const jitter = Math.round(baseDelay * (Math.random() * 0.4));
+  return Math.min(SOCKET_BACKOFF_MAX_DELAY_MS, baseDelay + jitter);
+}
+
+function scheduleSocketReconnect(delayMs) {
+  clearSocketReconnectTimer();
+  socketReconnectTimerId = window.setTimeout(() => {
+    socketReconnectTimerId = null;
+    connectEvents();
+  }, delayMs);
 }
 
 function setCollectorStatus(data) {
@@ -2604,11 +2644,13 @@ function recordRecentActivityPacket(packet) {
 }
 
 function connectEvents() {
+  clearSocketReconnectTimer();
   setSocketState("connecting");
   const protocol = window.location.protocol === "https:" ? "wss" : "ws";
   const socket = new WebSocket(`${protocol}://${window.location.host}/ws/events`);
 
   socket.addEventListener("open", () => {
+    socketReconnectAttempts = 0;
     setSocketState("live");
     if (!state.collectorStatus || !state.perspective) {
       void loadHealth().catch(() => {});
@@ -2657,9 +2699,22 @@ function connectEvents() {
     }
   });
 
-  socket.addEventListener("close", () => {
+  socket.addEventListener("close", (event) => {
+    if (event.code === SOCKET_POLICY_CLOSE_CODE) {
+      clearSocketReconnectTimer();
+      setSocketState("blocked");
+      return;
+    }
+
     setSocketState("reconnecting");
-    window.setTimeout(connectEvents, 1500);
+    if (event.code === SOCKET_TRY_AGAIN_LATER_CLOSE_CODE) {
+      socketReconnectAttempts += 1;
+      scheduleSocketReconnect(nextOverloadReconnectDelayMs());
+      return;
+    }
+
+    socketReconnectAttempts = 0;
+    scheduleSocketReconnect(SOCKET_FAST_RECONNECT_DELAY_MS);
   });
 
   socket.addEventListener("error", () => {

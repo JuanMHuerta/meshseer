@@ -15,6 +15,11 @@ def test_settings_defaults():
     assert settings.local_node_num is None
     assert settings.admin_bearer_token is None
     assert settings.autotrace_enabled is False
+    assert settings.ws_max_connections == 32
+    assert settings.ws_queue_size == 32
+    assert settings.ws_send_timeout_seconds == 5.0
+    assert settings.ws_ping_interval_seconds == 20.0
+    assert settings.ws_ping_timeout_seconds == 20.0
 
 
 def test_settings_override_from_env(tmp_path):
@@ -28,6 +33,11 @@ def test_settings_override_from_env(tmp_path):
             "MESHRADAR_LOCAL_NODE_NUM": "456",
             "MESHRADAR_ADMIN_BEARER_TOKEN": "  secret-token  ",
             "MESHRADAR_AUTOTRACE_ENABLED": "true",
+            "MESHRADAR_WS_MAX_CONNECTIONS": "12",
+            "MESHRADAR_WS_QUEUE_SIZE": "8",
+            "MESHRADAR_WS_SEND_TIMEOUT_SECONDS": "7.5",
+            "MESHRADAR_WS_PING_INTERVAL_SECONDS": "25",
+            "MESHRADAR_WS_PING_TIMEOUT_SECONDS": "15",
         }
     )
 
@@ -39,6 +49,11 @@ def test_settings_override_from_env(tmp_path):
     assert settings.local_node_num == 456
     assert settings.admin_bearer_token == "secret-token"
     assert settings.autotrace_enabled is True
+    assert settings.ws_max_connections == 12
+    assert settings.ws_queue_size == 8
+    assert settings.ws_send_timeout_seconds == 7.5
+    assert settings.ws_ping_interval_seconds == 25.0
+    assert settings.ws_ping_timeout_seconds == 15.0
 
 
 def test_load_env_file_sets_missing_values_without_overriding_existing_env(tmp_path, monkeypatch):

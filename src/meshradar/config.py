@@ -30,6 +30,20 @@ def _optional_bool(value: str | None, *, default: bool = False) -> bool:
     raise ValueError(f"invalid boolean value: {value}")
 
 
+def _positive_int(value: str | None, *, default: int, name: str) -> int:
+    parsed = default if value is None or value == "" else int(value)
+    if parsed < 1:
+        raise ValueError(f"{name} must be >= 1")
+    return parsed
+
+
+def _positive_float(value: str | None, *, default: float, name: str) -> float:
+    parsed = default if value is None or value == "" else float(value)
+    if parsed <= 0:
+        raise ValueError(f"{name} must be > 0")
+    return parsed
+
+
 @dataclass(frozen=True)
 class Settings:
     meshtastic_host: str
@@ -45,6 +59,11 @@ class Settings:
     autotrace_cooldown_hours: int
     autotrace_ack_only_cooldown_hours: int
     autotrace_response_timeout_seconds: int
+    ws_max_connections: int
+    ws_queue_size: int
+    ws_send_timeout_seconds: float
+    ws_ping_interval_seconds: float
+    ws_ping_timeout_seconds: float
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> "Settings":
@@ -66,5 +85,30 @@ class Settings:
             ),
             autotrace_response_timeout_seconds=int(
                 values.get("MESHRADAR_AUTOTRACE_RESPONSE_TIMEOUT_SECONDS", "20")
+            ),
+            ws_max_connections=_positive_int(
+                values.get("MESHRADAR_WS_MAX_CONNECTIONS"),
+                default=32,
+                name="MESHRADAR_WS_MAX_CONNECTIONS",
+            ),
+            ws_queue_size=_positive_int(
+                values.get("MESHRADAR_WS_QUEUE_SIZE"),
+                default=32,
+                name="MESHRADAR_WS_QUEUE_SIZE",
+            ),
+            ws_send_timeout_seconds=_positive_float(
+                values.get("MESHRADAR_WS_SEND_TIMEOUT_SECONDS"),
+                default=5.0,
+                name="MESHRADAR_WS_SEND_TIMEOUT_SECONDS",
+            ),
+            ws_ping_interval_seconds=_positive_float(
+                values.get("MESHRADAR_WS_PING_INTERVAL_SECONDS"),
+                default=20.0,
+                name="MESHRADAR_WS_PING_INTERVAL_SECONDS",
+            ),
+            ws_ping_timeout_seconds=_positive_float(
+                values.get("MESHRADAR_WS_PING_TIMEOUT_SECONDS"),
+                default=20.0,
+                name="MESHRADAR_WS_PING_TIMEOUT_SECONDS",
             ),
         )

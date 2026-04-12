@@ -21,4 +21,10 @@ app = build_app()
 
 def run() -> None:
     settings = Settings.from_env(os.environ)
-    uvicorn.run(app, host=settings.bind_host, port=settings.bind_port)
+    uvicorn.run(
+        app,
+        host=settings.bind_host,
+        port=settings.bind_port,
+        ws_ping_interval=settings.ws_ping_interval_seconds,
+        ws_ping_timeout=settings.ws_ping_timeout_seconds,
+    )

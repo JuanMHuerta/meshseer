@@ -3,7 +3,7 @@
 This document describes the production topology Meshradar now expects:
 
 - the dashboard is public and read-only
-- `/ws/events` is public
+- `/ws/events` is public but same-origin only
 - admin routes stay local to the origin machine
 - Cloudflare Tunnel exposes only the public dashboard surface
 
@@ -52,6 +52,7 @@ Important details:
 - Rule order matters. `cloudflared` evaluates ingress rules from top to bottom.
 - The final catch-all `http_status:404` rule is required.
 - The `path` field supports regular expressions; use it to block `/api/admin/*`, `/docs`, `/redoc`, and `/openapi.json` before requests ever reach Meshradar.
+- Preserve the public `Host` header and `X-Forwarded-Proto` so Meshradar can validate websocket origins correctly.
 - Validate the tunnel config before rollout:
 
 ```bash
@@ -67,6 +68,7 @@ Set the public hostname up as a normal proxied application with these expectatio
 
 - WebSockets must be enabled. Cloudflare supports proxied WebSocket connections, but the setting should still be confirmed in the dashboard.
 - Expect occasional WebSocket reconnects. Cloudflare documents that WebSocket connections can be terminated during network restarts, so the client must reconnect automatically.
+- Tune websocket limits with `MESHRADAR_WS_MAX_CONNECTIONS`, `MESHRADAR_WS_QUEUE_SIZE`, `MESHRADAR_WS_SEND_TIMEOUT_SECONDS`, `MESHRADAR_WS_PING_INTERVAL_SECONDS`, and `MESHRADAR_WS_PING_TIMEOUT_SECONDS` if your expected browser concurrency differs from the defaults.
 - Do not apply edge caching to the Meshradar hostname. The app is live telemetry, not cacheable static content.
 - Keep TLS on the public hostname. Cloudflare terminates TLS at the edge and forwards through the tunnel to the local HTTP origin.
 

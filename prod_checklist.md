@@ -6,7 +6,7 @@ Status: not ready for internet-reachable production in current form.
 
 - [x] Add authentication and authorization for all non-public routes. Non-public routes now live under `/api/admin/*`, require a bearer token, and are not mounted unless `MESHRADAR_ADMIN_BEARER_TOKEN` is set. Public dashboard routes and `/ws/events` remain intentionally anonymous. See [src/meshradar/app.py](/home/juan/dev/meshradar/src/meshradar/app.py:187) and [src/meshradar/config.py](/home/juan/dev/meshradar/src/meshradar/config.py:29).
 - [ ] Protect the Cloudflare Tunnel with Cloudflare Access default-deny. Do not expose this app as a public tunnel without identity enforcement.
-- [ ] Harden `/ws/events`. It currently accepts every connection and uses unbounded per-client queues, which creates a memory-exhaustion and connection-flooding risk. See [src/meshradar/app.py](/home/juan/dev/meshradar/src/meshradar/app.py:302) and [src/meshradar/events.py](/home/juan/dev/meshradar/src/meshradar/events.py:10).
+- [x] Harden `/ws/events`. It now enforces same-origin admission, caps concurrent subscribers, uses bounded per-client queues, and disconnects slow consumers instead of buffering without bound. See [src/meshradar/app.py](/home/juan/dev/meshradar/src/meshradar/app.py:348) and [src/meshradar/events.py](/home/juan/dev/meshradar/src/meshradar/events.py:11).
 
 ## Medium severity
 
@@ -16,7 +16,7 @@ Status: not ready for internet-reachable production in current form.
 - [ ] Change the bind default from `0.0.0.0` to `127.0.0.1` for a tunnel-based deployment. Current defaults expose the process on all interfaces. See [src/meshradar/config.py](/home/juan/dev/meshradar/src/meshradar/config.py:47) and [start.sh](/home/juan/dev/meshradar/start.sh:19).
 - [ ] Change autotrace defaults to off in committed templates. Both the repo `.env` and `.env.example` enable it today. See [.env.example](/home/juan/dev/meshradar/.env.example:1) and [.env](/home/juan/dev/meshradar/.env:1).
 - [ ] Add security response headers and a production CSP. Current responses do not set common headers such as `Content-Security-Policy`, `X-Content-Type-Options`, `Referrer-Policy`, or app-level cache policy.
-- [ ] Validate websocket origin and add connection limits, idle timeouts, and backpressure handling.
+- [x] Validate websocket origin and add connection limits, idle timeouts, and backpressure handling.
 - [ ] Add audit logging for auth decisions, websocket connects/disconnects, autotrace enable/disable events, and repeated failed access attempts. The codebase currently has almost no application logging. See [src/meshradar/startup.py](/home/juan/dev/meshradar/src/meshradar/startup.py:70).
 - [ ] Review third-party frontend asset loading. The page pulls fonts from Google Fonts and Leaflet CSS/JS from `unpkg`, which introduces external dependency and supply-chain availability risk for a locally hosted app. See [src/meshradar/static/index.html](/home/juan/dev/meshradar/src/meshradar/static/index.html:7).
 

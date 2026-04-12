@@ -1,8 +1,11 @@
 import base64
 from datetime import UTC, datetime
 
+import pytest
 from fastapi.testclient import TestClient
 from meshtastic.protobuf import mesh_pb2
+from starlette import status
+from starlette.websockets import WebSocketDisconnect
 
 from meshradar.app import create_app
 from meshradar.channels import BROADCAST_NODE_NUM
@@ -103,7 +106,11 @@ def admin_headers(token: str = ADMIN_TOKEN) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
 
-def build_app(tmp_path, *, admin_token: str | None = None):
+def websocket_headers(origin: str = "http://testserver") -> dict[str, str]:
+    return {"origin": origin}
+
+
+def build_app(tmp_path, *, admin_token: str | None = None, extra_env: dict[str, str] | None = None):
     repo = MeshRepository(tmp_path / "mesh.db")
     repo.insert_packet(
         PacketRecord(
@@ -189,6 +196,8 @@ def build_app(tmp_path, *, admin_token: str | None = None):
     }
     if admin_token is not None:
         env["MESHRADAR_ADMIN_BEARER_TOKEN"] = admin_token
+    if extra_env is not None:
+        env.update(extra_env)
     app = create_app(
         Settings.from_env(env),
         repository=repo,
@@ -1477,7 +1486,7 @@ def test_websocket_receives_events(tmp_path):
     app, _collector = build_app(tmp_path)
 
     with TestClient(app) as client:
-        with client.websocket_connect("/ws/events") as websocket:
+        with client.websocket_connect("/ws/events", headers=websocket_headers()) as websocket:
             client.app.state.event_broker.publish(
                 {
                     "type": "packet_received",
@@ -1505,7 +1514,7 @@ def test_default_collector_callbacks_persist_and_broadcast(tmp_path):
 
     with TestClient(app) as client:
         collector = client.app.state.collector
-        with client.websocket_connect("/ws/events") as websocket:
+        with client.websocket_connect("/ws/events", headers=websocket_headers()) as websocket:
             collector.callbacks.on_packet(
                 {
                     "mesh_packet_id": 23,
@@ -1611,6 +1620,50 @@ def test_default_collector_callbacks_persist_and_broadcast(tmp_path):
     assert "raw_json" not in chat.json()[0]
     assert missing_packet.status_code == 404
     assert missing_node.status_code == 404
+
+
+def test_websocket_rejects_missing_origin(tmp_path):
+    app, _collector = build_app(tmp_path)
+
+    with TestClient(app) as client:
+        with pytest.raises(WebSocketDisconnect) as excinfo:
+            with client.websocket_connect("/ws/events"):
+                pass
+
+    assert excinfo.value.code == status.WS_1008_POLICY_VIOLATION
+
+
+def test_websocket_rejects_cross_origin(tmp_path):
+    app, _collector = build_app(tmp_path)
+
+    with TestClient(app) as client:
+        with pytest.raises(WebSocketDisconnect) as excinfo:
+            with client.websocket_connect("/ws/events", headers=websocket_headers("https://evil.example")):
+                pass
+
+    assert excinfo.value.code == status.WS_1008_POLICY_VIOLATION
+
+
+def test_websocket_rejects_connections_over_capacity(tmp_path):
+    app, _collector = build_app(tmp_path, extra_env={"MESHRADAR_WS_MAX_CONNECTIONS": "1"})
+
+    with TestClient(app) as client:
+        with client.websocket_connect("/ws/events", headers=websocket_headers()) as websocket:
+            with pytest.raises(WebSocketDisconnect) as excinfo:
+                with client.websocket_connect("/ws/events", headers=websocket_headers()):
+                    pass
+
+            client.app.state.event_broker.publish(
+                {
+                    "type": "packet_received",
+                    "ts": "2026-03-30T12:00:00Z",
+                    "data": {"mesh_packet_id": 17},
+                }
+            )
+            message = websocket.receive_json()
+
+    assert excinfo.value.code == status.WS_1013_TRY_AGAIN_LATER
+    assert message["data"]["mesh_packet_id"] == 17
 
 
 def test_lifespan_starts_and_stops_collector(tmp_path):

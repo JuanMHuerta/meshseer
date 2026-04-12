@@ -10,10 +10,9 @@ def test_run_uses_uvicorn_with_env(monkeypatch):
     main = importlib.reload(main)
     called = {}
 
-    def fake_run(app, host, port):
+    def fake_run(app, **kwargs):
         called["app"] = app
-        called["host"] = host
-        called["port"] = port
+        called.update(kwargs)
 
     monkeypatch.setattr(main.uvicorn, "run", fake_run)
 
@@ -24,4 +23,5 @@ def test_run_uses_uvicorn_with_env(monkeypatch):
     assert called["app"] is main.app
     assert called["host"] == "127.0.0.1"
     assert called["port"] == 9100
-
+    assert called["ws_ping_interval"] == 20.0
+    assert called["ws_ping_timeout"] == 20.0

@@ -14,6 +14,16 @@ Meshradar treats the receiver's primary channel as LongFast and filters packets 
 
 Run the server with `./start.sh`. Meshradar loads `.env` on startup if it exists, so local defaults can live there. Use `.env.example` as the committed template, or override bind host, port, database path, Meshtastic host, local node, and autotrace settings with the corresponding `MESHRADAR_*` environment variables before starting it.
 
+Websocket tuning knobs for `/ws/events`:
+
+- `MESHRADAR_WS_MAX_CONNECTIONS=32`
+- `MESHRADAR_WS_QUEUE_SIZE=32`
+- `MESHRADAR_WS_SEND_TIMEOUT_SECONDS=5`
+- `MESHRADAR_WS_PING_INTERVAL_SECONDS=20`
+- `MESHRADAR_WS_PING_TIMEOUT_SECONDS=20`
+
+`/ws/events` now accepts only same-origin browser connections. Requests without an `Origin` header, or with a mismatched origin, are rejected.
+
 ## Headless Preview
 
 For a browser-renderable demo without live radio hardware:

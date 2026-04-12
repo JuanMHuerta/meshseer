@@ -11,6 +11,7 @@ This document describes the production topology Meshradar now expects:
 
 Run Meshradar only on loopback:
 
+- `MESHRADAR_ENV=production`
 - `MESHRADAR_BIND_HOST=127.0.0.1`
 - `MESHRADAR_BIND_PORT=8000`
 - `MESHRADAR_ADMIN_BEARER_TOKEN=<long-random-secret>`
@@ -18,6 +19,7 @@ Run Meshradar only on loopback:
 Operational rules:
 
 - Keep the app reachable only from localhost. Do not bind Meshradar directly to a public interface.
+- Production mode disables FastAPI's `/docs`, `/redoc`, and `/openapi.json` routes in the origin app. Keep the Cloudflare path blocks anyway as defense in depth.
 - Keep normal inbound firewall policy closed. Cloudflare Tunnel uses outbound connections; the Cloudflare docs recommend blocking unsolicited ingress for a positive security model.
 - Use the bearer token only for local admin calls such as `curl` on the machine or over SSH port-forwarding. Do not place this token in browser code, Cloudflare headers, or public tunnel config.
 
@@ -98,7 +100,7 @@ If `MESHRADAR_ADMIN_BEARER_TOKEN` is unset, Meshradar does not mount the admin A
 Before exposing the public hostname:
 
 1. Confirm `curl https://mesh.example.com/api/admin/health` returns Cloudflare’s `404` response.
-2. Confirm `curl https://mesh.example.com/docs` and `/openapi.json` return `404`.
+2. Confirm `curl https://mesh.example.com/docs`, `/redoc`, and `/openapi.json` return `404`.
 3. Confirm `curl https://mesh.example.com/api/health` succeeds and does not reveal the database path.
 4. Confirm the browser can load the dashboard and sustain websocket reconnects across a `cloudflared` restart.
 5. Confirm local admin works only with the configured bearer token.

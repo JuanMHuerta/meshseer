@@ -156,6 +156,10 @@ def create_app(
     start_collector: bool = True,
     start_autotrace_service: bool = True,
 ) -> FastAPI:
+    docs_url = None if settings.is_production else "/docs"
+    redoc_url = None if settings.is_production else "/redoc"
+    openapi_url = None if settings.is_production else "/openapi.json"
+
     repository = repository or MeshRepository(settings.db_path)
     event_broker = event_broker or EventBroker(
         max_connections=settings.ws_max_connections,
@@ -246,7 +250,13 @@ def create_app(
                 collector.stop()
                 app.state.collector_started = False
 
-    app = FastAPI(title="Meshradar", lifespan=lifespan)
+    app = FastAPI(
+        title="Meshradar",
+        lifespan=lifespan,
+        docs_url=docs_url,
+        redoc_url=redoc_url,
+        openapi_url=openapi_url,
+    )
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
     app.state.settings = settings
     app.state.repository = repository

@@ -1,5 +1,7 @@
 import os
 
+import pytest
+
 from meshradar.config import Settings
 from meshradar.env import load_env_file
 
@@ -7,6 +9,7 @@ from meshradar.env import load_env_file
 def test_settings_defaults():
     settings = Settings.from_env({})
 
+    assert settings.environment == "development"
     assert settings.meshtastic_host == "10.10.99.253"
     assert settings.meshtastic_port == 4403
     assert settings.bind_host == "0.0.0.0"
@@ -20,11 +23,13 @@ def test_settings_defaults():
     assert settings.ws_send_timeout_seconds == 5.0
     assert settings.ws_ping_interval_seconds == 20.0
     assert settings.ws_ping_timeout_seconds == 20.0
+    assert settings.is_production is False
 
 
 def test_settings_override_from_env(tmp_path):
     settings = Settings.from_env(
         {
+            "MESHRADAR_ENV": "prod",
             "MESHRADAR_MESHTASTIC_HOST": "192.168.1.20",
             "MESHRADAR_MESHTASTIC_PORT": "1234",
             "MESHRADAR_BIND_HOST": "127.0.0.1",
@@ -41,6 +46,7 @@ def test_settings_override_from_env(tmp_path):
         }
     )
 
+    assert settings.environment == "production"
     assert settings.meshtastic_host == "192.168.1.20"
     assert settings.meshtastic_port == 1234
     assert settings.bind_host == "127.0.0.1"
@@ -54,6 +60,27 @@ def test_settings_override_from_env(tmp_path):
     assert settings.ws_send_timeout_seconds == 7.5
     assert settings.ws_ping_interval_seconds == 25.0
     assert settings.ws_ping_timeout_seconds == 15.0
+    assert settings.is_production is True
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("dev", "development"),
+        ("development", "development"),
+        ("prod", "production"),
+        ("production", "production"),
+    ],
+)
+def test_settings_environment_aliases(value, expected):
+    settings = Settings.from_env({"MESHRADAR_ENV": value})
+
+    assert settings.environment == expected
+
+
+def test_settings_invalid_environment_raises():
+    with pytest.raises(ValueError, match="MESHRADAR_ENV must be one of"):
+        Settings.from_env({"MESHRADAR_ENV": "staging"})
 
 
 def test_load_env_file_sets_missing_values_without_overriding_existing_env(tmp_path, monkeypatch):

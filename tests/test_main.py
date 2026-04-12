@@ -20,8 +20,24 @@ def test_run_uses_uvicorn_with_env(monkeypatch):
     main.run()
 
     assert built_app.title == "Meshradar"
+    assert built_app.docs_url == "/docs"
+    assert built_app.redoc_url == "/redoc"
+    assert built_app.openapi_url == "/openapi.json"
     assert called["app"] is main.app
     assert called["host"] == "127.0.0.1"
     assert called["port"] == 9100
     assert called["ws_ping_interval"] == 20.0
     assert called["ws_ping_timeout"] == 20.0
+
+
+def test_build_app_disables_docs_in_production(monkeypatch):
+    monkeypatch.setenv("MESHRADAR_ENV", "production")
+
+    import meshradar.main as main
+
+    main = importlib.reload(main)
+    built_app = main.build_app()
+
+    assert built_app.docs_url is None
+    assert built_app.redoc_url is None
+    assert built_app.openapi_url is None

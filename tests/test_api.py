@@ -248,6 +248,34 @@ def test_api_routes_and_filters(tmp_path):
     assert "Meshradar" in index.text
 
 
+def test_docs_routes_are_hidden_in_production(tmp_path):
+    development_path = tmp_path / "development"
+    production_path = tmp_path / "production"
+    development_path.mkdir()
+    production_path.mkdir()
+
+    development_app, _collector = build_app(development_path)
+    production_app, _collector = build_app(
+        production_path,
+        extra_env={"MESHRADAR_ENV": "production"},
+    )
+
+    with TestClient(development_app) as client:
+        docs = client.get("/docs")
+        redoc = client.get("/redoc")
+        openapi = client.get("/openapi.json")
+
+    assert docs.status_code == 200
+    assert redoc.status_code == 200
+    assert openapi.status_code == 200
+    assert openapi.json()["info"]["title"] == "Meshradar"
+
+    with TestClient(production_app) as client:
+        assert client.get("/docs").status_code == 404
+        assert client.get("/redoc").status_code == 404
+        assert client.get("/openapi.json").status_code == 404
+
+
 def test_nodes_roster_exposes_supported_filter_metadata(tmp_path, monkeypatch):
     monkeypatch.setattr(
         "meshradar.storage.utc_now",

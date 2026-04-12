@@ -13,6 +13,7 @@ Set `MESHRADAR_LOCAL_NODE_NUM` if you want the UI and API to identify which node
 Meshradar treats the receiver's primary channel as LongFast and filters packets and nodes to that scope.
 
 Run the server with `./start.sh`. Meshradar loads `.env` on startup if it exists, so local defaults can live there. Use `.env.example` as the committed template, or override bind host, port, database path, Meshtastic host, local node, and autotrace settings with the corresponding `MESHRADAR_*` environment variables before starting it.
+`MESHRADAR_ENV` defaults to `development`. Set `MESHRADAR_ENV=production` on deployed instances to disable `/docs`, `/redoc`, and `/openapi.json` inside the app.
 
 Websocket tuning knobs for `/ws/events`:
 

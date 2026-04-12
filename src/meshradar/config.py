@@ -44,8 +44,21 @@ def _positive_float(value: str | None, *, default: float, name: str) -> float:
     return parsed
 
 
+def _environment(value: str | None) -> str:
+    if value is None or value == "":
+        return "development"
+
+    normalized = value.strip().lower()
+    if normalized in {"development", "dev"}:
+        return "development"
+    if normalized in {"production", "prod"}:
+        return "production"
+    raise ValueError("MESHRADAR_ENV must be one of: development, dev, production, prod")
+
+
 @dataclass(frozen=True)
 class Settings:
+    environment: str
     meshtastic_host: str
     meshtastic_port: int
     bind_host: str
@@ -65,10 +78,15 @@ class Settings:
     ws_ping_interval_seconds: float
     ws_ping_timeout_seconds: float
 
+    @property
+    def is_production(self) -> bool:
+        return self.environment == "production"
+
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> "Settings":
         values = os.environ if env is None else env
         return cls(
+            environment=_environment(values.get("MESHRADAR_ENV")),
             meshtastic_host=values.get("MESHRADAR_MESHTASTIC_HOST", "10.10.99.253"),
             meshtastic_port=int(values.get("MESHRADAR_MESHTASTIC_PORT", "4403")),
             bind_host=values.get("MESHRADAR_BIND_HOST", "0.0.0.0"),

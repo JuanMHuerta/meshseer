@@ -22,6 +22,7 @@
   --amber: #e8a94d;
   --amber-soft: rgba(232, 169, 77, 0.14);
   --amber-glow: rgba(232, 169, 77, 0.35);
+  --label-color: #e8dcc8;
   --blue: #87aad8;
   --blue-soft: rgba(135, 170, 216, 0.14);
   --red: #ff8181;
@@ -32,6 +33,7 @@
   --radius-lg: 18px;
   --radius-md: 14px;
   --radius-sm: 10px;
+  --radius-xs: 12px;
   --glass-bg: rgba(7, 15, 20, 0.76);
   --glass-border: rgba(127, 161, 163, 0.18);
   --glass-blur: blur(20px) saturate(1.5);
@@ -200,12 +202,12 @@ h3 {
   gap: 12px;
   height: var(--header-h);
   padding: 0 12px 0 16px;
-  border-bottom: 1px solid rgba(127, 161, 163, 0.12);
+  border-bottom: 1px solid var(--line);
   background:
     linear-gradient(180deg, rgba(9, 21, 27, 0.82), rgba(7, 15, 20, 0.68)),
     rgba(7, 15, 20, 0.56);
-  backdrop-filter: blur(18px) saturate(1.35);
-  -webkit-backdrop-filter: blur(18px) saturate(1.35);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
 }
 
 .command-strip-brand {
@@ -464,7 +466,7 @@ h3 {
 
 .leaflet-control-zoom {
   border: 1px solid var(--line) !important;
-  border-radius: var(--radius-lg) !important;
+  border-radius: var(--radius-md) !important;
   overflow: hidden;
   box-shadow: var(--shadow-md) !important;
   margin-bottom: 56px !important;
@@ -594,8 +596,12 @@ h3 {
   min-width: 160px;
   max-width: min(200px, calc(100% - 24px));
   padding: 8px 10px;
-  border-radius: 12px;
-  background: rgba(8, 17, 22, 0.78);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-md);
+  background: var(--glass-bg);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
+  box-shadow: var(--drawer-shadow);
 }
 
 .map-legend-items {
@@ -686,7 +692,7 @@ h3 {
 .node-marker-shell {
   display: grid;
   place-items: center;
-  filter: drop-shadow(0 0 6px rgba(232, 169, 77, 0.4)) drop-shadow(0 0 16px rgba(232, 169, 77, 0.16));
+  filter: drop-shadow(0 0 4px rgba(232, 169, 77, 0.25)) drop-shadow(0 0 10px rgba(232, 169, 77, 0.08));
 }
 
 .node-marker-label {
@@ -779,7 +785,7 @@ h3 {
   height: 38px;
   padding: 0;
   border: 1px solid transparent;
-  border-radius: 12px;
+  border-radius: var(--radius-xs);
   background: transparent;
   color: var(--ink-soft);
   transition: background 160ms ease, border-color 160ms ease, color 160ms ease;
@@ -900,7 +906,7 @@ h3 {
   min-height: 26px;
   padding: 4px 8px;
   border-radius: 999px;
-  border: 1px solid rgba(112, 146, 153, 0.14);
+  border: 1px solid var(--line);
   background: rgba(16, 34, 41, 0.86);
   color: var(--ink-soft);
   font-size: 0.66rem;
@@ -1800,7 +1806,7 @@ h3 {
 .hud-metric {
   padding: 10px;
   border: 1px solid var(--line);
-  border-radius: 12px;
+  border-radius: var(--radius-xs);
   background: rgba(14, 29, 35, 0.72);
 }
 
@@ -1897,7 +1903,7 @@ h3 {
   transform: translateY(calc(100% + 4px));
   opacity: 0;
   pointer-events: none;
-  transition: transform 280ms cubic-bezier(0.32, 0, 0.16, 1), opacity 220ms ease;
+  transition: transform var(--transition), opacity var(--transition);
 }
 
 .bottom-drawer[aria-hidden="false"] {
@@ -1968,7 +1974,7 @@ thead th {
 
 tbody td {
   padding: 10px 12px;
-  border-top: 1px solid rgba(127, 171, 164, 0.09);
+  border-top: 1px solid var(--line);
   font-size: 0.86rem;
   vertical-align: top;
 }

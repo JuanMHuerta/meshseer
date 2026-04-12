@@ -66,8 +66,8 @@ const MAX_ACTIVITY_PACKETS = 500;
 const KPI_STALE_WINDOW_MINUTES = 10;
 const NODE_MAX_OPACITY = 0.94;
 const NODE_MIN_OPACITY = 0.14;
-const ROUTE_MAX_OPACITY = 0.82;
-const ROUTE_MIN_OPACITY = 0.12;
+const ROUTE_MAX_OPACITY = 0.55;
+const ROUTE_MIN_OPACITY = 0.08;
 
 const pulseTimers = new WeakMap();
 const inflightNodeDetails = new Set();
@@ -682,17 +682,21 @@ function activeMeshRoutes(nowMs = Date.now()) {
   });
 }
 
-function routeStyle(route, nowMs = Date.now()) {
+function routeStyle(route, ctx) {
+  const nowMs = ctx.nowMs;
+  const neighborhood = ctx.neighborhood;
   const isSelected = routeSelected(route);
   const routeAge = routeAgeMinutes(route, nowMs);
   const ageRatio = routeAge == null
     ? 1
     : clamp(routeAge / (isSelected ? SELECTED_ROUTE_WINDOW_MINUTES : NETWORK_ROUTE_WINDOW_MINUTES), 0, 1);
   const baseWeight = clamp(1.8 + ((intValue(route.count) - 1) * 0.4), 1.8, 4.2);
+  const dimmedRoute = neighborhood != null && !isSelected;
+  const baseOpacity = interpolate(ROUTE_MAX_OPACITY, ROUTE_MIN_OPACITY, ageRatio);
   return {
     color: isSelected ? "#fff3db" : "#e8a94d",
     weight: isSelected ? Math.min(baseWeight + 1.0, 5.2) : baseWeight,
-    opacity: isSelected ? 0.98 : interpolate(0.92, 0.24, ageRatio),
+    opacity: isSelected ? 0.98 : (dimmedRoute ? Math.min(baseOpacity * 0.15, 0.06) : baseOpacity),
     dashArray: route.direction === "return" ? "12 10" : null,
     lineCap: "round",
     lineJoin: "round",
@@ -1732,6 +1736,53 @@ function nodeType(node) {
   return "client";
 }
 
+function computeRouteDegreeMap(routes) {
+  const degreeMap = new Map();
+  for (const route of routes) {
+    for (const nodeNum of route.path_node_nums) {
+      degreeMap.set(nodeNum, (degreeMap.get(nodeNum) || 0) + 1);
+    }
+  }
+  return degreeMap;
+}
+
+function nodeSignificance(node, degreeMap) {
+  let score = 0;
+  const type = nodeType(node);
+  if (type === "gateway") score += 3;
+  else if (type === "router") score += 2;
+  else if (type === "mobile") score += 0.5;
+  score += clamp(nodeActivityCount(node) / 3, 0, 4);
+  const degree = degreeMap.get(node.node_num) || 0;
+  score += clamp(degree / 4, 0, 3);
+  if (isDirectNode(node)) score += 1;
+  return clamp(score / 11, 0, 1);
+}
+
+function isImportantNode(node) {
+  if (node.node_num === state.selectedNodeNum) return true;
+  const type = nodeType(node);
+  if (type === "gateway" || type === "router") return true;
+  if (nodeActivityCount(node) >= 4) return true;
+  return false;
+}
+
+function selectedNeighborhood(routes) {
+  if (state.selectedNodeNum == null) {
+    return null;
+  }
+  const neighborSet = new Set();
+  neighborSet.add(state.selectedNodeNum);
+  for (const route of routes) {
+    if (route.path_node_nums.includes(state.selectedNodeNum)) {
+      for (const nodeNum of route.path_node_nums) {
+        neighborSet.add(nodeNum);
+      }
+    }
+  }
+  return neighborSet;
+}
+
 function renderMapNotes() {
   if (!state.showRoutes) {
     mapNote.hidden = false;
@@ -1945,10 +1996,16 @@ function ensureMap() {
   });
 
   L.control.zoom({ position: "bottomright" }).addTo(map);
-  L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png", {
+  L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}{r}.png", {
     subdomains: "abcd",
     maxZoom: 20,
     attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; CARTO',
+  }).addTo(map);
+  L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_only_labels/{z}/{x}/{y}{r}.png", {
+    subdomains: "abcd",
+    maxZoom: 20,
+    opacity: 0.4,
+    pane: "overlayPane",
   }).addTo(map);
 
   const routePane = map.createPane("mesh-routes");
@@ -1975,18 +2032,23 @@ function ensureMap() {
   return map;
 }
 
-function markerStyle(node, nowMs = Date.now()) {
+function markerStyle(node, ctx) {
+  const nowMs = ctx.nowMs;
+  const neighborhood = ctx.neighborhood;
+  const degreeMap = ctx.degreeMap;
   const isSelected = node.node_num === state.selectedNodeNum;
   const active = nodeIsWindowActive(node, nowMs);
   const direct = isDirectNode(node);
   const type = nodeType(node);
-  const activityRatio = clamp(nodeActivityCount(node) / 6, 0, 1);
+  const significance = degreeMap ? nodeSignificance(node, degreeMap) : clamp(nodeActivityCount(node) / 6, 0, 1);
   const size = Math.round(
-    interpolate(18, 28, activityRatio)
+    interpolate(14, 32, significance)
     + (active ? 2 : 0)
     + (isSelected ? 4 : 0)
   );
-  const opacity = clamp(nodeSignalOpacity(node, nowMs) + (active ? 0.08 : 0), NODE_MIN_OPACITY, 0.98);
+  const baseOpacity = clamp(nodeSignalOpacity(node, nowMs) + (active ? 0.08 : 0), NODE_MIN_OPACITY, 0.98);
+  const dimmed = neighborhood != null && !neighborhood.has(node.node_num);
+  const opacity = dimmed ? clamp(baseOpacity * 0.25, 0.06, 0.20) : baseOpacity;
   return {
     size,
     opacity,
@@ -1996,8 +2058,8 @@ function markerStyle(node, nowMs = Date.now()) {
     borderColor: isSelected ? "#fff3db" : (direct ? "#f5b862" : "#c49455"),
     borderWidth: isSelected ? 3.1 : (direct ? 2.2 : 1.8),
     haloColor: isSelected ? "rgba(255, 243, 219, 0.35)" : (active ? "rgba(232, 169, 77, 0.35)" : "rgba(232, 169, 77, 0.18)"),
-    haloOpacity: isSelected || active ? 1 : 0.7,
-    fillOpacity: active ? 0.9 : 0.78,
+    haloOpacity: dimmed ? 0.15 : (isSelected || active ? 1 : 0.7),
+    fillOpacity: dimmed ? 0.3 : (active ? 0.9 : 0.78),
   };
 }
 
@@ -2005,13 +2067,25 @@ function nodeGlyphMarkup(_type, _color) {
   return "";
 }
 
-function markerIcon(node, nowMs = Date.now()) {
-  const style = markerStyle(node, nowMs);
+function markerIcon(node, ctx) {
+  const style = markerStyle(node, ctx);
   const size = style.size;
-  const showLabel = size >= 22 && node.short_name;
+  const zoom = ctx.zoom;
+  const neighborhood = ctx.neighborhood;
+  const inNeighborhood = neighborhood != null && neighborhood.has(node.node_num);
+
+  let showLabel;
+  if (zoom <= 10) {
+    showLabel = false;
+  } else if (zoom <= 13) {
+    showLabel = (isImportantNode(node) || inNeighborhood) && !!node.short_name;
+  } else {
+    showLabel = size >= 16 && !!node.short_name;
+  }
+
   const labelHeight = showLabel ? 12 : 0;
   const labelHtml = showLabel
-    ? `<span class="node-marker-label" style="color:#e8a94d">${escapeHtml(node.short_name)}</span>`
+    ? `<span class="node-marker-label" style="color:#e8dcc8">${escapeHtml(node.short_name)}</span>`
     : "";
   return L.divIcon({
     className: "",
@@ -2180,6 +2254,11 @@ function renderMap(items) {
     return;
   }
 
+  const neighborhood = selectedNeighborhood(routes);
+  const degreeMap = computeRouteDegreeMap(routes);
+  const zoom = map.getZoom();
+  const ctx = { nowMs, neighborhood, degreeMap, zoom };
+
   state.remoteNodeNums = new Set();
   mapEmpty.textContent = "Waiting for LongFast node locations.";
   mapEmpty.hidden = true;
@@ -2192,13 +2271,13 @@ function renderMap(items) {
     .map((route) => [route, routeLatLngs(route, nowMs)])
     .filter((entry) => entry[1] !== null)
     .forEach(([route, latLngs]) => {
-      const style = routeStyle(route, nowMs);
+      const style = routeStyle(route, ctx);
       const glowLine = L.polyline(
         latLngs,
         {
           color: style.color,
           weight: style.weight + 3,
-          opacity: Math.min(style.opacity * 0.18, 0.15),
+          opacity: Math.min(style.opacity * 0.10, 0.08),
           lineCap: "round",
           lineJoin: "round",
           pane: "mesh-routes",
@@ -2218,7 +2297,7 @@ function renderMap(items) {
 
   mappedNodes.forEach((node) => {
     const marker = L.marker([node.latitude, node.longitude], {
-      icon: markerIcon(node, nowMs),
+      icon: markerIcon(node, ctx),
       keyboard: false,
       zIndexOffset: node.node_num === state.selectedNodeNum ? 1200 : (nodeIsWindowActive(node, nowMs) ? 120 : 0),
     });

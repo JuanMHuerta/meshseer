@@ -2919,6 +2919,22 @@ railToggleTraffic?.addEventListener("click", () => {
   setTrafficDrawerOpen(!state.trafficDrawerOpen);
 });
 
+/* Drawer close buttons (mobile) */
+document.querySelectorAll(".drawer-close").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    const drawer = btn.dataset.drawer;
+    if (drawer === "rail") setNodeRailOpen(false);
+    else if (drawer === "traffic") setTrafficDrawerOpen(false);
+    else if (drawer === "inspector") {
+      state.selectedNodeNum = null;
+      renderNodeDetail(null);
+      renderNodeList();
+      renderMap(state.nodes);
+      setInspectorOpen(false);
+    }
+  });
+});
+
 /* Search toggle removed — search bar always visible (N-02) */
 
 closeInspectorBtn?.addEventListener("click", () => {

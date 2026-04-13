@@ -137,6 +137,7 @@
             <div class="rail-panel-head">
               <h2>Nodes</h2>
               <span class="rail-panel-subtitle mono-text" id="nodes-panel-count">0 heard · 0 active</span>
+              <button type="button" class="drawer-close" data-drawer="rail" aria-label="Close panel">&#x2715;</button>
             </div>
 
             <div class="node-search-bar">
@@ -173,6 +174,7 @@
             <div class="rail-panel-head">
               <h2>Signals</h2>
               <span class="rail-panel-subtitle mono-text" id="intel-panel-count">0 total packets</span>
+              <button type="button" class="drawer-close" data-drawer="rail" aria-label="Close panel">&#x2715;</button>
             </div>
             <div class="intel-grid" id="intel-grid"></div>
             <div class="intel-story" id="intel-story"></div>
@@ -182,6 +184,7 @@
             <div class="rail-panel-head">
               <h2>Chat</h2>
               <span class="rail-panel-subtitle mono-text">Broadcast</span>
+              <button type="button" class="drawer-close" data-drawer="rail" aria-label="Close panel">&#x2715;</button>
             </div>
             <div class="chat-feed" id="chat-feed"></div>
           </section>
@@ -189,6 +192,7 @@
 
         <!-- INSPECTOR: right-side panel, shown when a node is selected -->
         <aside class="inspector-shell" id="inspector-panel">
+          <button type="button" class="drawer-close" data-drawer="inspector" aria-label="Close panel">&#x2715;</button>
           <div class="inspector-head">
             <div>
               <p class="panel-kicker">Node Detail</p>
@@ -213,6 +217,7 @@
                 <button type="button" class="filter-chip" data-filter="telemetry">Telemetry</button>
                 <button type="button" class="filter-chip" data-filter="other">Other</button>
               </div>
+              <button type="button" class="drawer-close" data-drawer="traffic" aria-label="Close panel">&#x2715;</button>
             </div>
           </div>
 

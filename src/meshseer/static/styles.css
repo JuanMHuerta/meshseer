@@ -2010,14 +2010,14 @@ h3 {
 .bottom-drawer .panel-head {
   display: flex;
   justify-content: space-between;
-  align-items: flex-start;
+  align-items: center;
   gap: 14px;
   padding: 0;
 }
 
 .traffic-tools {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: flex-end;
   gap: 10px;
   flex-wrap: wrap;
@@ -2273,6 +2273,11 @@ tbody tr:hover td {
   }
 }
 
+/* Drawer close button — hidden on desktop, visible on mobile */
+.drawer-close {
+  display: none;
+}
+
 @media (max-width: 760px) {
   :root {
     --header-h: 40px;
@@ -2296,9 +2301,14 @@ tbody tr:hover td {
     right: auto;
   }
 
-  .command-icon-btn {
+  .node-rail[data-state="collapsed"] .rail-strip {
     width: 44px;
-    height: 44px;
+    min-width: 44px;
+  }
+
+  .command-icon-btn {
+    width: 32px;
+    height: 32px;
     touch-action: manipulation;
   }
 
@@ -2342,6 +2352,35 @@ tbody tr:hover td {
 
   .map-overlay-tools {
     right: 8px;
+  }
+
+  .drawer-close {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    width: 36px;
+    height: 36px;
+    border: none;
+    border-radius: 7px;
+    background: transparent;
+    color: var(--text-secondary);
+    font-size: 16px;
+    touch-action: manipulation;
+  }
+
+
+  .ops-panel .rail-panel-head {
+    flex-direction: row;
+    align-items: center;
+  }
+
+  .node-rail[data-state="expanded"] .rail-strip {
+    display: none;
+  }
+
+  .node-rail[data-state="expanded"] .rail-panel {
+    padding-left: 12px;
   }
 }
 

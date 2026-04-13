@@ -1,0 +1,20 @@
+[Unit]
+Description=Meshseer FastAPI service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=meshseer
+Group=meshseer
+WorkingDirectory=/opt/meshseer/app
+EnvironmentFile=/etc/meshseer/meshseer.env
+ExecStart=/opt/meshseer/app/.venv/bin/python -m meshseer.main
+Restart=on-failure
+RestartSec=5
+
+# Keep the service writable only where it needs to persist state.
+ReadWritePaths=/var/lib/meshseer
+
+[Install]
+WantedBy=multi-user.target

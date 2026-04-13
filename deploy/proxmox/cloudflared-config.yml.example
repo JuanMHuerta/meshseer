@@ -1,0 +1,13 @@
+tunnel: REPLACE_WITH_YOUR_TUNNEL_ID
+credentials-file: /etc/cloudflared/REPLACE_WITH_YOUR_TUNNEL_ID.json
+
+ingress:
+  - hostname: meshseer.nemexix.com
+    path: '^/api/admin(?:/.*)?$'
+    service: http_status:404
+  - hostname: meshseer.nemexix.com
+    path: '^/(docs|redoc|openapi\\.json)$'
+    service: http_status:404
+  - hostname: meshseer.nemexix.com
+    service: http://127.0.0.1:8000
+  - service: http_status:404

@@ -167,3 +167,5 @@ A failed attempt still enters cooldown. This is intentional so the scheduler sta
 `success` means Meshseer saw a route-bearing reply and can usually feed the traceroute map. `ack_only` means the radio responded, but there was no route payload to extract, so no map line will appear even though the attempt itself was recorded successfully enough to count for cooldown.
 
 Production deployment notes for the public dashboard plus local-only admin topology live in [deployment.md](/home/juan/dev/meshradar/deployment.md).
+
+For a concrete Proxmox LXC plus Cloudflare Tunnel rollout, see [deploy/proxmox/README.md](/home/juan/dev/meshradar/deploy/proxmox/README.md).

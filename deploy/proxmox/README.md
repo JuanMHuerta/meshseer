@@ -102,6 +102,10 @@ systemctl enable --now meshseer.service
 systemctl status meshseer.service
 ```
 
+The unit must execute the installed `meshseer` console script. Do not use
+`python -m meshseer.main` here: that only imports the module and exits without
+starting Uvicorn.
+
 Basic checks:
 
 ```bash

@@ -113,6 +113,12 @@ curl http://127.0.0.1:8000/api/health
 journalctl -u meshseer -n 100 --no-pager
 ```
 
+Important:
+
+- The service must use `ExecStart=/opt/meshseer/app/.venv/bin/meshseer`
+- Do not use `python -m meshseer.main` in `systemd`; that only imports the module and exits cleanly
+- If `systemctl status meshseer` shows `Deactivated successfully` immediately after start, you are almost certainly using the wrong `ExecStart`
+
 ## Cloudflare Tunnel
 
 Install `cloudflared` using Cloudflare's package instructions for Debian, then create a named tunnel and route `meshseer.nemexix.com` to it.

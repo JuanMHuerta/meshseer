@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Callable
 
-from meshradar.clock import to_utc_iso, utc_now
+from meshseer.clock import to_utc_iso, utc_now
 
 
 @dataclass(frozen=True)
@@ -44,7 +44,7 @@ class AutoTracerouteService:
             if self._thread is not None and self._thread.is_alive():
                 return
             self._stop_event.clear()
-            self._thread = threading.Thread(target=self._run_loop, name="meshradar-autotrace", daemon=True)
+            self._thread = threading.Thread(target=self._run_loop, name="meshseer-autotrace", daemon=True)
             self._thread.start()
 
     def stop(self) -> None:

@@ -21,7 +21,7 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 
-from meshradar.demo import build_demo_app  # noqa: E402
+from meshseer.demo import build_demo_app  # noqa: E402
 
 
 LOCAL_BROWSER_DEPS_DIR = ROOT / ".cache" / "playwright-deps"
@@ -49,7 +49,7 @@ def _start_demo_server(host: str, port: int, db_path: Path) -> tuple[uvicorn.Ser
         access_log=False,
     )
     server = uvicorn.Server(config)
-    thread = threading.Thread(target=server.run, name="meshradar-demo-server", daemon=True)
+    thread = threading.Thread(target=server.run, name="meshseer-demo-server", daemon=True)
     thread.start()
 
     deadline = time.time() + 15
@@ -144,7 +144,7 @@ def _prepare_browser_env(executable: str) -> dict[str, str]:
 
 
 def _wait_for_dashboard(page) -> None:
-    page.wait_for_selector("#collector-state", state="visible", timeout=20_000)
+    page.wait_for_selector("#collector-card", state="visible", timeout=20_000)
     page.wait_for_function(
         """
         () => {
@@ -187,7 +187,7 @@ def _capture(url: str, out_path: Path, map_out_path: Path | None, viewport_width
 
 
 def _parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Render the Meshradar dashboard with Playwright and save screenshots.")
+    parser = argparse.ArgumentParser(description="Render the Meshseer dashboard with Playwright and save screenshots.")
     parser.add_argument("--url", help="Render an existing URL instead of starting the seeded demo app.")
     parser.add_argument("--out", default="artifacts/headless/dashboard.png")
     parser.add_argument("--map-out", default="artifacts/headless/map-panel.png")
@@ -210,7 +210,7 @@ def main() -> None:
 
     host = "127.0.0.1"
     port = _find_free_port()
-    with TemporaryDirectory(prefix="meshradar-headless-") as temp_dir:
+    with TemporaryDirectory(prefix="meshseer-headless-") as temp_dir:
         db_path = Path(temp_dir) / "demo.db"
         server, thread = _start_demo_server(host, port, db_path)
         try:

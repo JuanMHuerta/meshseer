@@ -4,9 +4,9 @@ import os
 
 import uvicorn
 
-from meshradar.app import create_app
-from meshradar.config import Settings
-from meshradar.env import load_env_file
+from meshseer.app import create_app
+from meshseer.config import Settings
+from meshseer.env import load_env_file
 
 
 load_env_file()

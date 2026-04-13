@@ -1,6 +1,6 @@
-# Meshradar Production Deployment
+# Meshseer Production Deployment
 
-This document describes the production topology Meshradar now expects:
+This document describes the production topology Meshseer now expects:
 
 - the dashboard is public and read-only
 - `/ws/events` is public but same-origin only
@@ -9,20 +9,24 @@ This document describes the production topology Meshradar now expects:
 
 ## Origin layout
 
-Run Meshradar only on loopback:
+Run Meshseer only on loopback:
 
-- `MESHRADAR_ENV=production`
-- `MESHRADAR_BIND_HOST=127.0.0.1`
-- `MESHRADAR_BIND_PORT=8000`
-- `MESHRADAR_ADMIN_BEARER_TOKEN=<long-random-secret>`
+- `MESHSEER_ENV=production`
+- `MESHSEER_BIND_HOST=127.0.0.1`
+- `MESHSEER_BIND_PORT=8000`
+- `MESHSEER_ADMIN_BEARER_TOKEN=<long-random-secret>`
+
+This differs from a development box that you may temporarily expose on a trusted LAN with `MESHSEER_BIND_HOST=0.0.0.0`. Do not carry that override into production.
 
 Operational rules:
 
-- Keep the app reachable only from localhost. Do not bind Meshradar directly to a public interface.
+- Keep the app reachable only from localhost. Do not bind Meshseer directly to a public interface.
 - Production mode disables FastAPI's `/docs`, `/redoc`, and `/openapi.json` routes in the origin app. Keep the Cloudflare path blocks anyway as defense in depth.
 - Keep normal inbound firewall policy closed. Cloudflare Tunnel uses outbound connections; the Cloudflare docs recommend blocking unsolicited ingress for a positive security model.
 - Use the bearer token only for local admin calls such as `curl` on the machine or over SSH port-forwarding. Do not place this token in browser code, Cloudflare headers, or public tunnel config.
-- Meshradar now enables SQLite `WAL` mode and a fixed `busy_timeout` automatically on repository-managed connections. No extra production knob is required for that baseline tuning.
+- Meshseer now enables SQLite `WAL` mode and a fixed `busy_timeout` automatically on repository-managed connections. No extra production knob is required for that baseline tuning.
+- Meshseer also prunes retained packet, node metric, and traceroute history on startup and during normal write activity. Tune that with the `MESHSEER_RETENTION_*` env vars if your host needs a different retention window.
+- The shipped UI vendors its Leaflet and font assets locally. The only remaining external browser dependency is the CARTO/OpenStreetMap basemap tile service.
 
 References:
 
@@ -54,8 +58,8 @@ Important details:
 
 - Rule order matters. `cloudflared` evaluates ingress rules from top to bottom.
 - The final catch-all `http_status:404` rule is required.
-- The `path` field supports regular expressions; use it to block `/api/admin/*`, `/docs`, `/redoc`, and `/openapi.json` before requests ever reach Meshradar.
-- Preserve the public `Host` header and `X-Forwarded-Proto` so Meshradar can validate websocket origins correctly.
+- The `path` field supports regular expressions; use it to block `/api/admin/*`, `/docs`, `/redoc`, and `/openapi.json` before requests ever reach Meshseer.
+- Preserve the public `Host` header and `X-Forwarded-Proto` so Meshseer can validate websocket origins correctly.
 - Validate the tunnel config before rollout:
 
 ```bash
@@ -71,8 +75,8 @@ Set the public hostname up as a normal proxied application with these expectatio
 
 - WebSockets must be enabled. Cloudflare supports proxied WebSocket connections, but the setting should still be confirmed in the dashboard.
 - Expect occasional WebSocket reconnects. Cloudflare documents that WebSocket connections can be terminated during network restarts, so the client must reconnect automatically.
-- Tune websocket limits with `MESHRADAR_WS_MAX_CONNECTIONS`, `MESHRADAR_WS_QUEUE_SIZE`, `MESHRADAR_WS_SEND_TIMEOUT_SECONDS`, `MESHRADAR_WS_PING_INTERVAL_SECONDS`, and `MESHRADAR_WS_PING_TIMEOUT_SECONDS` if your expected browser concurrency differs from the defaults.
-- Do not apply edge caching to the Meshradar hostname. The app is live telemetry, not cacheable static content.
+- Tune websocket limits with `MESHSEER_WS_MAX_CONNECTIONS`, `MESHSEER_WS_QUEUE_SIZE`, `MESHSEER_WS_SEND_TIMEOUT_SECONDS`, `MESHSEER_WS_PING_INTERVAL_SECONDS`, and `MESHSEER_WS_PING_TIMEOUT_SECONDS` if your expected browser concurrency differs from the defaults.
+- Do not apply edge caching to the Meshseer hostname. The app is live telemetry, not cacheable static content.
 - Keep TLS on the public hostname. Cloudflare terminates TLS at the edge and forwards through the tunnel to the local HTTP origin.
 
 Reference:
@@ -91,10 +95,10 @@ Use one of these workflows instead:
 Every admin request must include:
 
 ```http
-Authorization: Bearer <MESHRADAR_ADMIN_BEARER_TOKEN>
+Authorization: Bearer <MESHSEER_ADMIN_BEARER_TOKEN>
 ```
 
-If `MESHRADAR_ADMIN_BEARER_TOKEN` is unset, Meshradar does not mount the admin API at all.
+If `MESHSEER_ADMIN_BEARER_TOKEN` is unset, Meshseer does not mount the admin API at all.
 
 ## Production checks
 
@@ -114,4 +118,4 @@ These are intentionally out of scope for the current production design:
 - Cloudflare Access protecting admin routes
 - Cloudflare service tokens for admin automation
 
-If remote admin is needed later, use a separate admin hostname behind Cloudflare Access and keep the Meshradar bearer-token check in place as a second control.
+If remote admin is needed later, use a separate admin hostname behind Cloudflare Access and keep the Meshseer bearer-token check in place as a second control.

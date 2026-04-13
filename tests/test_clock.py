@@ -1,6 +1,6 @@
 from datetime import UTC, datetime
 
-from meshradar.clock import timestamp_to_utc_iso, to_utc_iso, utc_now_iso
+from meshseer.clock import timestamp_to_utc_iso, to_utc_iso, utc_now_iso
 
 
 def test_to_utc_iso_normalizes_timezone():

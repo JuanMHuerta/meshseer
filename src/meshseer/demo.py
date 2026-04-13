@@ -11,13 +11,13 @@ import uvicorn
 from fastapi import FastAPI
 from meshtastic.protobuf import mesh_pb2
 
-from meshradar.app import create_app
-from meshradar.channels import BROADCAST_NODE_NUM
-from meshradar.clock import to_utc_iso, utc_now
-from meshradar.collector import CollectorStatus
-from meshradar.config import Settings
-from meshradar.models import NodeRecord, PacketRecord
-from meshradar.storage import MeshRepository
+from meshseer.app import create_app
+from meshseer.channels import BROADCAST_NODE_NUM
+from meshseer.clock import to_utc_iso, utc_now
+from meshseer.collector import CollectorStatus
+from meshseer.config import Settings
+from meshseer.models import NodeRecord, PacketRecord
+from meshseer.storage import MeshRepository
 
 
 DEMO_LOCAL_NODE_NUM = 101
@@ -796,8 +796,8 @@ def build_demo_app(db_path: Path) -> FastAPI:
     seed_demo_data(repository)
     settings = Settings.from_env(
         {
-            "MESHRADAR_DB_PATH": str(db_path),
-            "MESHRADAR_LOCAL_NODE_NUM": str(DEMO_LOCAL_NODE_NUM),
+            "MESHSEER_DB_PATH": str(db_path),
+            "MESHSEER_LOCAL_NODE_NUM": str(DEMO_LOCAL_NODE_NUM),
         }
     )
     return create_app(
@@ -811,7 +811,7 @@ def build_demo_app(db_path: Path) -> FastAPI:
 
 
 def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run a seeded Meshradar demo app for headless rendering.")
+    parser = argparse.ArgumentParser(description="Run a seeded Meshseer demo app for headless rendering.")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--db-path", default="data/demo-headless.db")

@@ -1,5 +1,5 @@
 {
-  "name": "meshradar",
+  "name": "meshseer",
   "version": "1.0.0",
   "description": "Public LongFast mesh view from the perspective of your receiver node.",
   "main": "index.js",

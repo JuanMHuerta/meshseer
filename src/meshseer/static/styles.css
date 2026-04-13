@@ -498,6 +498,18 @@ h3 {
   flex-shrink: 0;
 }
 
+.status-bar-dot--forward {
+  background: var(--amber);
+}
+
+.status-bar-dot--return {
+  background: var(--amber-dim);
+}
+
+.status-bar-dot--older {
+  background: rgba(255, 255, 255, 0.2);
+}
+
 .status-bar-legend-label {
   font-size: 10px;
   color: var(--text-faint);

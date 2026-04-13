@@ -1,4 +1,4 @@
-"""Meshradar package."""
+"""Meshseer package."""
 
 __all__ = ["__version__"]
 

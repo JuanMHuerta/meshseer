@@ -4,7 +4,7 @@ import base64
 import json
 from typing import Any, Mapping
 
-from meshradar.clock import timestamp_to_utc_iso, utc_now_iso
+from meshseer.clock import timestamp_to_utc_iso, utc_now_iso
 
 
 def _sanitize(value: Any) -> Any:

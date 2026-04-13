@@ -4,7 +4,7 @@ import threading
 from dataclasses import dataclass
 from typing import Any, Callable, Protocol
 
-from meshradar.normalizers import normalize_node, normalize_packet
+from meshseer.normalizers import normalize_node, normalize_packet
 
 
 @dataclass(frozen=True)
@@ -254,7 +254,7 @@ class MeshtasticReceiver:
         if self._thread is not None and self._thread.is_alive():
             return
         self._stop_event.clear()
-        self._thread = threading.Thread(target=self._run_loop, name="meshradar-collector", daemon=True)
+        self._thread = threading.Thread(target=self._run_loop, name="meshseer-collector", daemon=True)
         self._thread.start()
 
     def stop(self) -> None:

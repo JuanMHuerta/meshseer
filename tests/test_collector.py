@@ -3,8 +3,8 @@ import threading
 import time
 import types
 
-from meshradar.collector import CollectorCallbacks, CollectorStatus, MeshtasticReceiver
-from meshradar.normalizers import normalize_node, normalize_packet
+from meshseer.collector import CollectorCallbacks, CollectorStatus, MeshtasticReceiver
+from meshseer.normalizers import normalize_node, normalize_packet
 
 
 class FakePubSub:

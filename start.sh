@@ -16,26 +16,26 @@ if ! command -v uv >/dev/null 2>&1; then
   exit 1
 fi
 
-: "${MESHRADAR_BIND_HOST:=0.0.0.0}"
-: "${MESHRADAR_BIND_PORT:=8000}"
-: "${MESHRADAR_DB_PATH:=./data/meshradar.db}"
+: "${MESHSEER_BIND_HOST:=127.0.0.1}"
+: "${MESHSEER_BIND_PORT:=8000}"
+: "${MESHSEER_DB_PATH:=./data/meshseer.db}"
 
-mkdir -p -- "$(dirname -- "$MESHRADAR_DB_PATH")"
+mkdir -p -- "$(dirname -- "$MESHSEER_DB_PATH")"
 
-if PRECHECK_OUTPUT=$(uv run python -m meshradar.startup \
-  --host "$MESHRADAR_BIND_HOST" \
-  --port "$MESHRADAR_BIND_PORT"); then
+if PRECHECK_OUTPUT=$(uv run python -m meshseer.startup \
+  --host "$MESHSEER_BIND_HOST" \
+  --port "$MESHSEER_BIND_PORT"); then
   :
 else
   PRECHECK_STATUS=$?
   case "$PRECHECK_STATUS" in
     10)
-      echo "Meshradar is already running at ${PRECHECK_OUTPUT%/api/health}/"
+      echo "Meshseer is already running at ${PRECHECK_OUTPUT%/api/health}/"
       exit 0
       ;;
     11)
-      echo "Port ${MESHRADAR_BIND_PORT} is already in use on ${MESHRADAR_BIND_HOST}." >&2
-      echo "Stop the existing process or run with MESHRADAR_BIND_PORT=<port> ./start.sh" >&2
+      echo "Port ${MESHSEER_BIND_PORT} is already in use on ${MESHSEER_BIND_HOST}." >&2
+      echo "Stop the existing process or run with MESHSEER_BIND_PORT=<port> ./start.sh" >&2
       exit 1
       ;;
     *)
@@ -45,5 +45,5 @@ else
   esac
 fi
 
-echo "Starting Meshradar on ${MESHRADAR_BIND_HOST}:${MESHRADAR_BIND_PORT}"
-exec uv run meshradar
+echo "Starting Meshseer on ${MESHSEER_BIND_HOST}:${MESHSEER_BIND_PORT}"
+exec uv run meshseer

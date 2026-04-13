@@ -1,6 +1,6 @@
 # Production Remediation Plan
 
-Objective: make Meshradar safe enough for a small internet-reachable deployment on local hardware behind a Cloudflare Tunnel.
+Objective: make Meshseer safe enough for a small internet-reachable deployment on local hardware behind a Cloudflare Tunnel.
 
 Rule: do not expose the app publicly until Phase 1 is complete.
 
@@ -13,7 +13,7 @@ Tasks:
 - Add server-side access control for all API and websocket routes. Do not rely on the tunnel alone.
 - Disable `/docs`, `/redoc`, and `/openapi.json` in production.
 - Change bind defaults to `127.0.0.1`.
-- Change committed defaults so `MESHRADAR_AUTOTRACE_ENABLED=false`.
+- Change committed defaults so `MESHSEER_AUTOTRACE_ENABLED=false`.
 - Remove `database.path` and other internal details from `/api/health`.
 - Reduce API responses to the fields the UI actually needs.
 - Add production security headers and a CSP.

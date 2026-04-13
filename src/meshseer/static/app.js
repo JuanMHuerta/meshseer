@@ -240,6 +240,10 @@ function recentPacketWindowMinutes() {
   return Number(state.meshSummary?.windowed_activity?.window_minutes) || DEFAULT_RECENT_ACTIVITY_WINDOW_MINUTES;
 }
 
+function meshRouteWindowMinutes() {
+  return Math.max(NETWORK_ROUTE_WINDOW_MINUTES, SELECTED_ROUTE_WINDOW_MINUTES);
+}
+
 function nodeActiveWindowMinutes() {
   return Number(state.meshSummary?.nodes?.active_window_minutes) || DEFAULT_NODE_ACTIVE_WINDOW_MINUTES;
 }
@@ -2724,7 +2728,8 @@ async function loadMeshSummary() {
 
 async function loadMeshRoutes() {
   return runSingleFlight("meshRoutes", async () => {
-    const payload = await fetchJson("/api/mesh/routes");
+    const since = encodeURIComponent(isoMinutesAgo(meshRouteWindowMinutes()));
+    const payload = await fetchJson(`/api/mesh/routes?since=${since}`);
     renderMeshRoutes(payload);
   });
 }

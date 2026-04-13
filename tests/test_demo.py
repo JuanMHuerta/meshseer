@@ -1,6 +1,6 @@
 from fastapi.testclient import TestClient
 
-from meshradar.demo import build_demo_app
+from meshseer.demo import build_demo_app
 
 
 def test_demo_app_seeds_dashboard_data(tmp_path):

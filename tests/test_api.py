@@ -1,4 +1,6 @@
 import base64
+import json
+import logging
 from datetime import UTC, datetime
 
 import pytest
@@ -7,12 +9,12 @@ from meshtastic.protobuf import mesh_pb2
 from starlette import status
 from starlette.websockets import WebSocketDisconnect
 
-from meshradar.app import create_app
-from meshradar.channels import BROADCAST_NODE_NUM
-from meshradar.collector import CollectorStatus
-from meshradar.config import Settings
-from meshradar.models import NodeRecord, PacketRecord
-from meshradar.storage import KPI_ACTIVE_NODES_WINDOW_MINUTES, MeshRepository
+from meshseer.app import create_app
+from meshseer.channels import BROADCAST_NODE_NUM
+from meshseer.collector import CollectorStatus
+from meshseer.config import Settings
+from meshseer.models import NodeRecord, PacketRecord
+from meshseer.storage import KPI_ACTIVE_NODES_WINDOW_MINUTES, MeshRepository
 
 
 ADMIN_TOKEN = "test-admin-token"
@@ -191,11 +193,11 @@ def build_app(tmp_path, *, admin_token: str | None = None, extra_env: dict[str, 
     )
     collector = StubCollector()
     env = {
-        "MESHRADAR_DB_PATH": str(tmp_path / "mesh.db"),
-        "MESHRADAR_LOCAL_NODE_NUM": "101",
+        "MESHSEER_DB_PATH": str(tmp_path / "mesh.db"),
+        "MESHSEER_LOCAL_NODE_NUM": "101",
     }
     if admin_token is not None:
-        env["MESHRADAR_ADMIN_BEARER_TOKEN"] = admin_token
+        env["MESHSEER_ADMIN_BEARER_TOKEN"] = admin_token
     if extra_env is not None:
         env.update(extra_env)
     app = create_app(
@@ -260,7 +262,7 @@ def test_api_routes_and_filters(tmp_path):
     assert len(admin_nodes.json()) == 1
     assert admin_nodes.json()[0]["short_name"] == "ALFA"
     assert admin_nodes.json()[0]["raw_json"] == '{"num":101}'
-    assert "Meshradar" in index.text
+    assert "Meshseer" in index.text
 
 
 def test_docs_routes_are_hidden_in_production(tmp_path):
@@ -272,7 +274,7 @@ def test_docs_routes_are_hidden_in_production(tmp_path):
     development_app, _collector = build_app(development_path)
     production_app, _collector = build_app(
         production_path,
-        extra_env={"MESHRADAR_ENV": "production"},
+        extra_env={"MESHSEER_ENV": "production"},
     )
 
     with TestClient(development_app) as client:
@@ -283,7 +285,7 @@ def test_docs_routes_are_hidden_in_production(tmp_path):
     assert docs.status_code == 200
     assert redoc.status_code == 200
     assert openapi.status_code == 200
-    assert openapi.json()["info"]["title"] == "Meshradar"
+    assert openapi.json()["info"]["title"] == "Meshseer"
 
     with TestClient(production_app) as client:
         assert client.get("/docs").status_code == 404
@@ -291,9 +293,30 @@ def test_docs_routes_are_hidden_in_production(tmp_path):
         assert client.get("/openapi.json").status_code == 404
 
 
+def test_responses_include_security_headers_and_cache_policy(tmp_path):
+    app, _collector = build_app(tmp_path, admin_token=ADMIN_TOKEN)
+
+    with TestClient(app) as client:
+        index = client.get("/")
+        health = client.get("/api/health")
+        static_js = client.get("/static/app.js")
+
+    for response in (index, health, static_js):
+        assert response.headers["x-content-type-options"] == "nosniff"
+        assert response.headers["referrer-policy"] == "same-origin"
+        assert response.headers["permissions-policy"] == "geolocation=(), microphone=(), camera=()"
+        assert response.headers["x-frame-options"] == "DENY"
+
+    assert "default-src 'self'" in index.headers["content-security-policy"]
+    assert "connect-src 'self' ws: wss:" in health.headers["content-security-policy"]
+    assert index.headers["cache-control"] == "no-store"
+    assert health.headers["cache-control"] == "no-store"
+    assert static_js.headers["cache-control"] == "no-cache"
+
+
 def test_nodes_roster_exposes_supported_filter_metadata(tmp_path, monkeypatch):
     monkeypatch.setattr(
-        "meshradar.storage.utc_now",
+        "meshseer.storage.utc_now",
         lambda: datetime(2026, 3, 30, 12, 30, tzinfo=UTC),
     )
 
@@ -517,8 +540,8 @@ def test_nodes_roster_exposes_supported_filter_metadata(tmp_path, monkeypatch):
     app = create_app(
         Settings.from_env(
             {
-                "MESHRADAR_DB_PATH": str(tmp_path / "mesh.db"),
-                "MESHRADAR_LOCAL_NODE_NUM": "101",
+                "MESHSEER_DB_PATH": str(tmp_path / "mesh.db"),
+                "MESHSEER_LOCAL_NODE_NUM": "101",
             }
         ),
         repository=repo,
@@ -582,7 +605,7 @@ def test_health_uses_collector_local_node_num_when_env_override_is_absent(tmp_pa
     )
     collector = StubCollector(local_node_num=101)
     app = create_app(
-        Settings.from_env({"MESHRADAR_DB_PATH": str(tmp_path / "mesh.db")}),
+        Settings.from_env({"MESHSEER_DB_PATH": str(tmp_path / "mesh.db")}),
         repository=repo,
         collector=collector,
         start_collector=False,
@@ -703,7 +726,7 @@ def test_mesh_summary_and_node_insights_expose_passive_path_data(tmp_path):
 
 def test_mesh_summary_exposes_receiver_utilization_history(tmp_path, monkeypatch):
     monkeypatch.setattr(
-        "meshradar.storage.utc_now",
+        "meshseer.storage.utc_now",
         lambda: datetime(2026, 3, 30, 12, 15, tzinfo=UTC),
     )
 
@@ -790,7 +813,7 @@ def test_mesh_summary_exposes_receiver_utilization_history(tmp_path, monkeypatch
 
 def test_mesh_summary_exposes_windowed_activity(tmp_path, monkeypatch):
     monkeypatch.setattr(
-        "meshradar.storage.utc_now",
+        "meshseer.storage.utc_now",
         lambda: datetime(2026, 3, 30, 12, 30, tzinfo=UTC),
     )
 
@@ -1049,8 +1072,8 @@ def test_mesh_summary_exposes_windowed_activity(tmp_path, monkeypatch):
     app = create_app(
         Settings.from_env(
             {
-                "MESHRADAR_DB_PATH": str(tmp_path / "mesh.db"),
-                "MESHRADAR_LOCAL_NODE_NUM": "101",
+                "MESHSEER_DB_PATH": str(tmp_path / "mesh.db"),
+                "MESHSEER_LOCAL_NODE_NUM": "101",
             }
         ),
         repository=repo,
@@ -1088,7 +1111,7 @@ def test_mesh_summary_exposes_windowed_activity(tmp_path, monkeypatch):
 
 def test_mesh_summary_counts_active_nodes_over_last_3_hours(tmp_path, monkeypatch):
     monkeypatch.setattr(
-        "meshradar.storage.utc_now",
+        "meshseer.storage.utc_now",
         lambda: datetime(2026, 3, 30, 12, 30, tzinfo=UTC),
     )
 
@@ -1126,8 +1149,8 @@ def test_mesh_summary_counts_active_nodes_over_last_3_hours(tmp_path, monkeypatc
     app = create_app(
         Settings.from_env(
             {
-                "MESHRADAR_DB_PATH": str(tmp_path / "mesh.db"),
-                "MESHRADAR_LOCAL_NODE_NUM": "101",
+                "MESHSEER_DB_PATH": str(tmp_path / "mesh.db"),
+                "MESHSEER_LOCAL_NODE_NUM": "101",
             }
         ),
         repository=repo,
@@ -1147,7 +1170,7 @@ def test_mesh_summary_counts_active_nodes_over_last_3_hours(tmp_path, monkeypatc
 
 def test_mesh_summary_exposes_empty_receiver_windowed_utilization_when_stale(tmp_path, monkeypatch):
     monkeypatch.setattr(
-        "meshradar.storage.utc_now",
+        "meshseer.storage.utc_now",
         lambda: datetime(2026, 3, 30, 12, 30, tzinfo=UTC),
     )
 
@@ -1463,6 +1486,78 @@ def test_admin_routes_require_bearer_and_are_absent_when_unconfigured(tmp_path):
     assert allowed.json()["database"]["path"].endswith("mesh.db")
 
 
+def test_auth_websocket_and_autotrace_emit_audit_logs(tmp_path, caplog):
+    repo = MeshRepository(tmp_path / "mesh.db")
+    collector = StubCollector(local_node_num=101)
+    autotrace_service = StubAutotraceService()
+    app = create_app(
+        Settings.from_env(
+            {
+                "MESHSEER_DB_PATH": str(tmp_path / "mesh.db"),
+                "MESHSEER_ADMIN_BEARER_TOKEN": ADMIN_TOKEN,
+            }
+        ),
+        repository=repo,
+        collector=collector,
+        autotrace_service=autotrace_service,
+        start_collector=False,
+        start_autotrace_service=False,
+    )
+    caplog.set_level(logging.INFO, logger="meshseer.audit")
+
+    with TestClient(app) as client:
+        for _ in range(5):
+            response = client.get("/api/admin/health")
+            assert response.status_code == 401
+
+        allowed = client.get("/api/admin/health", headers=admin_headers())
+        assert allowed.status_code == 200
+
+        with pytest.raises(WebSocketDisconnect):
+            with client.websocket_connect("/ws/events", headers=websocket_headers("https://evil.example")):
+                pass
+
+        with client.websocket_connect("/ws/events", headers=websocket_headers()) as websocket:
+            client.app.state.event_broker.publish(
+                {
+                    "type": "packet_received",
+                    "ts": "2026-03-30T12:00:00Z",
+                    "data": {"mesh_packet_id": 77},
+                }
+            )
+            assert websocket.receive_json()["data"]["mesh_packet_id"] == 77
+
+        client.app.state.event_broker.publish(
+            {
+                "type": "packet_received",
+                "ts": "2026-03-30T12:00:01Z",
+                "data": {"mesh_packet_id": 78},
+            }
+        )
+        client.get("/api/health")
+
+        enabled = client.post("/api/admin/mesh/autotrace/enable", headers=admin_headers())
+        disabled = client.post("/api/admin/mesh/autotrace/disable", headers=admin_headers())
+
+    assert enabled.status_code == 200
+    assert disabled.status_code == 200
+
+    events = [
+        json.loads(record.message)
+        for record in caplog.records
+        if record.name == "meshseer.audit"
+    ]
+
+    assert any(event["event"] == "admin_auth_decision" and event["result"] == "denied" for event in events)
+    assert any(event["event"] == "admin_auth_decision" and event["result"] == "allowed" for event in events)
+    assert any(event["event"] == "admin_auth_repeated_failure" and event["count"] >= 5 for event in events)
+    assert any(event["event"] == "websocket_rejected" and event["reason"] == "origin_not_allowed" for event in events)
+    assert any(event["event"] == "websocket_connected" for event in events)
+    assert any(event["event"] == "websocket_disconnected" and event["reason"] == "client_disconnect" for event in events)
+    assert any(event["event"] == "autotrace_enabled" and event["trigger"] == "admin_api" for event in events)
+    assert any(event["event"] == "autotrace_disabled" and event["trigger"] == "admin_api" for event in events)
+
+
 def test_admin_autotrace_api_exposes_status_and_runtime_toggle(tmp_path):
     repo = MeshRepository(tmp_path / "mesh.db")
     collector = StubCollector(local_node_num=101)
@@ -1470,8 +1565,8 @@ def test_admin_autotrace_api_exposes_status_and_runtime_toggle(tmp_path):
     app = create_app(
         Settings.from_env(
             {
-                "MESHRADAR_DB_PATH": str(tmp_path / "mesh.db"),
-                "MESHRADAR_ADMIN_BEARER_TOKEN": ADMIN_TOKEN,
+                "MESHSEER_DB_PATH": str(tmp_path / "mesh.db"),
+                "MESHSEER_ADMIN_BEARER_TOKEN": ADMIN_TOKEN,
             }
         ),
         repository=repo,
@@ -1503,9 +1598,9 @@ def test_lifespan_enables_autotrace_when_requested_by_settings(tmp_path):
     app = create_app(
         Settings.from_env(
             {
-                "MESHRADAR_DB_PATH": str(tmp_path / "mesh.db"),
-                "MESHRADAR_ADMIN_BEARER_TOKEN": ADMIN_TOKEN,
-                "MESHRADAR_AUTOTRACE_ENABLED": "true",
+                "MESHSEER_DB_PATH": str(tmp_path / "mesh.db"),
+                "MESHSEER_ADMIN_BEARER_TOKEN": ADMIN_TOKEN,
+                "MESHSEER_AUTOTRACE_ENABLED": "true",
             }
         ),
         repository=repo,
@@ -1547,8 +1642,8 @@ def test_default_collector_callbacks_persist_and_broadcast(tmp_path):
     app = create_app(
         Settings.from_env(
             {
-                "MESHRADAR_DB_PATH": str(tmp_path / "mesh.db"),
-                "MESHRADAR_ADMIN_BEARER_TOKEN": ADMIN_TOKEN,
+                "MESHSEER_DB_PATH": str(tmp_path / "mesh.db"),
+                "MESHSEER_ADMIN_BEARER_TOKEN": ADMIN_TOKEN,
             }
         ),
         start_collector=False,
@@ -1697,7 +1792,7 @@ def test_websocket_rejects_cross_origin(tmp_path):
 
 
 def test_websocket_rejects_connections_over_capacity(tmp_path):
-    app, _collector = build_app(tmp_path, extra_env={"MESHRADAR_WS_MAX_CONNECTIONS": "1"})
+    app, _collector = build_app(tmp_path, extra_env={"MESHSEER_WS_MAX_CONNECTIONS": "1"})
 
     with TestClient(app) as client:
         with client.websocket_connect("/ws/events", headers=websocket_headers()) as websocket:
@@ -1723,7 +1818,7 @@ def test_lifespan_starts_and_stops_collector(tmp_path):
     collector = StubCollector()
     autotrace_service = StubAutotraceService()
     app = create_app(
-        Settings.from_env({"MESHRADAR_DB_PATH": str(tmp_path / "mesh.db")}),
+        Settings.from_env({"MESHSEER_DB_PATH": str(tmp_path / "mesh.db")}),
         repository=repo,
         collector=collector,
         autotrace_service=autotrace_service,

@@ -2,7 +2,7 @@ import asyncio
 
 import pytest
 
-from meshradar.events import EventBroker, EventSubscriptionOverflow, TooManySubscribers
+from meshseer.events import EventBroker, EventSubscriptionOverflow, TooManySubscribers
 
 
 def test_subscription_rejects_connections_over_capacity():

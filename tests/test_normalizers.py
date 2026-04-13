@@ -1,4 +1,4 @@
-from meshradar.normalizers import normalize_node, normalize_packet
+from meshseer.normalizers import normalize_node, normalize_packet
 
 
 class ProtoLike:

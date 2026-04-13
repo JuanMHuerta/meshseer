@@ -2,10 +2,10 @@ import importlib
 
 
 def test_run_uses_uvicorn_with_env(monkeypatch):
-    monkeypatch.setenv("MESHRADAR_BIND_HOST", "127.0.0.1")
-    monkeypatch.setenv("MESHRADAR_BIND_PORT", "9100")
+    monkeypatch.setenv("MESHSEER_BIND_HOST", "127.0.0.1")
+    monkeypatch.setenv("MESHSEER_BIND_PORT", "9100")
 
-    import meshradar.main as main
+    import meshseer.main as main
 
     main = importlib.reload(main)
     called = {}
@@ -19,7 +19,7 @@ def test_run_uses_uvicorn_with_env(monkeypatch):
     built_app = main.build_app()
     main.run()
 
-    assert built_app.title == "Meshradar"
+    assert built_app.title == "Meshseer"
     assert built_app.docs_url == "/docs"
     assert built_app.redoc_url == "/redoc"
     assert built_app.openapi_url == "/openapi.json"
@@ -31,9 +31,9 @@ def test_run_uses_uvicorn_with_env(monkeypatch):
 
 
 def test_build_app_disables_docs_in_production(monkeypatch):
-    monkeypatch.setenv("MESHRADAR_ENV", "production")
+    monkeypatch.setenv("MESHSEER_ENV", "production")
 
-    import meshradar.main as main
+    import meshseer.main as main
 
     main = importlib.reload(main)
     built_app = main.build_app()

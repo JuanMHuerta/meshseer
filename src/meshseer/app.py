@@ -8,19 +8,20 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
-from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException, Query, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from starlette import status
 
-from meshradar.autotrace import AutoTracerouteConfig, AutoTracerouteService
-from meshradar.channels import LONGFAST_CHANNEL_NAME, is_primary_channel
-from meshradar.clock import utc_now_iso
-from meshradar.collector import CollectorCallbacks, CollectorStatus, MeshtasticReceiver
-from meshradar.config import Settings
-from meshradar.events import EventBroker, EventSubscriptionOverflow, TooManySubscribers
-from meshradar.models import NodeRecord, PacketRecord
-from meshradar.public_api import (
+from meshseer.audit import FailedAccessTracker, audit_log, request_source
+from meshseer.autotrace import AutoTracerouteConfig, AutoTracerouteService
+from meshseer.channels import LONGFAST_CHANNEL_NAME, is_primary_channel
+from meshseer.clock import utc_now_iso
+from meshseer.collector import CollectorCallbacks, CollectorStatus, MeshtasticReceiver
+from meshseer.config import Settings
+from meshseer.events import EventBroker, EventSubscriptionOverflow, TooManySubscribers
+from meshseer.models import NodeRecord, PacketRecord
+from meshseer.public_api import (
     collector_status_payload,
     public_chat_messages_payload,
     public_mesh_summary_payload,
@@ -30,11 +31,25 @@ from meshradar.public_api import (
     public_packets_payload,
     public_receiver_payload,
 )
-from meshradar.storage import MeshRepository
+from meshseer.storage import MeshRepository
 
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 RECEIVER_UTILIZATION_WINDOW_MINUTES = 10
+PRODUCTION_CSP = "; ".join(
+    (
+        "default-src 'self'",
+        "script-src 'self'",
+        "style-src 'self' 'unsafe-inline'",
+        "img-src 'self' data: https://*.basemaps.cartocdn.com",
+        "font-src 'self'",
+        "connect-src 'self' ws: wss:",
+        "object-src 'none'",
+        "base-uri 'self'",
+        "frame-ancestors 'none'",
+        "form-action 'self'",
+    )
+)
 
 
 def _is_longfast_packet(packet: dict[str, Any]) -> bool:
@@ -147,6 +162,33 @@ async def _close_websocket(websocket: WebSocket, *, code: int) -> None:
         return
 
 
+def _http_cache_control(path: str) -> str:
+    return "no-cache" if path.startswith("/static/") else "no-store"
+
+
+def _request_client_source(request: Request) -> str:
+    client_host = request.client.host if request.client is not None else None
+    return request_source(request.headers, client_host)
+
+
+def _websocket_client_source(websocket: WebSocket) -> str:
+    client_host = websocket.client.host if websocket.client is not None else None
+    return request_source(websocket.headers, client_host)
+
+
+def _security_headers(path: str) -> dict[str, str]:
+    headers = {
+        "Cache-Control": _http_cache_control(path),
+        "Permissions-Policy": "geolocation=(), microphone=(), camera=()",
+        "Referrer-Policy": "same-origin",
+        "X-Content-Type-Options": "nosniff",
+        "X-Frame-Options": "DENY",
+    }
+    if path not in {"/docs", "/redoc", "/openapi.json"}:
+        headers["Content-Security-Policy"] = PRODUCTION_CSP
+    return headers
+
+
 def create_app(
     settings: Settings,
     *,
@@ -161,7 +203,13 @@ def create_app(
     redoc_url = None if settings.is_production else "/redoc"
     openapi_url = None if settings.is_production else "/openapi.json"
 
-    repository = repository or MeshRepository(settings.db_path)
+    repository = repository or MeshRepository(
+        settings.db_path,
+        packets_retention_days=settings.retention_packets_days,
+        node_metric_history_retention_days=settings.retention_node_metric_history_days,
+        traceroute_attempts_retention_days=settings.retention_traceroute_attempts_days,
+        prune_interval_seconds=settings.retention_prune_interval_seconds,
+    )
     event_broker = event_broker or EventBroker(
         max_connections=settings.ws_max_connections,
         queue_size=settings.ws_queue_size,
@@ -233,6 +281,7 @@ def create_app(
     @asynccontextmanager
     async def lifespan(_: FastAPI):
         event_broker.attach_loop(asyncio.get_running_loop())
+        repository.run_maintenance(force=True)
         if start_collector:
             collector.start()
             app.state.collector_started = True
@@ -241,6 +290,12 @@ def create_app(
             app.state.autotrace_service_started = True
             if settings.autotrace_enabled:
                 autotrace_service.enable()
+                audit_log(
+                    "autotrace_enabled",
+                    path="startup",
+                    source="startup",
+                    trigger="settings",
+                )
         try:
             yield
         finally:
@@ -252,7 +307,7 @@ def create_app(
                 app.state.collector_started = False
 
     app = FastAPI(
-        title="Meshradar",
+        title="Meshseer",
         lifespan=lifespan,
         docs_url=docs_url,
         redoc_url=redoc_url,
@@ -269,6 +324,14 @@ def create_app(
     app.state.start_autotrace_service = start_autotrace_service
     app.state.autotrace_service_started = False
     app.state.admin_api_enabled = settings.admin_bearer_token is not None
+    app.state.failed_admin_access_tracker = FailedAccessTracker()
+
+    @app.middleware("http")
+    async def add_security_headers(request: Request, call_next):
+        response = await call_next(request)
+        for header_name, header_value in _security_headers(request.url.path).items():
+            response.headers[header_name] = header_value
+        return response
 
     def admin_unauthorized() -> HTTPException:
         return HTTPException(
@@ -277,13 +340,39 @@ def create_app(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    def require_admin_bearer(authorization: str | None = Header(default=None)) -> None:
+    def require_admin_bearer(request: Request, authorization: str | None = Header(default=None)) -> None:
         expected = settings.admin_bearer_token
         if expected is None:
             raise HTTPException(status_code=404, detail="not found")
+        source = _request_client_source(request)
         scheme, _, token = (authorization or "").partition(" ")
         if scheme.lower() != "bearer" or not token or not secrets.compare_digest(token, expected):
+            failure = app.state.failed_admin_access_tracker.record(source=source, path=request.url.path)
+            audit_log(
+                "admin_auth_decision",
+                method=request.method,
+                path=request.url.path,
+                result="denied",
+                reason="invalid_bearer_token",
+                source=source,
+            )
+            if failure["repeated"]:
+                audit_log(
+                    "admin_auth_repeated_failure",
+                    count=failure["count"],
+                    method=request.method,
+                    path=request.url.path,
+                    source=source,
+                    window_seconds=failure["window_seconds"],
+                )
             raise admin_unauthorized()
+        audit_log(
+            "admin_auth_decision",
+            method=request.method,
+            path=request.url.path,
+            result="allowed",
+            source=source,
+        )
 
     public_router = APIRouter()
 
@@ -382,29 +471,94 @@ def create_app(
 
     @public_router.websocket("/ws/events")
     async def websocket_events(websocket: WebSocket) -> None:
+        source = _websocket_client_source(websocket)
+        origin = websocket.headers.get("origin")
+        disconnect_logged = False
+
+        def log_disconnect(reason: str, close_code: int) -> None:
+            nonlocal disconnect_logged
+            if disconnect_logged:
+                return
+            disconnect_logged = True
+            audit_log(
+                "websocket_disconnected",
+                close_code=close_code,
+                origin=origin,
+                path=websocket.url.path,
+                reason=reason,
+                source=source,
+            )
+
         if not _websocket_origin_allowed(websocket):
+            audit_log(
+                "websocket_rejected",
+                close_code=status.WS_1008_POLICY_VIOLATION,
+                origin=origin,
+                path=websocket.url.path,
+                reason="origin_not_allowed",
+                source=source,
+            )
             await _close_websocket(websocket, code=status.WS_1008_POLICY_VIOLATION)
             return
 
         try:
             async with event_broker.subscription() as subscription:
                 await websocket.accept()
+                audit_log(
+                    "websocket_connected",
+                    origin=origin,
+                    path=websocket.url.path,
+                    source=source,
+                )
                 while True:
-                    event = await subscription.get()
+                    event_task = asyncio.create_task(subscription.get())
+                    receive_task = asyncio.create_task(websocket.receive())
+                    done, pending = await asyncio.wait(
+                        {event_task, receive_task},
+                        return_when=asyncio.FIRST_COMPLETED,
+                    )
+                    for task in pending:
+                        task.cancel()
+                    if pending:
+                        await asyncio.gather(*pending, return_exceptions=True)
+
+                    if receive_task in done:
+                        message = receive_task.result()
+                        if message.get("type") == "websocket.disconnect":
+                            close_code = int(message.get("code") or status.WS_1000_NORMAL_CLOSURE)
+                            log_disconnect("client_disconnect", close_code)
+                            return
+                        continue
+
+                    event = event_task.result()
                     await asyncio.wait_for(
                         websocket.send_text(json.dumps(event)),
                         timeout=settings.ws_send_timeout_seconds,
                     )
         except TooManySubscribers:
+            audit_log(
+                "websocket_rejected",
+                close_code=status.WS_1013_TRY_AGAIN_LATER,
+                origin=origin,
+                path=websocket.url.path,
+                reason="too_many_subscribers",
+                source=source,
+            )
             await _close_websocket(websocket, code=status.WS_1013_TRY_AGAIN_LATER)
             return
         except EventSubscriptionOverflow:
+            log_disconnect("subscriber_overflow", status.WS_1013_TRY_AGAIN_LATER)
             await _close_websocket(websocket, code=status.WS_1013_TRY_AGAIN_LATER)
             return
         except TimeoutError:
+            log_disconnect("send_timeout", status.WS_1013_TRY_AGAIN_LATER)
             await _close_websocket(websocket, code=status.WS_1013_TRY_AGAIN_LATER)
             return
         except WebSocketDisconnect:
+            log_disconnect("client_disconnect", status.WS_1000_NORMAL_CLOSURE)
+            return
+        except asyncio.CancelledError:
+            log_disconnect("client_disconnect", status.WS_1000_NORMAL_CLOSURE)
             return
 
     app.include_router(public_router)
@@ -437,13 +591,25 @@ def create_app(
             return autotrace_service.status()
 
         @admin_router.post("/mesh/autotrace/enable")
-        async def admin_autotrace_enable() -> dict[str, Any]:
+        async def admin_autotrace_enable(request: Request) -> dict[str, Any]:
             autotrace_service.enable()
+            audit_log(
+                "autotrace_enabled",
+                path=request.url.path,
+                source=_request_client_source(request),
+                trigger="admin_api",
+            )
             return autotrace_service.status()
 
         @admin_router.post("/mesh/autotrace/disable")
-        async def admin_autotrace_disable() -> dict[str, Any]:
+        async def admin_autotrace_disable(request: Request) -> dict[str, Any]:
             autotrace_service.disable()
+            audit_log(
+                "autotrace_disabled",
+                path=request.url.path,
+                source=_request_client_source(request),
+                trigger="admin_api",
+            )
             return autotrace_service.status()
 
         @admin_router.get("/packets/{packet_id}")

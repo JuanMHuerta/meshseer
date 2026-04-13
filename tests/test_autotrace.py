@@ -1,9 +1,9 @@
 from datetime import UTC, datetime
 
-from meshradar.autotrace import AutoTracerouteConfig, AutoTracerouteService
-from meshradar.collector import CollectorStatus, TraceRouteResult
-from meshradar.models import NodeRecord
-from meshradar.storage import MeshRepository
+from meshseer.autotrace import AutoTracerouteConfig, AutoTracerouteService
+from meshseer.collector import CollectorStatus, TraceRouteResult
+from meshseer.models import NodeRecord
+from meshseer.storage import MeshRepository
 
 
 class FakeCollector:

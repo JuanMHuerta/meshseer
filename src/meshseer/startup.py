@@ -8,13 +8,13 @@ from typing import Literal, Sequence
 from urllib.error import URLError
 from urllib.request import urlopen
 
-from meshradar.env import load_env_file
+from meshseer.env import load_env_file
 
 
 load_env_file()
 
 
-ProbeStatus = Literal["free", "meshradar", "busy"]
+ProbeStatus = Literal["free", "meshseer", "busy"]
 
 
 @dataclass(frozen=True)
@@ -50,7 +50,7 @@ def probe_existing_server(bind_host: str, bind_port: int) -> ProbeResult:
     try:
         with urlopen(health_url, timeout=1.0) as response:
             if response.status == 200 and json.load(response).get("status") == "ok":
-                return ProbeResult(status="meshradar", health_url=health_url)
+                return ProbeResult(status="meshseer", health_url=health_url)
     except (OSError, URLError, ValueError, json.JSONDecodeError):
         pass
 
@@ -58,7 +58,7 @@ def probe_existing_server(bind_host: str, bind_port: int) -> ProbeResult:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Meshradar startup preflight")
+    parser = argparse.ArgumentParser(description="Meshseer startup preflight")
     parser.add_argument("--host", required=True)
     parser.add_argument("--port", required=True, type=int)
     args = parser.parse_args(argv)
@@ -68,7 +68,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0
 
     print(result.health_url)
-    if result.status == "meshradar":
+    if result.status == "meshseer":
         return 10
     return 11
 

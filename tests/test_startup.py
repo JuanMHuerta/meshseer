@@ -3,7 +3,7 @@ from __future__ import annotations
 import io
 from urllib.error import URLError
 
-from meshradar.startup import ProbeResult, main, probe_existing_server
+from meshseer.startup import ProbeResult, main, probe_existing_server
 
 
 class _FakeSocket:
@@ -24,14 +24,14 @@ def test_probe_existing_server_returns_free_when_port_is_closed(monkeypatch):
     def fake_create_connection(address, timeout):
         raise OSError("connection refused")
 
-    monkeypatch.setattr("meshradar.startup.socket.create_connection", fake_create_connection)
+    monkeypatch.setattr("meshseer.startup.socket.create_connection", fake_create_connection)
 
     result = probe_existing_server("0.0.0.0", 8000)
 
     assert result == ProbeResult(status="free", health_url="http://127.0.0.1:8000/api/health")
 
 
-def test_probe_existing_server_detects_meshradar(monkeypatch):
+def test_probe_existing_server_detects_meshseer(monkeypatch):
     def fake_create_connection(address, timeout):
         return _FakeSocket()
 
@@ -39,12 +39,12 @@ def test_probe_existing_server_detects_meshradar(monkeypatch):
         assert url == "http://127.0.0.1:8000/api/health"
         return _FakeResponse(status=200, body=b'{"status":"ok"}')
 
-    monkeypatch.setattr("meshradar.startup.socket.create_connection", fake_create_connection)
-    monkeypatch.setattr("meshradar.startup.urlopen", fake_urlopen)
+    monkeypatch.setattr("meshseer.startup.socket.create_connection", fake_create_connection)
+    monkeypatch.setattr("meshseer.startup.urlopen", fake_urlopen)
 
     result = probe_existing_server("0.0.0.0", 8000)
 
-    assert result == ProbeResult(status="meshradar", health_url="http://127.0.0.1:8000/api/health")
+    assert result == ProbeResult(status="meshseer", health_url="http://127.0.0.1:8000/api/health")
 
 
 def test_probe_existing_server_reports_busy_for_other_service(monkeypatch):
@@ -54,8 +54,8 @@ def test_probe_existing_server_reports_busy_for_other_service(monkeypatch):
     def fake_urlopen(url, timeout):
         raise URLError("wrong service")
 
-    monkeypatch.setattr("meshradar.startup.socket.create_connection", fake_create_connection)
-    monkeypatch.setattr("meshradar.startup.urlopen", fake_urlopen)
+    monkeypatch.setattr("meshseer.startup.socket.create_connection", fake_create_connection)
+    monkeypatch.setattr("meshseer.startup.urlopen", fake_urlopen)
 
     result = probe_existing_server("127.0.0.1", 9000)
 
@@ -64,8 +64,8 @@ def test_probe_existing_server_reports_busy_for_other_service(monkeypatch):
 
 def test_main_returns_already_running_exit_code(monkeypatch, capsys):
     monkeypatch.setattr(
-        "meshradar.startup.probe_existing_server",
-        lambda host, port: ProbeResult(status="meshradar", health_url="http://127.0.0.1:8000/api/health"),
+        "meshseer.startup.probe_existing_server",
+        lambda host, port: ProbeResult(status="meshseer", health_url="http://127.0.0.1:8000/api/health"),
     )
 
     exit_code = main(["--host", "0.0.0.0", "--port", "8000"])

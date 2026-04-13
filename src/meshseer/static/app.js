@@ -1150,8 +1150,8 @@ function renderKpiTicker(summary) {
 function intelStat(label, value, detail, tone = "") {
   return `
     <article class="intel-stat${tone ? ` ${tone}` : ""}">
-      <span class="intel-stat-label">${escapeHtml(label)}</span>
       <strong class="intel-stat-value">${escapeHtml(value)}</strong>
+      <span class="intel-stat-label">${escapeHtml(label)}</span>
       <span class="intel-stat-detail">${escapeHtml(detail)}</span>
     </article>
   `;
@@ -1202,14 +1202,11 @@ function intelMeter(title, headline, segments, emptyLabel = "No passive traffic 
   `;
 }
 
-function intelReadoutRow(label, value, detail) {
+function routingHealthRow(label, value) {
   return `
-    <div class="intel-readout-row">
-      <div>
-        <span class="intel-readout-label">${escapeHtml(label)}</span>
-        <strong class="intel-readout-value">${escapeHtml(value)}</strong>
-      </div>
-      <span class="intel-readout-detail">${escapeHtml(detail)}</span>
+    <div class="routing-health-row">
+      <span class="routing-health-label">${escapeHtml(label)}</span>
+      <span class="routing-health-value">${escapeHtml(value)}</span>
     </div>
   `;
 }
@@ -1276,11 +1273,7 @@ function receiverSparklineGeometry(series, width = 212, height = 54, padding = 4
 
 function receiverSparkline(label, tone, series) {
   if (!series.length) {
-    return `
-      <div class="receiver-sparkline-empty">
-        <p>No telemetry history yet.</p>
-      </div>
-    `;
+    return "";
   }
 
   const geometry = receiverSparklineGeometry(series);
@@ -1300,48 +1293,51 @@ function receiverSparkline(label, tone, series) {
         <path class="receiver-sparkline-line" d="${geometry.linePath}"></path>
         <circle class="receiver-sparkline-dot" cx="${geometry.lastX}" cy="${geometry.lastY}" r="3.5"></circle>
       </svg>
-      <div class="receiver-sparkline-meta mono-text">
-        <span>${escapeHtml(`${formatWholeNumber(series.length)} ${series.length === 1 ? "sample" : "samples"}`)}</span>
-        <span>${escapeHtml(`Peak ${formatNumber(geometry.maxValue, 1, "%")}`)}</span>
-      </div>
     </div>
   `;
 }
 
 function receiverTelemetryPanel(label, currentValue, key, tone, receiver) {
   const series = receiverHistorySeries(receiver, key);
-  const lastSample = series[series.length - 1];
-  const detail = lastSample
-    ? `Last ${formatTime(lastSample.recorded_at)}`
-    : (receiver?.node_num == null ? "Waiting for receiver identity" : "No telemetry history yet");
+  const geometry = receiverSparklineGeometry(series);
+  const peakValue = geometry ? formatNumber(geometry.maxValue, 1, "%") : null;
+  const meta = peakValue
+    ? `Peak ${peakValue} · ${formatWholeNumber(series.length)} ${series.length === 1 ? "sample" : "samples"}`
+    : "";
 
   return `
     <section class="receiver-metric ${tone}">
-      <div class="receiver-metric-head">
-        <span class="receiver-metric-label">${escapeHtml(label)}</span>
-        <span class="receiver-metric-trail mono-text">${escapeHtml(detail)}</span>
-      </div>
+      <span class="receiver-metric-label">${escapeHtml(label)}</span>
       <strong class="receiver-metric-value">${escapeHtml(formatNumber(currentValue, 1, "%"))}</strong>
-      ${receiverSparkline(label, tone, series)}
+      ${meta ? `<span class="receiver-metric-meta mono-text">${escapeHtml(meta)}</span>` : ""}
+      ${series.length && geometry ? `
+        <div class="receiver-sparkline-frame ${tone}">
+          <svg class="receiver-sparkline-graphic" viewBox="0 0 212 54" aria-label="${escapeHtml(`${label} history`)}" role="img">
+            <path class="receiver-sparkline-area" d="${geometry.areaPath}"></path>
+            <path class="receiver-sparkline-line" d="${geometry.linePath}"></path>
+            <circle class="receiver-sparkline-dot" cx="${geometry.lastX}" cy="${geometry.lastY}" r="3.5"></circle>
+          </svg>
+        </div>
+      ` : ""}
     </section>
   `;
 }
 
-function receiverTelemetryCard(receiver) {
+function channelUtilizationBlock(receiver) {
+  const recLabel = receiver?.label || (receiver?.node_num != null ? `Node ${receiver.node_num}` : null);
+  const recTime = receiver?.updated_at ? formatTime(receiver.updated_at) : null;
+  const sectionParts = ["Channel utilization"];
+  if (recLabel) sectionParts.push(recLabel);
+  if (recTime) sectionParts.push(recTime);
+
   return `
-    <article class="intel-story-card receiver-telemetry-card">
-      <div class="intel-story-head">
-        <div>
-          <p class="intel-story-kicker">Receiver Telemetry</p>
-          <h3>${escapeHtml(receiver?.label || "This receiver")}</h3>
-        </div>
-        <span class="mono-text">${escapeHtml(receiver?.updated_at ? formatTime(receiver.updated_at) : "Waiting")}</span>
-      </div>
+    <div class="signals-section">
+      <span class="signals-section-label">${escapeHtml(sectionParts.join(" · "))}</span>
       <div class="receiver-metric-grid">
-        ${receiverTelemetryPanel("Channel Utilization", receiver?.channel_utilization, "channel_utilization", "channel", receiver)}
-        ${receiverTelemetryPanel("Air Util TX", receiver?.air_util_tx, "air_util_tx", "air", receiver)}
+        ${receiverTelemetryPanel("Ch. util", receiver?.channel_utilization, "channel_utilization", "channel", receiver)}
+        ${receiverTelemetryPanel("Air util TX", receiver?.air_util_tx, "air_util_tx", "air", receiver)}
       </div>
-    </article>
+    </div>
   `;
 }
 
@@ -2355,10 +2351,6 @@ function renderMeshSummary(data) {
   const otherPackets = Math.max(0, totalPackets - textPackets - positionPackets - telemetryPackets);
   const coverageShare = sharePercentage(mappedNodes, totalNodes);
   const directShare = sharePercentage(directPackets, totalPackets);
-  const relayShare = sharePercentage(relayedPackets, totalPackets);
-  const mqttShare = sharePercentage(mqttPackets, totalPackets);
-  const chatShare = sharePercentage(textPackets, totalPackets);
-  const receiverDetail = receiverMetricDetail(receiver);
 
   const pathSegments = [
     { label: "Direct RF", value: directPackets, tone: "direct" },
@@ -2366,36 +2358,30 @@ function renderMeshSummary(data) {
     { label: "MQTT", value: mqttPackets, tone: "mqtt" },
     { label: "Unknown", value: unknownPackets, tone: "unknown" },
   ];
-  const channelSegments = [
-    { label: "Text", value: textPackets, tone: "text" },
-    { label: "Position", value: positionPackets, tone: "position" },
-    { label: "Telemetry", value: telemetryPackets, tone: "telemetry" },
-    { label: "Other", value: otherPackets, tone: "other" },
-  ];
   const dominantPath = dominantSegment(pathSegments);
 
   if (intelPanelCount) {
     intelPanelCount.textContent = `${formatWholeNumber(totalPackets)} total packets`;
   }
 
-  // S-04/S-05: 2-column RF Coverage metric grid (first section)
+  // Block 1 — Coverage: 2-column metric grid
   intelGrid.innerHTML = [
     intelStat(
-      "Heard Nodes",
+      "Heard nodes",
       formatWholeNumber(totalNodes),
-      totalNodes ? `${formatWholeNumber(mappedNodes)} mapped` : "Waiting for nodes"
+      totalNodes ? `${formatWholeNumber(mappedNodes)} mapped` : "Waiting for nodes",
+      "heard-accent"
     ),
     intelStat(
-      "Direct RF",
-      directShare == null ? "n/a" : `${directShare}%`,
-      directPackets ? `${formatWholeNumber(directPackets)} pkts` : "No direct traffic",
-      "direct"
+      "Coverage",
+      totalNodes ? `${coverageShare}%` : "—",
+      totalNodes ? `${formatWholeNumber(mappedNodes)} of ${formatWholeNumber(totalNodes)}` : "No node roster yet"
     ),
   ].join("");
 
   if (!totalPackets && !totalNodes) {
     intelStory.innerHTML = `
-      ${receiverTelemetryCard(receiver)}
+      ${channelUtilizationBlock(receiver)}
       <div class="hud-empty compact">
         <p>Waiting for passive mesh traffic to build an intel view.</p>
       </div>
@@ -2404,7 +2390,22 @@ function renderMeshSummary(data) {
     return;
   }
 
-  // S-06/S-07/S-08: Proportional bar chart for packet breakdown
+  // Block 2 — Routing health: 3 KV rows
+  const dominantLabel = dominantPath
+    ? `${sharePercentage(dominantPath.value, totalPackets)}% ${dominantPath.label.toLowerCase()}`
+    : "Waiting";
+  const routingHealthHtml = `
+    <div class="signals-section">
+      <span class="signals-section-label">Routing health</span>
+      <div class="routing-health">
+        ${routingHealthRow("Dominant path", dominantLabel)}
+        ${routingHealthRow("Direct RF", directPackets ? `${directShare}% · ${formatWholeNumber(directPackets)} pkts` : "No direct traffic")}
+        ${routingHealthRow("Total packets", formatWholeNumber(totalPackets))}
+      </div>
+    </div>
+  `;
+
+  // Block 3 — Packet breakdown: proportional bars
   const breakdownTypes = [
     { label: "ACK only", value: otherPackets, tone: "ack" },
     { label: "Telemetry", value: telemetryPackets, tone: "telemetry" },
@@ -2413,47 +2414,28 @@ function renderMeshSummary(data) {
   const maxBreakdown = Math.max(...breakdownTypes.map((t) => t.value), 1);
 
   const breakdownHtml = `
-    <div class="packet-breakdown">
-      ${breakdownTypes.map((t) => {
-        const barWidth = Math.round((t.value / maxBreakdown) * 80);
-        return `
-          <div class="breakdown-row">
-            <span class="breakdown-label">${escapeHtml(t.label)}</span>
-            <span class="breakdown-bar"><span class="breakdown-bar-fill ${t.tone}" style="width:${barWidth}px"></span></span>
-            <span class="breakdown-count mono-text">${formatWholeNumber(t.value)}</span>
-          </div>
-        `;
-      }).join("")}
+    <div class="signals-section">
+      <span class="signals-section-label">Packet breakdown</span>
+      <div class="packet-breakdown">
+        ${breakdownTypes.map((t) => {
+          const barPct = Math.round((t.value / maxBreakdown) * 100);
+          return `
+            <div class="breakdown-row">
+              <span class="breakdown-label">${escapeHtml(t.label)}</span>
+              <span class="breakdown-bar"><span class="breakdown-bar-fill ${t.tone}" style="width:${barPct}%"></span></span>
+              <span class="breakdown-count mono-text">${formatWholeNumber(t.value)}</span>
+            </div>
+          `;
+        }).join("")}
+      </div>
     </div>
   `;
 
-  // S-01: Reorder: RF coverage (intelGrid) → packet breakdown → traceroute (rendered separately) → last event
+  // Block 4 — Channel utilization (compact, last)
   intelStory.innerHTML = [
-    `<article class="intel-story-card">${breakdownHtml}</article>`,
-    receiverTelemetryCard(receiver),
-    `
-      <article class="intel-story-card readout">
-        <div class="intel-story-head">
-          <div>
-            <p class="intel-story-kicker">Current Read</p>
-            <h3>Receiver snapshot</h3>
-          </div>
-          <span class="mono-text">${escapeHtml(totalPackets ? `${formatWholeNumber(totalPackets)} packets` : `${formatWholeNumber(totalNodes)} nodes`)}</span>
-        </div>
-        <div class="intel-readout">
-          ${intelReadoutRow(
-            "Dominant path",
-            dominantPath ? `${dominantPath.label} ${sharePercentage(dominantPath.value, totalPackets)}%` : "Waiting",
-            dominantPath ? `${formatWholeNumber(dominantPath.value)} packets` : "No passive packets yet"
-          )}
-          ${intelReadoutRow(
-            "Coverage",
-            totalNodes ? `${coverageShare}% mapped` : "Waiting",
-            totalNodes ? `${formatWholeNumber(mappedNodes)} of ${formatWholeNumber(totalNodes)} heard nodes` : "No node roster yet"
-          )}
-        </div>
-      </article>
-    `,
+    routingHealthHtml,
+    breakdownHtml,
+    channelUtilizationBlock(receiver),
   ].join("");
   updateOverviewStats();
 }

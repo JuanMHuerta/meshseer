@@ -22,6 +22,14 @@ SQLITE_CONNECT_TIMEOUT_SECONDS = SQLITE_BUSY_TIMEOUT_MS / 1000
 
 
 class MeshRepository:
+    _ADMIN_PORTNUM_MARKERS = (
+        "ADMIN",
+        "ROUTING",
+        "TRACEROUTE",
+        "REMOTE_HARDWARE",
+        "SIMULATOR",
+    )
+
     def __init__(
         self,
         db_path: Path,
@@ -87,6 +95,10 @@ class MeshRepository:
         if isinstance(name, str):
             return name
         return str(value)
+
+    @classmethod
+    def _non_admin_packet_clause(cls, column: str = "portnum") -> str:
+        return " AND ".join(f"{column} NOT LIKE '%{marker}%'" for marker in cls._ADMIN_PORTNUM_MARKERS)
 
     @staticmethod
     def _backfill_node_channels(connection: sqlite3.Connection) -> None:
@@ -2107,9 +2119,12 @@ class MeshRepository:
         *,
         limit: int = 20,
         primary_only: bool = False,
+        exclude_admin: bool = False,
     ) -> list[dict[str, Any]]:
         clauses = ["(from_node_num = ? OR to_node_num = ?)"]
         params: list[Any] = [node_num, node_num]
+        if exclude_admin:
+            clauses.append(self._non_admin_packet_clause())
         if primary_only:
             clauses.append(self._primary_channel_clause())
         where = " AND ".join(clauses)
@@ -2244,15 +2259,17 @@ class MeshRepository:
                 ORDER BY COALESCE(last_heard_at, '') DESC, node_num ASC
                 """
             ).fetchall()
+            non_admin_clause = self._non_admin_packet_clause()
             if primary_only:
                 packet_rows = connection.execute(
-                    """
+                    f"""
                     WITH recent_packets AS MATERIALIZED (
                         SELECT from_node_num
                         FROM packets INDEXED BY idx_packets_primary_recent_sender
                         WHERE from_node_num IS NOT NULL
                           AND COALESCE(channel_index, 0) = 0
                           AND received_at >= ?
+                          AND {non_admin_clause}
                     )
                     SELECT
                         from_node_num AS node_num,
@@ -2264,12 +2281,13 @@ class MeshRepository:
                 ).fetchall()
             else:
                 packet_rows = connection.execute(
-                    """
+                    f"""
                     WITH recent_packets AS MATERIALIZED (
                         SELECT from_node_num
                         FROM packets
                         WHERE from_node_num IS NOT NULL
                           AND received_at >= ?
+                          AND {non_admin_clause}
                     )
                     SELECT
                         from_node_num AS node_num,

@@ -388,6 +388,9 @@ function prependChatMessage(message) {
 }
 
 function patchNodeDetailRecentPackets(nodeNum, packet) {
+  if (!packetCountsForRecentActivity(packet)) {
+    return;
+  }
   const detailPayload = state.nodeDetails.get(nodeNum);
   if (!detailPayload) {
     return;
@@ -610,6 +613,7 @@ function observePacketNode(packet) {
     return;
   }
 
+  const countsForRecentActivity = packetCountsForRecentActivity(packet);
   const receivedAt = packet?.received_at || null;
   const packetHops = packetHopsTaken(packet);
   const pathTone = packetPathTone(packet);
@@ -635,7 +639,7 @@ function observePacketNode(packet) {
       updated_at: receivedAt,
       hops_away: packetHops,
       via_mqtt: pathTone === "mqtt" ? true : null,
-      activity_count_60m: 1,
+      activity_count_60m: countsForRecentActivity ? 1 : 0,
     });
     state.nodes = [nextNode, ...state.nodes];
     return;
@@ -650,7 +654,9 @@ function observePacketNode(packet) {
   if (existing.hops_away == null && packetHops != null) {
     existing.hops_away = packetHops;
   }
-  existing.activity_count_60m = intValue(existing.activity_count_60m) + 1;
+  if (countsForRecentActivity) {
+    existing.activity_count_60m = intValue(existing.activity_count_60m) + 1;
+  }
   syncRosterNodeMeta(existing);
 }
 
@@ -1599,6 +1605,10 @@ function portBadgeText(portnum) {
     return "Admin";
   }
   return "Other";
+}
+
+function packetCountsForRecentActivity(packet) {
+  return portCategory(packet?.portnum) !== "admin";
 }
 
 function packetFilterMatches(packet) {
@@ -2686,7 +2696,8 @@ async function loadPackets() {
 async function loadRecentActivityPackets() {
   return runSingleFlight("recentActivityPackets", async () => {
     const since = encodeURIComponent(isoMinutesAgo(recentPacketWindowMinutes()));
-    state.recentActivityPackets = await fetchJson(`/api/packets?limit=${MAX_ACTIVITY_PACKETS}&since=${since}`);
+    state.recentActivityPackets = (await fetchJson(`/api/packets?limit=${MAX_ACTIVITY_PACKETS}&since=${since}`))
+      .filter(packetCountsForRecentActivity);
     setLastPacketReceivedAt(state.recentActivityPackets[0]?.received_at);
     if (state.nodes.length) {
       renderMap(state.nodes);
@@ -2814,7 +2825,7 @@ function maybeRefreshSelectedNodeDetail(packet) {
 }
 
 function recordRecentActivityPacket(packet) {
-  if (!packet) {
+  if (!packet || !packetCountsForRecentActivity(packet)) {
     return;
   }
   const cutoffMs = Date.now() - (recentPacketWindowMinutes() * 60_000);

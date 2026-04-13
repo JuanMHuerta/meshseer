@@ -499,7 +499,12 @@ def create_app(
             raise HTTPException(status_code=404, detail="node not found")
         return public_node_detail_payload(
             node,
-            recent_packets=repository.list_packets_for_node(node_num, limit=20, primary_only=True),
+            recent_packets=repository.list_packets_for_node(
+                node_num,
+                limit=20,
+                primary_only=True,
+                exclude_admin=True,
+            ),
             insights=repository.get_node_insights(node_num, primary_only=True),
         )
 

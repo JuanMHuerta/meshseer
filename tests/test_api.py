@@ -536,6 +536,22 @@ def test_nodes_roster_exposes_supported_filter_metadata(tmp_path, monkeypatch):
             raw_json='{"id":24,"channel":2}',
             via_mqtt=False,
         ),
+        PacketRecord(
+            mesh_packet_id=25,
+            received_at="2026-03-30T12:29:00Z",
+            from_node_num=202,
+            to_node_num=101,
+            portnum="TRACEROUTE_APP",
+            channel_index=0,
+            hop_limit=1,
+            hop_start=1,
+            rx_snr=3.3,
+            rx_rssi=-95,
+            text_preview=None,
+            payload_base64=None,
+            raw_json='{"id":25}',
+            via_mqtt=False,
+        ),
     ]
     for packet in packet_rows:
         repo.insert_packet(packet)
@@ -579,6 +595,36 @@ def test_nodes_roster_exposes_supported_filter_metadata(tmp_path, monkeypatch):
     assert items[505]["activity_count_60m"] == 0
     assert "mobility" not in items[101]
     assert "has_text_traffic" not in items[202]
+
+
+def test_node_detail_hides_admin_packets_from_recent_activity(tmp_path):
+    app, _collector = build_app(tmp_path)
+    repo = app.state.repository
+
+    repo.insert_packet(
+        PacketRecord(
+            mesh_packet_id=13,
+            received_at="2026-03-30T12:06:00Z",
+            from_node_num=101,
+            to_node_num=202,
+            portnum="TRACEROUTE_APP",
+            channel_index=0,
+            hop_limit=1,
+            hop_start=1,
+            rx_snr=4.1,
+            rx_rssi=-90,
+            text_preview=None,
+            payload_base64=None,
+            raw_json='{"id":13}',
+            via_mqtt=False,
+        )
+    )
+
+    with TestClient(app) as client:
+        node = client.get("/api/nodes/101")
+
+    assert node.status_code == 200
+    assert [packet["portnum"] for packet in node.json()["recent_packets"]] == ["TEXT_MESSAGE_APP"]
 
 
 def test_health_uses_collector_local_node_num_when_env_override_is_absent(tmp_path):

@@ -237,6 +237,47 @@ def test_repository_filters_packets_and_chat(tmp_path):
     assert [item["mesh_packet_id"] for item in chat] == [1]
 
 
+def test_repository_excludes_admin_packets_from_node_activity(tmp_path):
+    repo = MeshRepository(tmp_path / "mesh.db")
+
+    repo.insert_packet(
+        PacketRecord(
+            mesh_packet_id=1,
+            received_at="2026-03-30T12:00:00Z",
+            from_node_num=101,
+            to_node_num=BROADCAST_NODE_NUM,
+            portnum="TEXT_MESSAGE_APP",
+            channel_index=0,
+            hop_limit=None,
+            rx_snr=None,
+            text_preview="hello",
+            payload_base64=None,
+            raw_json="{}",
+        )
+    )
+    repo.insert_packet(
+        PacketRecord(
+            mesh_packet_id=2,
+            received_at="2026-03-30T12:01:00Z",
+            from_node_num=101,
+            to_node_num=202,
+            portnum="TRACEROUTE_APP",
+            channel_index=0,
+            hop_limit=None,
+            rx_snr=None,
+            text_preview=None,
+            payload_base64=None,
+            raw_json="{}",
+        )
+    )
+
+    visible_packets = repo.list_packets_for_node(101, primary_only=True, exclude_admin=True)
+    all_packets = repo.list_packets_for_node(101, primary_only=True)
+
+    assert [item["mesh_packet_id"] for item in visible_packets] == [1]
+    assert [item["mesh_packet_id"] for item in all_packets] == [2, 1]
+
+
 def test_repository_backfills_node_channel_index_from_raw_json(tmp_path):
     db_path = tmp_path / "mesh.db"
 

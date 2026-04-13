@@ -3,6 +3,9 @@ credentials-file: /etc/cloudflared/REPLACE_WITH_YOUR_TUNNEL_ID.json
 
 ingress:
   - hostname: meshseer.nemexix.com
+    path: '^/api/health$'
+    service: http_status:404
+  - hostname: meshseer.nemexix.com
     path: '^/api/admin(?:/.*)?$'
     service: http_status:404
   - hostname: meshseer.nemexix.com

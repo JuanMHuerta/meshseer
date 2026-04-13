@@ -112,6 +112,18 @@ def _perspective_payload(settings: Settings, repository: MeshRepository, collect
     }
 
 
+def _public_status_payload(settings: Settings, repository: MeshRepository, collector: Any) -> dict[str, Any]:
+    status = collector.current_status()
+    perspective = _perspective_payload(settings, repository, collector)
+    return {
+        "collector": collector_status_payload(_status_payload(status)),
+        "perspective": {
+            "local_node_num": perspective["local_node_num"],
+            "label": perspective["label"],
+        },
+    }
+
+
 def _normalized_http_scheme(value: str) -> str:
     normalized = value.strip().split(",", 1)[0].lower()
     if normalized == "ws":
@@ -405,13 +417,12 @@ def create_app(
 
     @public_router.get("/api/health")
     async def health() -> dict[str, Any]:
-        status = collector.current_status()
         ready = repository.healthcheck()
-        return {
-            "status": "ok" if ready else "error",
-            "collector": collector_status_payload(_status_payload(status)),
-            "perspective": _perspective_payload(settings, repository, collector),
-        }
+        return {"status": "ok" if ready else "error"}
+
+    @public_router.get("/api/status")
+    async def public_status() -> dict[str, Any]:
+        return _public_status_payload(settings, repository, collector)
 
     @public_router.get("/api/packets")
     async def list_packets(

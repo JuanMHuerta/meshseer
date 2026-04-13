@@ -2653,7 +2653,7 @@ async function loadNodeDetail(nodeNum, { force = false } = {}) {
 
 async function loadHealth() {
   return runSingleFlight("health", async () => {
-    const payload = await fetchJson("/api/health");
+    const payload = await fetchJson("/api/status");
     setCollectorStatus(payload.collector);
     setPerspective(payload.perspective);
   });

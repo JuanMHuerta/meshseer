@@ -215,6 +215,7 @@ def test_api_routes_and_filters(tmp_path):
 
     with TestClient(app) as client:
         health = client.get("/api/health")
+        status = client.get("/api/status")
         packets = client.get("/api/packets", params={"from_node": 101, "portnum": "TEXT_MESSAGE_APP"})
         chat = client.get("/api/chat")
         node = client.get("/api/nodes/101")
@@ -226,11 +227,13 @@ def test_api_routes_and_filters(tmp_path):
 
     assert collector.started is False
     assert health.status_code == 200
-    assert health.json()["collector"]["state"] == "connected"
-    assert "detail" not in health.json()["collector"]
-    assert health.json()["perspective"]["channel_name"] == "LongFast"
-    assert health.json()["perspective"]["local_node_num"] == 101
-    assert health.json()["perspective"]["label"] == "ALFA"
+    assert health.json() == {"status": "ok"}
+    assert status.status_code == 200
+    assert status.json()["collector"]["state"] == "connected"
+    assert "detail" not in status.json()["collector"]
+    assert status.json()["perspective"]["local_node_num"] == 101
+    assert status.json()["perspective"]["label"] == "ALFA"
+    assert "channel_name" not in status.json()["perspective"]
     assert "database" not in health.json()
     assert packets.json()[0]["text_preview"] == "hello mesh"
     assert packets.json()[0]["path_label"] == "Direct"
@@ -614,10 +617,12 @@ def test_health_uses_collector_local_node_num_when_env_override_is_absent(tmp_pa
 
     with TestClient(app) as client:
         health = client.get("/api/health")
+        status = client.get("/api/status")
 
     assert health.status_code == 200
-    assert health.json()["perspective"]["local_node_num"] == 101
-    assert health.json()["perspective"]["label"] == "ALFA"
+    assert health.json() == {"status": "ok"}
+    assert status.json()["perspective"]["local_node_num"] == 101
+    assert status.json()["perspective"]["label"] == "ALFA"
 
 
 def test_mesh_summary_and_node_insights_expose_passive_path_data(tmp_path):

@@ -130,11 +130,12 @@ After you place the real tunnel ID and credentials file:
 ```bash
 cloudflared tunnel ingress validate
 cloudflared tunnel ingress rule https://meshseer.nemexix.com/api/admin/health
+cloudflared tunnel ingress rule https://meshseer.nemexix.com/api/health
 cloudflared --config /etc/cloudflared/config.yml service install
 systemctl enable --now cloudflared
 ```
 
-The `/api/admin/...` probe must match the `http_status:404` rule, not the Meshseer origin.
+The `/api/admin/...` and `/api/health` probes must match the `http_status:404` rule, not the Meshseer origin. The public UI uses `/api/status` instead.
 
 ## DNS And Public Hostname
 
@@ -145,7 +146,8 @@ In Cloudflare:
    `meshseer.nemexix.com` -> `http://127.0.0.1:8000`
 3. Keep the hostname proxied.
 4. Confirm WebSockets are allowed.
-5. Do not enable edge caching for this hostname.
+5. Add a WAF custom rule to block requests on ports other than `80` and `443`.
+6. Do not enable edge caching for this hostname.
 
 ## Admin Access
 
@@ -180,7 +182,8 @@ If the container is dedicated to Meshseer, Proxmox snapshot backups are a good f
 
 1. `systemctl status meshseer` is healthy.
 2. `curl http://127.0.0.1:8000/api/health` works inside the container.
-3. `curl https://meshseer.nemexix.com/api/health` works publicly.
-4. `curl https://meshseer.nemexix.com/api/admin/health` returns Cloudflare `404`.
-5. `curl https://meshseer.nemexix.com/docs` returns `404`.
-6. The dashboard loads and `/ws/events` stays connected.
+3. `curl https://meshseer.nemexix.com/api/health` returns Cloudflare `404`.
+4. `curl https://meshseer.nemexix.com/api/status` works publicly.
+5. `curl https://meshseer.nemexix.com/api/admin/health` returns Cloudflare `404`.
+6. `curl https://meshseer.nemexix.com/docs` returns `404`.
+7. The dashboard loads and `/ws/events` stays connected.

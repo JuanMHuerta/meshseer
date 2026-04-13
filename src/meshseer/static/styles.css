@@ -1984,56 +1984,6 @@ h3 {
   line-height: 1.35;
 }
 
-.node-hud-activity {
-  margin-top: 12px;
-}
-
-.node-hud-activity-head {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 10px;
-  color: var(--ink-soft);
-  font-size: 0.76rem;
-  font-weight: 600;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-}
-
-.node-hud-activity-list {
-  display: grid;
-  gap: 8px;
-  margin-top: 8px;
-}
-
-.node-hud-activity-row {
-  padding: 10px 12px;
-  border: 1px solid var(--line);
-  border-radius: var(--radius-md);
-  background: rgba(14, 30, 36, 0.72);
-}
-
-.node-hud-activity-top {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 10px;
-}
-
-.node-hud-activity-route {
-  margin-top: 6px;
-  font-size: 0.82rem;
-  line-height: 1.35;
-  color: var(--ink-soft);
-}
-
-.node-hud-activity-preview {
-  margin: 6px 0 0;
-  color: var(--ink);
-  font-size: 0.86rem;
-  line-height: 1.5;
-}
-
 /* ============================================================
    Bottom Drawer (Traffic Table)
    ============================================================ */
@@ -2266,25 +2216,6 @@ tbody tr:hover td {
 .path-badge.unknown {
   background: rgba(255, 255, 255, 0.05);
   color: var(--text-muted);
-}
-
-/* Preview cell (P-10, P-11) */
-.preview-cell {
-  min-width: 220px;
-  max-width: 400px;
-  display: -webkit-box;
-  -webkit-line-clamp: 3;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-  margin: 0;
-  color: var(--text-primary);
-  font-size: 11px;
-  line-height: 1.5;
-}
-
-.preview-cell--empty {
-  color: var(--text-faint);
-  font-style: normal;
 }
 
 .empty-cell {

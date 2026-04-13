@@ -6,7 +6,7 @@ import secrets
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
@@ -16,7 +16,7 @@ from starlette import status
 
 from meshseer.audit import FailedAccessTracker, audit_log, request_source
 from meshseer.autotrace import AutoTracerouteConfig, AutoTracerouteService
-from meshseer.channels import LONGFAST_CHANNEL_NAME, is_primary_channel
+from meshseer.channels import BROADCAST_NODE_NUM, LONGFAST_CHANNEL_NAME, is_primary_channel
 from meshseer.clock import to_utc_iso, utc_now, utc_now_iso
 from meshseer.collector import CollectorCallbacks, CollectorStatus, MeshtasticReceiver
 from meshseer.config import Settings
@@ -24,6 +24,7 @@ from meshseer.events import EventBroker, EventSubscriptionOverflow, TooManySubsc
 from meshseer.models import NodeRecord, PacketRecord
 from meshseer.public_api import (
     collector_status_payload,
+    public_chat_message_payload,
     public_chat_messages_payload,
     public_mesh_summary_payload,
     public_node_detail_payload,
@@ -38,6 +39,7 @@ from meshseer.storage import MeshRepository
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 RECEIVER_UTILIZATION_WINDOW_MINUTES = 10
 ROUTES_MAX_LOOKBACK_DAYS = 7
+PUBLIC_CHAT_LIMIT = 40
 PRODUCTION_CSP = "; ".join(
     (
         "default-src 'self'",
@@ -162,6 +164,16 @@ def _bounded_routes_since(since: str | None) -> str:
     return to_utc_iso(parsed)
 
 
+def _is_public_chat_packet(packet: Mapping[str, Any]) -> bool:
+    text_preview = packet.get("text_preview")
+    return (
+        packet.get("portnum") == "TEXT_MESSAGE_APP"
+        and isinstance(text_preview, str)
+        and bool(text_preview.strip())
+        and packet.get("to_node_num") == BROADCAST_NODE_NUM
+    )
+
+
 def _websocket_origin_allowed(websocket: WebSocket) -> bool:
     origin = websocket.headers.get("origin")
     host = websocket.headers.get("host")
@@ -266,6 +278,22 @@ def create_app(
                 "data": public_packet_payload(stored),
             }
         )
+        if _is_public_chat_packet(stored):
+            chat_packet = dict(stored)
+            from_node_num = chat_packet.get("from_node_num")
+            if isinstance(from_node_num, int):
+                sender_node = repository.get_node(from_node_num, primary_only=True)
+                if sender_node is not None:
+                    chat_packet.setdefault("from_short_name", sender_node.get("short_name"))
+                    chat_packet.setdefault("from_long_name", sender_node.get("long_name"))
+                    chat_packet.setdefault("from_node_id", sender_node.get("node_id"))
+            event_broker.publish(
+                {
+                    "type": "chat_message_received",
+                    "ts": utc_now_iso(),
+                    "data": public_chat_message_payload(chat_packet),
+                }
+            )
 
     def handle_node(node: dict[str, Any]) -> None:
         if not _is_longfast_node(node):
@@ -442,8 +470,10 @@ def create_app(
         )
 
     @public_router.get("/api/chat")
-    async def list_chat_messages(limit: int = Query(default=50, ge=1, le=500)) -> list[dict[str, Any]]:
-        return public_chat_messages_payload(repository.list_chat_messages(limit=limit, primary_only=True))
+    async def list_chat_messages(limit: int = Query(default=PUBLIC_CHAT_LIMIT, ge=1, le=500)) -> list[dict[str, Any]]:
+        return public_chat_messages_payload(
+            repository.list_chat_messages(limit=min(limit, PUBLIC_CHAT_LIMIT), primary_only=True)
+        )
 
     @public_router.get("/api/mesh/summary")
     async def mesh_summary() -> dict[str, Any]:
@@ -499,12 +529,6 @@ def create_app(
             raise HTTPException(status_code=404, detail="node not found")
         return public_node_detail_payload(
             node,
-            recent_packets=repository.list_packets_for_node(
-                node_num,
-                limit=20,
-                primary_only=True,
-                exclude_admin=True,
-            ),
             insights=repository.get_node_insights(node_num, primary_only=True),
         )
 

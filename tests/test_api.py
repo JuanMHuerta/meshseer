@@ -235,9 +235,9 @@ def test_api_routes_and_filters(tmp_path):
     assert status.json()["perspective"]["label"] == "ALFA"
     assert "channel_name" not in status.json()["perspective"]
     assert "database" not in health.json()
-    assert packets.json()[0]["text_preview"] == "hello mesh"
     assert packets.json()[0]["path_label"] == "Direct"
     assert packets.json()[0]["path_tone"] == "direct"
+    assert "text_preview" not in packets.json()[0]
     assert "mesh_packet_id" not in packets.json()[0]
     assert "channel_index" not in packets.json()[0]
     assert "hop_limit" not in packets.json()[0]
@@ -254,10 +254,10 @@ def test_api_routes_and_filters(tmp_path):
     assert "from_node_num" not in chat.json()[0]
     assert "mesh_packet_id" not in chat.json()[0]
     assert node.json()["node"]["node_num"] == 101
+    assert "latitude" not in node.json()["node"]
+    assert "longitude" not in node.json()["node"]
     assert "raw_json" not in node.json()["node"]
-    assert node.json()["recent_packets"][0]["path_label"] == "Direct"
-    assert "hop_limit" not in node.json()["recent_packets"][0]
-    assert "payload_base64" not in node.json()["recent_packets"][0]
+    assert "recent_packets" not in node.json()
     assert hidden_node.status_code == 404
     assert admin_packet.json()["mesh_packet_id"] == 11
     assert admin_packet.json()["raw_json"] == '{"id":11}'
@@ -597,7 +597,7 @@ def test_nodes_roster_exposes_supported_filter_metadata(tmp_path, monkeypatch):
     assert "has_text_traffic" not in items[202]
 
 
-def test_node_detail_hides_admin_packets_from_recent_activity(tmp_path):
+def test_node_detail_omits_recent_activity_packets(tmp_path):
     app, _collector = build_app(tmp_path)
     repo = app.state.repository
 
@@ -624,7 +624,48 @@ def test_node_detail_hides_admin_packets_from_recent_activity(tmp_path):
         node = client.get("/api/nodes/101")
 
     assert node.status_code == 200
-    assert [packet["portnum"] for packet in node.json()["recent_packets"]] == ["TEXT_MESSAGE_APP"]
+    assert "recent_packets" not in node.json()
+
+
+def test_public_node_payload_obfuscates_roster_coordinates_and_hides_detail_coordinates(tmp_path):
+    app, _collector = build_app(tmp_path)
+    repo = app.state.repository
+
+    repo.upsert_node(
+        NodeRecord(
+            node_num=303,
+            node_id="!0000012f",
+            short_name="GAMMA",
+            long_name="Gamma Node",
+            hardware_model="TBEAM",
+            role="CLIENT",
+            channel_index=0,
+            last_heard_at="2026-03-30T12:08:00Z",
+            last_snr=2.5,
+            latitude=10.25789,
+            longitude=-84.12349,
+            altitude=18.0,
+            battery_level=74.0,
+            channel_utilization=5.2,
+            air_util_tx=1.8,
+            raw_json='{"num":303}',
+            updated_at="2026-03-30T12:08:00Z",
+            hops_away=2,
+            via_mqtt=False,
+        )
+    )
+
+    with TestClient(app) as client:
+        roster = client.get("/api/nodes/roster")
+        node = client.get("/api/nodes/303")
+
+    assert roster.status_code == 200
+    roster_item = next(item for item in roster.json() if item["node_num"] == 303)
+    assert roster_item["latitude"] == 10.2578
+    assert roster_item["longitude"] == -84.1234
+    assert node.status_code == 200
+    assert "latitude" not in node.json()["node"]
+    assert "longitude" not in node.json()["node"]
 
 
 def test_health_uses_collector_local_node_num_when_env_override_is_absent(tmp_path):
@@ -1886,8 +1927,8 @@ def test_default_collector_callbacks_persist_and_broadcast(tmp_path):
                     "channel_index": 0,
                     "last_heard_at": "2026-03-30T12:00:00Z",
                     "last_snr": 4.2,
-                    "latitude": None,
-                    "longitude": None,
+                    "latitude": 10.25789,
+                    "longitude": -84.12349,
                     "altitude": None,
                     "battery_level": None,
                     "channel_utilization": None,
@@ -1898,7 +1939,7 @@ def test_default_collector_callbacks_persist_and_broadcast(tmp_path):
             )
             collector.callbacks.on_status(CollectorStatus(state="disconnected", connected=False, detail="missing radio"))
 
-            messages = [websocket.receive_json() for _ in range(3)]
+            messages = [websocket.receive_json() for _ in range(4)]
 
         packet = client.get("/api/admin/packets/1", headers=admin_headers())
         node = client.get("/api/nodes/7")
@@ -1910,25 +1951,33 @@ def test_default_collector_callbacks_persist_and_broadcast(tmp_path):
 
     message_types = {message["type"] for message in messages}
     packet_message = next(message for message in messages if message["type"] == "packet_received")
+    chat_message = next(message for message in messages if message["type"] == "chat_message_received")
     node_message = next(message for message in messages if message["type"] == "node_updated")
     status_message = next(message for message in messages if message["type"] == "collector_status")
 
-    assert message_types == {"packet_received", "node_updated", "collector_status"}
-    assert packet_message["data"]["text_preview"] == "ping"
+    assert message_types == {"packet_received", "chat_message_received", "node_updated", "collector_status"}
     assert packet_message["data"]["path_label"] == "Unknown"
     assert packet_message["data"]["path_tone"] == "unknown"
+    assert "text_preview" not in packet_message["data"]
     assert "mesh_packet_id" not in packet_message["data"]
     assert "channel_index" not in packet_message["data"]
     assert "hop_limit" not in packet_message["data"]
     assert "via_mqtt" not in packet_message["data"]
     assert "payload_base64" not in packet_message["data"]
     assert "raw_json" not in packet_message["data"]
+    assert chat_message["data"]["text_preview"] == "ping"
+    assert chat_message["data"]["sender_label"] == "Node 7"
+    assert chat_message["data"]["path_label"] == "Unknown"
     assert node_message["data"]["short_name"] == "NODE7"
+    assert node_message["data"]["latitude"] == 10.2578
+    assert node_message["data"]["longitude"] == -84.1234
     assert "raw_json" not in node_message["data"]
     assert status_message["data"] == {"state": "disconnected", "connected": False}
     assert packet.json()["mesh_packet_id"] == 22
     assert packet.json()["raw_json"] == "{}"
     assert node.json()["node"]["short_name"] == "NODE7"
+    assert "latitude" not in node.json()["node"]
+    assert "longitude" not in node.json()["node"]
     assert hidden_packet.status_code == 404
     assert hidden_node.status_code == 404
     assert chat.json()[0]["text_preview"] == "ping"
@@ -1938,6 +1987,36 @@ def test_default_collector_callbacks_persist_and_broadcast(tmp_path):
     assert "raw_json" not in chat.json()[0]
     assert missing_packet.status_code == 404
     assert missing_node.status_code == 404
+
+
+def test_chat_api_caps_public_history_to_40_messages(tmp_path):
+    app, _collector = build_app(tmp_path)
+    repo = app.state.repository
+
+    for offset in range(45):
+        repo.insert_packet(
+            PacketRecord(
+                mesh_packet_id=1000 + offset,
+                received_at=f"2026-03-30T12:{offset:02d}:00Z",
+                from_node_num=101,
+                to_node_num=BROADCAST_NODE_NUM,
+                portnum="TEXT_MESSAGE_APP",
+                channel_index=0,
+                hop_limit=1,
+                rx_snr=4.2,
+                text_preview=f"msg {offset}",
+                payload_base64=None,
+                raw_json=f'{{"id":{1000 + offset}}}',
+            )
+        )
+
+    with TestClient(app) as client:
+        chat = client.get("/api/chat", params={"limit": 100})
+
+    assert chat.status_code == 200
+    assert len(chat.json()) == 40
+    assert chat.json()[0]["text_preview"] == "msg 44"
+    assert chat.json()[-1]["text_preview"] == "msg 5"
 
 
 def test_websocket_rejects_missing_origin(tmp_path):

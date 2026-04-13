@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from typing import Any, Mapping
 
 
@@ -9,7 +10,6 @@ PUBLIC_PACKET_FIELDS = (
     "from_node_num",
     "to_node_num",
     "portnum",
-    "text_preview",
 )
 
 PUBLIC_CHAT_FIELDS = (
@@ -43,6 +43,10 @@ PUBLIC_NODE_FIELDS = (
     "activity_count_60m",
 )
 
+PUBLIC_NODE_DETAIL_FIELDS = tuple(
+    field for field in PUBLIC_NODE_FIELDS if field not in {"latitude", "longitude"}
+)
+
 PUBLIC_NODE_INSIGHTS_FIELDS = (
     "heard_packets",
     "broadcast_packets",
@@ -61,6 +65,18 @@ PUBLIC_NODE_INSIGHTS_FIELDS = (
 
 def _pick(mapping: Mapping[str, Any], fields: tuple[str, ...]) -> dict[str, Any]:
     return {field: mapping.get(field) for field in fields}
+
+
+def _obfuscated_coordinate(value: Any) -> float | None:
+    if isinstance(value, bool):
+        return None
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(numeric):
+        return None
+    return math.trunc(numeric * 10_000) / 10_000
 
 
 def _coerce_int(value: Any) -> int | None:
@@ -150,7 +166,14 @@ def public_chat_messages_payload(items: list[Mapping[str, Any]]) -> list[dict[st
 
 
 def public_node_payload(node: Mapping[str, Any]) -> dict[str, Any]:
-    return _pick(node, PUBLIC_NODE_FIELDS)
+    payload = _pick(node, PUBLIC_NODE_FIELDS)
+    payload["latitude"] = _obfuscated_coordinate(payload.get("latitude"))
+    payload["longitude"] = _obfuscated_coordinate(payload.get("longitude"))
+    return payload
+
+
+def public_node_detail_node_payload(node: Mapping[str, Any]) -> dict[str, Any]:
+    return _pick(node, PUBLIC_NODE_DETAIL_FIELDS)
 
 
 def public_nodes_payload(items: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
@@ -160,12 +183,10 @@ def public_nodes_payload(items: list[Mapping[str, Any]]) -> list[dict[str, Any]]
 def public_node_detail_payload(
     node: Mapping[str, Any],
     *,
-    recent_packets: list[Mapping[str, Any]],
     insights: Mapping[str, Any],
 ) -> dict[str, Any]:
     return {
-        "node": public_node_payload(node),
-        "recent_packets": public_packets_payload(recent_packets),
+        "node": public_node_detail_node_payload(node),
         "insights": _pick(insights, PUBLIC_NODE_INSIGHTS_FIELDS),
     }
 

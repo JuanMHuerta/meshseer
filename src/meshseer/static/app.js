@@ -56,8 +56,7 @@ const DEFAULT_NODE_ACTIVE_WINDOW_MINUTES = 180;
 const NETWORK_ROUTE_WINDOW_MINUTES = 7 * 24 * 60;
 const SELECTED_ROUTE_WINDOW_MINUTES = 7 * 24 * 60;
 const PACKETS_LIMIT = 40;
-const CHAT_MESSAGES_LIMIT = 60;
-const NODE_DETAIL_RECENT_PACKETS_LIMIT = 20;
+const CHAT_MESSAGES_LIMIT = 40;
 const MAX_ACTIVITY_PACKETS = 500;
 const KPI_STALE_WINDOW_MINUTES = 10;
 const NODE_MAX_OPACITY = 0.94;
@@ -190,16 +189,6 @@ function formatCompactChange(value, digits = 0, suffix = "") {
     return "n/a";
   }
   return `${Math.abs(Number(value)).toFixed(digits)}${suffix}`;
-}
-
-function formatCoordinate(value, axis) {
-  if (value == null || Number.isNaN(Number(value))) {
-    return "n/a";
-  }
-  const hemisphere = axis === "lat"
-    ? (value >= 0 ? "N" : "S")
-    : (value >= 0 ? "E" : "W");
-  return `${Math.abs(Number(value)).toFixed(4)}° ${hemisphere}`;
 }
 
 function titleCase(value) {
@@ -384,23 +373,6 @@ function prependChatMessage(message) {
   state.chat = prependUniqueItem(state.chat, message, {
     limit: CHAT_MESSAGES_LIMIT,
     keyFor: chatMessageKey,
-  });
-}
-
-function patchNodeDetailRecentPackets(nodeNum, packet) {
-  if (!packetCountsForRecentActivity(packet)) {
-    return;
-  }
-  const detailPayload = state.nodeDetails.get(nodeNum);
-  if (!detailPayload) {
-    return;
-  }
-  state.nodeDetails.set(nodeNum, {
-    ...detailPayload,
-    recent_packets: prependUniqueItem(detailPayload.recent_packets, packet, {
-      limit: NODE_DETAIL_RECENT_PACKETS_LIMIT,
-      keyFor: packetKey,
-    }),
   });
 }
 
@@ -707,27 +679,6 @@ function packetPathTone(packet) {
 
 function packetPathLabel(packet) {
   return packet?.path_label || "Unknown";
-}
-
-function packetPathDetails(packet) {
-  if (!packet) {
-    return "";
-  }
-
-  if (packetPathTone(packet) === "mqtt") {
-    return "Seen via MQTT bridge";
-  }
-  const hops = packetHopsTaken(packet);
-  if (hops === 0) {
-    return "Heard by receiver without relay";
-  }
-  if (hops === 1) {
-    return "Arrived after 1 relay hop";
-  }
-  if (hops != null) {
-    return `Arrived after ${hops} relay hops`;
-  }
-  return "";
 }
 
 function nodePathTone(node) {
@@ -1799,16 +1750,6 @@ function updateOverviewStats() {
   renderMapHud();
 }
 
-function packetDirectionLabel(packet, nodeNum) {
-  if (packet.from_node_num === nodeNum) {
-    return `TX -> ${toNodeLabel(packet)}`;
-  }
-  if (packet.to_node_num === nodeNum) {
-    return `RX <- ${fromNodeLabel(packet)}`;
-  }
-  return `${fromNodeLabel(packet)} -> ${toNodeLabel(packet)}`;
-}
-
 function renderNodeDetail(node) {
   if (!node) {
     nodeDetail.innerHTML = `
@@ -1821,10 +1762,7 @@ function renderNodeDetail(node) {
   }
 
   const detailPayload = state.nodeDetails.get(node.node_num);
-  const recentPackets = detailPayload?.recent_packets?.slice(0, 3) || [];
   const insights = detailPayload?.insights || null;
-  const loading = state.nodeDetailLoadingNodeNum === node.node_num;
-  const hasError = state.nodeDetailErrorNodeNum === node.node_num;
   const freshness = nodeFreshness(node);
   const hudTone = freshness;
   const pathLabel = nodePathLabel(node);
@@ -1847,48 +1785,6 @@ function renderNodeDetail(node) {
         ${metric("SNR", formatNumber(node.last_snr, 1, " dB"), freshness === "stale" ? "muted" : "")}
         ${metric("Packets Heard", formatWholeNumber(insights?.heard_packets))}
         ${metric("Battery", node.battery_level == null ? "n/a" : `${Math.round(node.battery_level)}%`)}
-        ${metric("Latitude", formatCoordinate(node.latitude, "lat"))}
-        ${metric("Longitude", formatCoordinate(node.longitude, "lon"))}
-      </div>
-
-      <div class="node-hud-activity">
-        <div class="node-hud-activity-head">
-          <span>Recent Activity</span>
-          <span class="mono-text">Node Detail</span>
-        </div>
-
-        ${loading ? `
-          <div class="hud-empty compact">
-            <p>Loading recent node activity...</p>
-          </div>
-        ` : ""}
-
-        ${!loading && hasError ? `
-          <div class="hud-empty compact">
-            <p>Unable to load recent node activity.</p>
-          </div>
-        ` : ""}
-
-        ${!loading && !hasError && !recentPackets.length ? `
-          <div class="hud-empty compact">
-            <p>No recent packets for this node yet.</p>
-          </div>
-        ` : ""}
-
-        ${!loading && !hasError && recentPackets.length ? `
-          <div class="node-hud-activity-list">
-            ${recentPackets.map((packet) => `
-              <article class="node-hud-activity-row">
-                <div class="node-hud-activity-top">
-                  <span class="port-badge ${portCategory(packet.portnum)}">${escapeHtml(portBadgeText(packet.portnum))}</span>
-                  <span class="mono-text">${escapeHtml(formatTime(packet.received_at))}</span>
-                </div>
-                <div class="node-hud-activity-route">${escapeHtml(`${packetDirectionLabel(packet, node.node_num)} · ${packetPathLabel(packet)}`)}</div>
-                <p class="node-hud-activity-preview">${escapeHtml(packet.text_preview || packetPathDetails(packet) || "No text preview")}</p>
-              </article>
-            `).join("")}
-          </div>
-        ` : ""}
       </div>
     </div>
   `;
@@ -2473,11 +2369,6 @@ function packetRowMarkup(packet) {
 
   const pathContent = `<span class="path-badge ${pathTone}">${escapeHtml(isUnknown ? "Unknown" : packetPathLabel(packet))}</span>`;
 
-  const previewText = packet.text_preview;
-  const previewHtml = previewText
-    ? `<td class="preview-cell">${escapeHtml(previewText)}</td>`
-    : `<td class="preview-cell preview-cell--empty">\u2014</td>`;
-
   return `
     <tr class="packet-row ${category}">
       <td class="mono-text">${escapeHtml(formatTime(packet.received_at))}</td>
@@ -2501,7 +2392,6 @@ function packetRowMarkup(packet) {
       <td class="${pathCellClass}">
         <div class="port-cell">${pathContent}</div>
       </td>
-      ${previewHtml}
     </tr>
   `;
 }
@@ -2525,7 +2415,7 @@ function renderPackets(items) {
   if (!filteredItems.length) {
     packetsBody.innerHTML = `
       <tr>
-        <td colspan="6" class="empty-cell">No packets match the current filter.</td>
+        <td colspan="5" class="empty-cell">No packets match the current filter.</td>
       </tr>
     `;
     updateOverviewStats();
@@ -2817,7 +2707,6 @@ function maybeRefreshSelectedNodeDetail(packet) {
     packet?.from_node_num === state.selectedNodeNum
     || packet?.to_node_num === state.selectedNodeNum
   ) {
-    patchNodeDetailRecentPackets(state.selectedNodeNum, packet);
     scheduleSelectedNodeDetailRefresh(state.selectedNodeNum);
     return true;
   }
@@ -2859,14 +2748,6 @@ function connectEvents() {
       prependPacket(payload.data);
       renderPackets(state.packets);
       maybeRefreshSelectedNodeDetail(payload.data);
-      if (
-        payload.data.portnum === "TEXT_MESSAGE_APP"
-        && payload.data.text_preview
-        && payload.data.to_node_num === BROADCAST_NODE_NUM
-      ) {
-        prependChatMessage(payload.data);
-        renderChat(state.chat);
-      }
       renderNodesView();
       scheduleMeshSummaryRefresh();
       pulsePanel(trafficPanel, "traffic");
@@ -2875,14 +2756,11 @@ function connectEvents() {
         scheduleMeshRoutesRefresh();
         pulsePanel(mapPanel, "map");
       }
-      if (
-        payload.data.portnum === "TEXT_MESSAGE_APP"
-        && payload.data.text_preview
-        && payload.data.to_node_num === BROADCAST_NODE_NUM
-      ) {
-        pulsePanel(railToggleChat, "chat");
-        pulsePanel(chatPanel, "chat");
-      }
+    } else if (payload.type === "chat_message_received") {
+      prependChatMessage(payload.data);
+      renderChat(state.chat);
+      pulsePanel(railToggleChat, "chat");
+      pulsePanel(chatPanel, "chat");
     } else if (payload.type === "node_updated") {
       upsertRosterNode(payload.data);
       renderNodesView();

@@ -464,7 +464,7 @@ h3 {
 
 .status-bar {
   position: absolute;
-  left: var(--rail-collapsed);
+  left: 0;
   right: 0;
   bottom: 0;
   z-index: 35;
@@ -480,10 +480,6 @@ h3 {
   transition: left var(--transition);
 }
 
-.node-rail[data-state="expanded"] ~ .status-bar,
-.map-viewport.rail-expanded .status-bar {
-  left: var(--rail-expanded);
-}
 
 .status-bar-legend {
   display: flex;
@@ -516,10 +512,6 @@ h3 {
   margin-right: 6px;
 }
 
-.status-bar-copy {
-  font-size: 10px;
-  color: var(--text-faint);
-}
 
 /* ============================================================
    KPI Ticker (legacy, hidden — replaced by stats row)
@@ -2304,6 +2296,20 @@ tbody tr:hover td {
     right: auto;
   }
 
+  .command-icon-btn {
+    width: 44px;
+    height: 44px;
+    touch-action: manipulation;
+  }
+
+  .rail-icon {
+    touch-action: manipulation;
+  }
+
+  .filter-chip {
+    touch-action: manipulation;
+  }
+
   .stats-row {
     gap: 10px;
   }
@@ -2333,9 +2339,6 @@ tbody tr:hover td {
     max-width: none;
   }
 
-  .status-bar {
-    left: 0;
-  }
 
   .map-overlay-tools {
     right: 8px;
@@ -2361,6 +2364,10 @@ tbody tr:hover td {
 
   .node-rail[data-state="collapsed"] {
     width: 40px;
+  }
+
+  #stat-paths {
+    display: none;
   }
 }
 

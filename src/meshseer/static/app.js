@@ -10,7 +10,6 @@ const intelPanelCount = document.getElementById("intel-panel-count");
 const mapRoot = document.getElementById("leaflet-map");
 const mapEmpty = document.getElementById("map-empty");
 const mapNote = document.getElementById("map-note");
-const mapLegendCopy = document.getElementById("map-legend-copy");
 const nodeDetail = document.getElementById("node-detail");
 const nodeList = document.getElementById("node-list");
 const intelGrid = document.getElementById("intel-grid");
@@ -1728,17 +1727,6 @@ function renderMapNotes() {
   mapNote.textContent = "";
 }
 
-function routeModeSummary(routes) {
-  if (!state.showRoutes) {
-    return "Routes hidden";
-  }
-
-  if (!routes.length) {
-    return "No routes in scope";
-  }
-
-  return `${formatWholeNumber(routes.length)} mesh ${routes.length === 1 ? "path" : "paths"}`;
-}
 
 function updateOverviewStats() {
   const nodeTotal = state.nodes.length;
@@ -2121,9 +2109,6 @@ function renderMap(items) {
   const mappedNodes = sortNodes(items).filter((node) => nodeHasCoordinates(node) && nodeIsVisible(node, nowMs));
   const map = ensureMap();
   const routes = activeMeshRoutes(nowMs);
-  if (mapLegendCopy) {
-    mapLegendCopy.textContent = routeModeSummary(routes);
-  }
   renderRouteToggle();
   renderMapNotes();
 

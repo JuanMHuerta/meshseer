@@ -55,6 +55,9 @@ const DEFAULT_RECENT_ACTIVITY_WINDOW_MINUTES = 60;
 const DEFAULT_NODE_ACTIVE_WINDOW_MINUTES = 180;
 const NETWORK_ROUTE_WINDOW_MINUTES = 7 * 24 * 60;
 const SELECTED_ROUTE_WINDOW_MINUTES = 7 * 24 * 60;
+const PACKETS_LIMIT = 40;
+const CHAT_MESSAGES_LIMIT = 60;
+const NODE_DETAIL_RECENT_PACKETS_LIMIT = 20;
 const MAX_ACTIVITY_PACKETS = 500;
 const KPI_STALE_WINDOW_MINUTES = 10;
 const NODE_MAX_OPACITY = 0.94;
@@ -62,6 +65,9 @@ const NODE_MIN_OPACITY = 0.14;
 const ROUTE_MAX_OPACITY = 0.55;
 const ROUTE_MIN_OPACITY = 0.08;
 const CHAT_STICKY_THRESHOLD_PX = 16;
+const SUMMARY_REFRESH_DEBOUNCE_MS = 750;
+const ROUTES_REFRESH_DEBOUNCE_MS = 1000;
+const NODE_DETAIL_REFRESH_DEBOUNCE_MS = 500;
 const SOCKET_POLICY_CLOSE_CODE = 1008;
 const SOCKET_TRY_AGAIN_LATER_CLOSE_CODE = 1013;
 const SOCKET_FAST_RECONNECT_DELAY_MS = 1500;
@@ -70,6 +76,8 @@ const SOCKET_BACKOFF_MAX_DELAY_MS = 30_000;
 
 const pulseTimers = new WeakMap();
 const inflightNodeDetails = new Set();
+const inflightLoads = new Map();
+const scheduledRefreshes = new Map();
 let decayRefreshTimerId = null;
 let chatStickToBottom = true;
 let chatPendingScrollBehavior = null;
@@ -311,6 +319,223 @@ function nodeSecondaryLabel(node) {
 
 function nodeByNum(nodeNum) {
   return state.nodes.find((item) => item.node_num === nodeNum) || null;
+}
+
+function packetKey(packet) {
+  return packet?.id ?? packet?.mesh_packet_id ?? packet?.received_at ?? null;
+}
+
+function prependUniqueItem(items, item, { limit, keyFor }) {
+  if (!item) {
+    return Array.isArray(items) ? items : [];
+  }
+  const nextKey = keyFor(item);
+  return [
+    item,
+    ...(Array.isArray(items) ? items : []).filter((candidate) => {
+      if (!candidate) {
+        return false;
+      }
+      const candidateKey = keyFor(candidate);
+      if (nextKey != null && candidateKey != null) {
+        return candidateKey !== nextKey;
+      }
+      return candidate !== item;
+    }),
+  ].slice(0, limit);
+}
+
+function upsertRosterNode(node) {
+  if (!node || node.node_num == null) {
+    return null;
+  }
+
+  const existingIndex = state.nodes.findIndex((item) => item.node_num === node.node_num);
+  const nextNode = syncRosterNodeMeta({
+    ...(existingIndex >= 0 ? state.nodes[existingIndex] : {}),
+    ...node,
+  });
+
+  if (existingIndex < 0) {
+    state.nodes = [nextNode, ...state.nodes];
+    return nextNode;
+  }
+
+  state.nodes = [
+    ...state.nodes.slice(0, existingIndex),
+    nextNode,
+    ...state.nodes.slice(existingIndex + 1),
+  ];
+  return nextNode;
+}
+
+function prependPacket(packet) {
+  state.packets = prependUniqueItem(state.packets, packet, {
+    limit: PACKETS_LIMIT,
+    keyFor: packetKey,
+  });
+}
+
+function prependChatMessage(message) {
+  state.chat = prependUniqueItem(state.chat, message, {
+    limit: CHAT_MESSAGES_LIMIT,
+    keyFor: chatMessageKey,
+  });
+}
+
+function patchNodeDetailRecentPackets(nodeNum, packet) {
+  const detailPayload = state.nodeDetails.get(nodeNum);
+  if (!detailPayload) {
+    return;
+  }
+  state.nodeDetails.set(nodeNum, {
+    ...detailPayload,
+    recent_packets: prependUniqueItem(detailPayload.recent_packets, packet, {
+      limit: NODE_DETAIL_RECENT_PACKETS_LIMIT,
+      keyFor: packetKey,
+    }),
+  });
+}
+
+function runSingleFlight(key, loader) {
+  const existing = inflightLoads.get(key);
+  if (existing) {
+    return existing;
+  }
+  const pending = Promise.resolve()
+    .then(() => loader())
+    .finally(() => {
+      if (inflightLoads.get(key) === pending) {
+        inflightLoads.delete(key);
+      }
+    });
+  inflightLoads.set(key, pending);
+  return pending;
+}
+
+function scheduledRefreshEntry(key) {
+  if (!scheduledRefreshes.has(key)) {
+    scheduledRefreshes.set(key, {
+      timerId: null,
+      inflight: false,
+      dirty: false,
+      deferred: false,
+      loader: null,
+    });
+  }
+  return scheduledRefreshes.get(key);
+}
+
+async function runScheduledRefresh(key) {
+  const entry = scheduledRefreshEntry(key);
+  const loader = entry.loader;
+  if (typeof loader !== "function") {
+    return;
+  }
+  if (entry.timerId != null) {
+    window.clearTimeout(entry.timerId);
+    entry.timerId = null;
+  }
+  if (entry.inflight) {
+    entry.dirty = true;
+    return;
+  }
+  if (document.visibilityState !== "visible") {
+    entry.deferred = true;
+    return;
+  }
+
+  entry.inflight = true;
+  entry.dirty = false;
+  entry.deferred = false;
+
+  try {
+    await loader();
+  } catch (error) {
+    handleLoadError(error);
+  } finally {
+    entry.inflight = false;
+    if (document.visibilityState !== "visible") {
+      entry.deferred = entry.deferred || entry.dirty;
+      entry.dirty = false;
+      return;
+    }
+    if (entry.dirty || entry.deferred) {
+      entry.dirty = false;
+      entry.deferred = false;
+      entry.timerId = window.setTimeout(() => {
+        entry.timerId = null;
+        void runScheduledRefresh(key);
+      }, 0);
+    }
+  }
+}
+
+function scheduleRefresh(key, delayMs, loader) {
+  const entry = scheduledRefreshEntry(key);
+  entry.loader = loader;
+  if (entry.timerId != null) {
+    window.clearTimeout(entry.timerId);
+    entry.timerId = null;
+  }
+  if (document.visibilityState !== "visible") {
+    entry.deferred = true;
+    return;
+  }
+  if (entry.inflight) {
+    entry.dirty = true;
+    return;
+  }
+  entry.deferred = false;
+  entry.timerId = window.setTimeout(() => {
+    entry.timerId = null;
+    void runScheduledRefresh(key);
+  }, delayMs);
+}
+
+function clearQueuedRefreshes() {
+  scheduledRefreshes.forEach((entry) => {
+    if (entry.timerId != null) {
+      window.clearTimeout(entry.timerId);
+      entry.timerId = null;
+    }
+    entry.dirty = false;
+    entry.deferred = false;
+  });
+}
+
+function flushDeferredRefreshes() {
+  if (document.visibilityState !== "visible") {
+    return;
+  }
+  scheduledRefreshes.forEach((entry, key) => {
+    if (!entry.deferred) {
+      return;
+    }
+    entry.deferred = false;
+    scheduleRefresh(key, 0, entry.loader);
+  });
+}
+
+function scheduleMeshSummaryRefresh() {
+  scheduleRefresh("meshSummary", SUMMARY_REFRESH_DEBOUNCE_MS, () => loadMeshSummary());
+}
+
+function scheduleMeshRoutesRefresh() {
+  scheduleRefresh("meshRoutes", ROUTES_REFRESH_DEBOUNCE_MS, () => loadMeshRoutes());
+}
+
+function scheduleSelectedNodeDetailRefresh(nodeNum = state.selectedNodeNum) {
+  if (nodeNum == null) {
+    return;
+  }
+  const key = `nodeDetail:${nodeNum}`;
+  scheduleRefresh(key, NODE_DETAIL_REFRESH_DEBOUNCE_MS, async () => {
+    if (state.selectedNodeNum !== nodeNum || !nodeByNum(nodeNum)) {
+      return;
+    }
+    await loadNodeDetail(nodeNum, { force: true });
+  });
 }
 
 function nodeStatus(node) {
@@ -2375,7 +2600,7 @@ function renderChat(items) {
 
   const ordered = [...items].reverse();
   chatFeed.innerHTML = ordered.map((item) => {
-    const sender = item.sender_label || "Unknown";
+    const sender = item.sender_label || fromNodeLabel(item);
     const pathTone = packetPathTone(item);
     return `
       <article class="chat-message ${pathTone}">
@@ -2441,53 +2666,67 @@ async function loadNodeDetail(nodeNum, { force = false } = {}) {
 }
 
 async function loadHealth() {
-  const payload = await fetchJson("/api/health");
-  setCollectorStatus(payload.collector);
-  setPerspective(payload.perspective);
+  return runSingleFlight("health", async () => {
+    const payload = await fetchJson("/api/health");
+    setCollectorStatus(payload.collector);
+    setPerspective(payload.perspective);
+  });
 }
 
 async function loadNodes() {
-  state.nodes = (await fetchJson("/api/nodes/roster")).map((node) => syncRosterNodeMeta(node));
-  renderNodesView();
-  if (Array.isArray(state.packets)) {
-    renderPackets(state.packets);
-  }
-  if (Array.isArray(state.chat)) {
-    renderChat(state.chat);
-  }
+  return runSingleFlight("nodes", async () => {
+    state.nodes = (await fetchJson("/api/nodes/roster")).map((node) => syncRosterNodeMeta(node));
+    renderNodesView();
+    if (Array.isArray(state.packets)) {
+      renderPackets(state.packets);
+    }
+    if (Array.isArray(state.chat)) {
+      renderChat(state.chat);
+    }
+  });
 }
 
 async function loadPackets() {
-  state.packets = await fetchJson("/api/packets?limit=40");
-  setLastPacketReceivedAt(state.packets[0]?.received_at);
-  renderPackets(state.packets);
-  if (state.nodes.length) {
-    renderMap(state.nodes);
-  }
+  return runSingleFlight("packets", async () => {
+    state.packets = await fetchJson(`/api/packets?limit=${PACKETS_LIMIT}`);
+    setLastPacketReceivedAt(state.packets[0]?.received_at);
+    renderPackets(state.packets);
+    if (state.nodes.length) {
+      renderMap(state.nodes);
+    }
+  });
 }
 
 async function loadRecentActivityPackets() {
-  const since = encodeURIComponent(isoMinutesAgo(recentPacketWindowMinutes()));
-  state.recentActivityPackets = await fetchJson(`/api/packets?limit=${MAX_ACTIVITY_PACKETS}&since=${since}`);
-  setLastPacketReceivedAt(state.recentActivityPackets[0]?.received_at);
-  if (state.nodes.length) {
-    renderMap(state.nodes);
-  }
+  return runSingleFlight("recentActivityPackets", async () => {
+    const since = encodeURIComponent(isoMinutesAgo(recentPacketWindowMinutes()));
+    state.recentActivityPackets = await fetchJson(`/api/packets?limit=${MAX_ACTIVITY_PACKETS}&since=${since}`);
+    setLastPacketReceivedAt(state.recentActivityPackets[0]?.received_at);
+    if (state.nodes.length) {
+      renderMap(state.nodes);
+    }
+  });
 }
 
 async function loadChat() {
-  state.chat = await fetchJson("/api/chat?limit=60");
-  renderChat(state.chat);
+  return runSingleFlight("chat", async () => {
+    state.chat = await fetchJson(`/api/chat?limit=${CHAT_MESSAGES_LIMIT}`);
+    renderChat(state.chat);
+  });
 }
 
 async function loadMeshSummary() {
-  const payload = await fetchJson("/api/mesh/summary");
-  renderMeshSummary(payload);
+  return runSingleFlight("meshSummary", async () => {
+    const payload = await fetchJson("/api/mesh/summary");
+    renderMeshSummary(payload);
+  });
 }
 
 async function loadMeshRoutes() {
-  const payload = await fetchJson("/api/mesh/routes");
-  renderMeshRoutes(payload);
+  return runSingleFlight("meshRoutes", async () => {
+    const payload = await fetchJson("/api/mesh/routes");
+    renderMeshRoutes(payload);
+  });
 }
 
 async function loadAll() {
@@ -2574,15 +2813,17 @@ function pulsePanel(element, tone) {
 
 function maybeRefreshSelectedNodeDetail(packet) {
   if (state.selectedNodeNum == null) {
-    return;
+    return false;
   }
   if (
     packet?.from_node_num === state.selectedNodeNum
     || packet?.to_node_num === state.selectedNodeNum
   ) {
-    state.nodeDetails.delete(state.selectedNodeNum);
-    void loadNodeDetail(state.selectedNodeNum, { force: true });
+    patchNodeDetailRecentPackets(state.selectedNodeNum, packet);
+    scheduleSelectedNodeDetailRefresh(state.selectedNodeNum);
+    return true;
   }
+  return false;
 }
 
 function recordRecentActivityPacket(packet) {
@@ -2617,14 +2858,23 @@ function connectEvents() {
       setLastPacketReceivedAt(payload.data?.received_at || payload.ts);
       recordRecentActivityPacket(payload.data);
       observePacketNode(payload.data);
+      prependPacket(payload.data);
+      renderPackets(state.packets);
+      maybeRefreshSelectedNodeDetail(payload.data);
+      if (
+        payload.data.portnum === "TEXT_MESSAGE_APP"
+        && payload.data.text_preview
+        && payload.data.to_node_num === BROADCAST_NODE_NUM
+      ) {
+        prependChatMessage(payload.data);
+        renderChat(state.chat);
+      }
       renderNodesView();
-      void loadPackets().catch(handleLoadError);
-      void loadMeshSummary().catch(handleLoadError);
+      scheduleMeshSummaryRefresh();
       pulsePanel(trafficPanel, "traffic");
       pulsePanel(intelPanel, "nodes");
-      maybeRefreshSelectedNodeDetail(payload.data);
       if (payload.data.portnum === "TRACEROUTE_APP" || payload.data.portnum === "ROUTING_APP") {
-        void loadMeshRoutes().catch(handleLoadError);
+        scheduleMeshRoutesRefresh();
         pulsePanel(mapPanel, "map");
       }
       if (
@@ -2632,19 +2882,24 @@ function connectEvents() {
         && payload.data.text_preview
         && payload.data.to_node_num === BROADCAST_NODE_NUM
       ) {
-        void loadChat().catch(handleLoadError);
         pulsePanel(railToggleChat, "chat");
         pulsePanel(chatPanel, "chat");
       }
     } else if (payload.type === "node_updated") {
-      void loadNodes().catch(handleLoadError);
-      void loadMeshSummary().catch(handleLoadError);
+      upsertRosterNode(payload.data);
+      renderNodesView();
+      if (Array.isArray(state.packets)) {
+        renderPackets(state.packets);
+      }
+      if (Array.isArray(state.chat)) {
+        renderChat(state.chat);
+      }
+      scheduleMeshSummaryRefresh();
       pulsePanel(mapPanel, "map");
       pulsePanel(nodesPanel, "nodes");
       pulsePanel(intelPanel, "nodes");
       if (payload.data?.node_num === state.selectedNodeNum) {
-        state.nodeDetails.delete(payload.data.node_num);
-        void loadNodeDetail(payload.data.node_num, { force: true });
+        scheduleSelectedNodeDetailRefresh(payload.data.node_num);
       }
     } else if (payload.type === "collector_status") {
       setCollectorStatus(payload.data);
@@ -2749,6 +3004,10 @@ chatFeed?.addEventListener("scroll", () => {
   }
 });
 
+document.addEventListener("visibilitychange", () => {
+  flushDeferredRefreshes();
+});
+
 routeToggle.addEventListener('click', () => {
   state.showRoutes = !state.showRoutes;
   renderRouteToggle();
@@ -2756,6 +3015,7 @@ routeToggle.addEventListener('click', () => {
 });
 
 refreshDashboard.addEventListener("click", () => {
+  clearQueuedRefreshes();
   void loadAll().then(reportLoadFailures).catch(handleLoadError);
 });
 

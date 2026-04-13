@@ -7,7 +7,7 @@ from meshtastic.protobuf import mesh_pb2
 from meshradar.channels import BROADCAST_NODE_NUM
 from meshradar.clock import timestamp_to_utc_iso
 from meshradar.models import NodeRecord, PacketRecord
-from meshradar.storage import MeshRepository
+from meshradar.storage import MeshRepository, SQLITE_BUSY_TIMEOUT_MS
 
 
 def encode_neighborinfo_payload(node_id: int, neighbors: list[tuple[int, float, int]]) -> str:
@@ -50,6 +50,22 @@ def encode_routing_reply_payload(
     routing = mesh_pb2.Routing()
     routing.route_reply.CopyFrom(discovery)
     return base64.b64encode(routing.SerializeToString()).decode("ascii")
+
+
+def test_repository_enables_wal_and_busy_timeout(tmp_path):
+    db_path = tmp_path / "mesh.db"
+    repo = MeshRepository(db_path)
+
+    with sqlite3.connect(db_path) as raw_connection:
+        journal_mode = raw_connection.execute("PRAGMA journal_mode").fetchone()
+
+    with repo._connect() as managed_connection:
+        busy_timeout = managed_connection.execute("PRAGMA busy_timeout").fetchone()
+
+    assert journal_mode is not None
+    assert str(journal_mode[0]).lower() == "wal"
+    assert busy_timeout is not None
+    assert busy_timeout[0] == SQLITE_BUSY_TIMEOUT_MS
 
 
 def test_repository_stores_packets_and_nodes(tmp_path):

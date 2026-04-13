@@ -16,6 +16,8 @@ from meshradar.models import NodeRecord, PacketRecord
 
 KPI_ACTIVE_NODES_WINDOW_MINUTES = 180
 ROSTER_ACTIVITY_COUNT_WINDOW_MINUTES = 60
+SQLITE_BUSY_TIMEOUT_MS = 5000
+SQLITE_CONNECT_TIMEOUT_SECONDS = SQLITE_BUSY_TIMEOUT_MS / 1000
 
 
 class MeshRepository:
@@ -25,8 +27,12 @@ class MeshRepository:
         self._initialize()
 
     def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self.db_path)
+        connection = sqlite3.connect(
+            self.db_path,
+            timeout=SQLITE_CONNECT_TIMEOUT_SECONDS,
+        )
         connection.row_factory = sqlite3.Row
+        connection.execute(f"PRAGMA busy_timeout = {SQLITE_BUSY_TIMEOUT_MS}")
         return connection
 
     @staticmethod
@@ -574,6 +580,9 @@ class MeshRepository:
 
     def _initialize(self) -> None:
         with self._connect() as connection:
+            journal_mode = connection.execute("PRAGMA journal_mode = WAL").fetchone()
+            if journal_mode is None or str(journal_mode[0]).lower() != "wal":
+                raise RuntimeError(f"unable to enable WAL mode for {self.db_path}")
             connection.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS packets (

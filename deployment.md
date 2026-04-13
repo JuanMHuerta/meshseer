@@ -22,6 +22,7 @@ Operational rules:
 - Production mode disables FastAPI's `/docs`, `/redoc`, and `/openapi.json` routes in the origin app. Keep the Cloudflare path blocks anyway as defense in depth.
 - Keep normal inbound firewall policy closed. Cloudflare Tunnel uses outbound connections; the Cloudflare docs recommend blocking unsolicited ingress for a positive security model.
 - Use the bearer token only for local admin calls such as `curl` on the machine or over SSH port-forwarding. Do not place this token in browser code, Cloudflare headers, or public tunnel config.
+- Meshradar now enables SQLite `WAL` mode and a fixed `busy_timeout` automatically on repository-managed connections. No extra production knob is required for that baseline tuning.
 
 References:
 

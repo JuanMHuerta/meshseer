@@ -10,11 +10,10 @@ Status: not ready for internet-reachable production in current form.
 
 ## Medium severity
 
-- [ ] Disable `/docs`, `/redoc`, and `/openapi.json` in production. They are reachable by default and reveal the full API surface.
+- [x] Disable `/docs`, `/redoc`, and `/openapi.json` in production. FastAPI now disables them when `MESHRADAR_ENV=production`. See [src/meshradar/app.py](/home/juan/dev/meshradar/src/meshradar/app.py:160) and [tests/test_main.py](/home/juan/dev/meshradar/tests/test_main.py:33).
 - [x] Remove sensitive operational detail from `/api/health`. The public health response now omits the SQLite path and collector detail text; detailed health moved to the admin API. See [src/meshradar/app.py](/home/juan/dev/meshradar/src/meshradar/app.py:226).
 - [x] Reduce data exposure from API responses. Public packet payloads now expose only UI-facing summary fields plus a derived path summary, and `/api/chat` uses a dedicated sender/path summary payload instead of the general packet schema. See [src/meshradar/public_api.py](/home/juan/dev/meshradar/src/meshradar/public_api.py) and [src/meshradar/app.py](/home/juan/dev/meshradar/src/meshradar/app.py).
 - [ ] Change the bind default from `0.0.0.0` to `127.0.0.1` for a tunnel-based deployment. Current defaults expose the process on all interfaces. See [src/meshradar/config.py](/home/juan/dev/meshradar/src/meshradar/config.py:47) and [start.sh](/home/juan/dev/meshradar/start.sh:19).
-- [ ] Change autotrace defaults to off in committed templates. Both the repo `.env` and `.env.example` enable it today. See [.env.example](/home/juan/dev/meshradar/.env.example:1) and [.env](/home/juan/dev/meshradar/.env:1).
 - [ ] Add security response headers and a production CSP. Current responses do not set common headers such as `Content-Security-Policy`, `X-Content-Type-Options`, `Referrer-Policy`, or app-level cache policy.
 - [x] Validate websocket origin and add connection limits, idle timeouts, and backpressure handling.
 - [ ] Add audit logging for auth decisions, websocket connects/disconnects, autotrace enable/disable events, and repeated failed access attempts. The codebase currently has almost no application logging. See [src/meshradar/startup.py](/home/juan/dev/meshradar/src/meshradar/startup.py:70).
@@ -24,8 +23,8 @@ Status: not ready for internet-reachable production in current form.
 
 - [ ] Add retention and pruning for `packets`, `node_metric_history`, and `traceroute_attempts`. Data currently only grows. See [src/meshradar/storage.py](/home/juan/dev/meshradar/src/meshradar/storage.py:383) and [src/meshradar/storage.py](/home/juan/dev/meshradar/src/meshradar/storage.py:1282).
 - [ ] Optimize whole-table analytics before long-term use. `get_mesh_summary`, `get_mesh_routes`, `list_nodes_roster`, and autotrace eligibility/status logic scan and aggregate large portions of the database. See [src/meshradar/storage.py](/home/juan/dev/meshradar/src/meshradar/storage.py:811), [src/meshradar/storage.py](/home/juan/dev/meshradar/src/meshradar/storage.py:1054), [src/meshradar/storage.py](/home/juan/dev/meshradar/src/meshradar/storage.py:1559), [src/meshradar/storage.py](/home/juan/dev/meshradar/src/meshradar/storage.py:1813), [src/meshradar/autotrace.py](/home/juan/dev/meshradar/src/meshradar/autotrace.py:157).
-- [ ] Reduce client-side refetch storms. Each live websocket event can trigger extra REST reloads for packets, chat, summary, routes, and node details across every connected browser. See [src/meshradar/static/app.js](/home/juan/dev/meshradar/src/meshradar/static/app.js:2714), [src/meshradar/static/app.js](/home/juan/dev/meshradar/src/meshradar/static/app.js:2723), [src/meshradar/static/app.js](/home/juan/dev/meshradar/src/meshradar/static/app.js:2737), [src/meshradar/static/app.js](/home/juan/dev/meshradar/src/meshradar/static/app.js:2885).
-- [ ] Enable SQLite production tuning for concurrent read/write load, at minimum `WAL` mode and a `busy_timeout`.
+- [x] Reduce client-side refetch storms. Live websocket events now update packet, chat, and roster state locally in the browser, while summary, routes, and selected-node detail use debounced single-flight refreshes instead of immediate fanout reloads. See [src/meshradar/static/app.js](/home/juan/dev/meshradar/src/meshradar/static/app.js).
+- [x] Enable SQLite production tuning for concurrent read/write load. Repository-managed connections now force `WAL` mode at startup and apply a fixed `busy_timeout` on every connection. See [src/meshradar/storage.py](/home/juan/dev/meshradar/src/meshradar/storage.py).
 
 ## Dead code and cleanup
 

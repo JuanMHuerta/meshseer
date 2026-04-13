@@ -1321,7 +1321,12 @@ def test_mesh_links_exposes_mutual_neighbor_reports(tmp_path):
     assert links.json()["neighbor_links"][0]["b_to_a"]["report_count"] == 1
 
 
-def test_mesh_routes_expose_passive_traceroute_paths(tmp_path):
+def test_mesh_routes_expose_passive_traceroute_paths(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "meshseer.app.utc_now",
+        lambda: datetime(2026, 3, 30, 12, 30, tzinfo=UTC),
+    )
+
     app, _collector = build_app(tmp_path)
     repo = app.state.repository
 
@@ -1406,7 +1411,12 @@ def test_mesh_routes_expose_passive_traceroute_paths(tmp_path):
     assert routes.json()["routes"][1]["path_node_nums"] == [303, 202, 101]
 
 
-def test_mesh_routes_support_since_filter(tmp_path):
+def test_mesh_routes_support_since_filter(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "meshseer.app.utc_now",
+        lambda: datetime(2026, 3, 30, 12, 30, tzinfo=UTC),
+    )
+
     app, _collector = build_app(tmp_path)
     repo = app.state.repository
 
@@ -1457,6 +1467,116 @@ def test_mesh_routes_support_since_filter(tmp_path):
 
     with TestClient(app) as client:
         routes = client.get("/api/mesh/routes", params={"since": "2026-03-30T10:00:00Z"})
+
+    assert routes.status_code == 200
+    assert routes.json()["stats"] == {"total": 1, "forward": 1, "return": 0}
+    assert routes.json()["routes"][0]["mesh_packet_id"] == 18
+    assert routes.json()["routes"][0]["path_node_nums"] == [101, 202, 404]
+
+
+def test_mesh_routes_default_to_one_week_lookback(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "meshseer.app.utc_now",
+        lambda: datetime(2026, 3, 30, 12, 30, tzinfo=UTC),
+    )
+
+    app, _collector = build_app(tmp_path)
+    repo = app.state.repository
+
+    repo.insert_packet(
+        PacketRecord(
+            mesh_packet_id=17,
+            received_at="2026-03-20T06:00:00Z",
+            from_node_num=303,
+            to_node_num=101,
+            portnum="TRACEROUTE_APP",
+            channel_index=0,
+            hop_limit=3,
+            hop_start=3,
+            rx_snr=4.5,
+            rx_rssi=-95,
+            text_preview=None,
+            payload_base64=encode_traceroute_payload(route=[202]),
+            raw_json="{}",
+            via_mqtt=False,
+        )
+    )
+    repo.insert_packet(
+        PacketRecord(
+            mesh_packet_id=18,
+            received_at="2026-03-28T12:12:00Z",
+            from_node_num=404,
+            to_node_num=101,
+            portnum="TRACEROUTE_APP",
+            channel_index=0,
+            hop_limit=2,
+            hop_start=2,
+            rx_snr=3.5,
+            rx_rssi=-96,
+            text_preview=None,
+            payload_base64=encode_traceroute_payload(route=[202]),
+            raw_json="{}",
+            via_mqtt=False,
+        )
+    )
+
+    with TestClient(app) as client:
+        routes = client.get("/api/mesh/routes")
+
+    assert routes.status_code == 200
+    assert routes.json()["stats"] == {"total": 1, "forward": 1, "return": 0}
+    assert routes.json()["routes"][0]["mesh_packet_id"] == 18
+    assert routes.json()["routes"][0]["path_node_nums"] == [101, 202, 404]
+
+
+def test_mesh_routes_clamps_since_to_one_week_lookback(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "meshseer.app.utc_now",
+        lambda: datetime(2026, 3, 30, 12, 30, tzinfo=UTC),
+    )
+
+    app, _collector = build_app(tmp_path)
+    repo = app.state.repository
+
+    repo.insert_packet(
+        PacketRecord(
+            mesh_packet_id=17,
+            received_at="2026-03-20T06:00:00Z",
+            from_node_num=303,
+            to_node_num=101,
+            portnum="TRACEROUTE_APP",
+            channel_index=0,
+            hop_limit=3,
+            hop_start=3,
+            rx_snr=4.5,
+            rx_rssi=-95,
+            text_preview=None,
+            payload_base64=encode_traceroute_payload(route=[202]),
+            raw_json="{}",
+            via_mqtt=False,
+        )
+    )
+    repo.insert_packet(
+        PacketRecord(
+            mesh_packet_id=18,
+            received_at="2026-03-28T12:12:00Z",
+            from_node_num=404,
+            to_node_num=101,
+            portnum="TRACEROUTE_APP",
+            channel_index=0,
+            hop_limit=2,
+            hop_start=2,
+            rx_snr=3.5,
+            rx_rssi=-96,
+            text_preview=None,
+            payload_base64=encode_traceroute_payload(route=[202]),
+            raw_json="{}",
+            via_mqtt=False,
+        )
+    )
+
+    with TestClient(app) as client:
+        routes = client.get("/api/mesh/routes", params={"since": "2026-03-01T00:00:00Z"})
 
     assert routes.status_code == 200
     assert routes.json()["stats"] == {"total": 1, "forward": 1, "return": 0}

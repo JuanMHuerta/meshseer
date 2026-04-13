@@ -4,6 +4,7 @@ import asyncio
 import json
 import secrets
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
@@ -16,7 +17,7 @@ from starlette import status
 from meshseer.audit import FailedAccessTracker, audit_log, request_source
 from meshseer.autotrace import AutoTracerouteConfig, AutoTracerouteService
 from meshseer.channels import LONGFAST_CHANNEL_NAME, is_primary_channel
-from meshseer.clock import utc_now_iso
+from meshseer.clock import to_utc_iso, utc_now, utc_now_iso
 from meshseer.collector import CollectorCallbacks, CollectorStatus, MeshtasticReceiver
 from meshseer.config import Settings
 from meshseer.events import EventBroker, EventSubscriptionOverflow, TooManySubscribers
@@ -36,6 +37,7 @@ from meshseer.storage import MeshRepository
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 RECEIVER_UTILIZATION_WINDOW_MINUTES = 10
+ROUTES_MAX_LOOKBACK_DAYS = 7
 PRODUCTION_CSP = "; ".join(
     (
         "default-src 'self'",
@@ -125,6 +127,27 @@ def _default_port_for_scheme(scheme: str) -> int | None:
     if scheme == "https":
         return 443
     return None
+
+
+def _parse_query_timestamp(value: str) -> datetime:
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="invalid since timestamp") from exc
+    if parsed.tzinfo is None:
+        raise HTTPException(status_code=400, detail="invalid since timestamp")
+    return parsed.astimezone(UTC)
+
+
+def _bounded_routes_since(since: str | None) -> str:
+    cutoff = utc_now() - timedelta(days=ROUTES_MAX_LOOKBACK_DAYS)
+    if since is None:
+        return to_utc_iso(cutoff)
+
+    parsed = _parse_query_timestamp(since)
+    if parsed < cutoff:
+        return to_utc_iso(cutoff)
+    return to_utc_iso(parsed)
 
 
 def _websocket_origin_allowed(websocket: WebSocket) -> bool:
@@ -447,7 +470,7 @@ def create_app(
 
     @public_router.get("/api/mesh/routes")
     async def mesh_routes(since: str | None = None) -> dict[str, Any]:
-        return repository.get_mesh_routes(since=since, primary_only=True)
+        return repository.get_mesh_routes(since=_bounded_routes_since(since), primary_only=True)
 
     @public_router.get("/api/nodes/roster")
     async def list_nodes_roster() -> list[dict[str, Any]]:

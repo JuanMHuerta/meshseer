@@ -2039,7 +2039,11 @@ function renderRailView() {
     intelPanel.hidden = state.activeDrawerView !== "signals" || !expanded;
   }
   if (chatPanel) {
+    const wasHidden = chatPanel.hidden;
     chatPanel.hidden = !chatVisible;
+    if (wasHidden && chatVisible) {
+      scheduleChatScrollToBottom("auto");
+    }
   }
   if (mapViewport) {
     mapViewport.classList.toggle("rail-expanded", expanded);

@@ -1,0 +1,39 @@
+# Python caches and test output
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# Local virtualenvs and env files
+.venv/
+.python-version
+.env
+.env.*
+!.env.example
+
+# JavaScript/browser tooling
+node_modules/
+playwright-report/
+
+# Generated runtime data and captures
+.cache/
+artifacts/
+screenshots/
+data/
+*.log
+*.db
+*.sqlite
+*.sqlite3
+*.db-journal
+*.db-shm
+*.db-wal
+
+# Editor and OS noise
+.DS_Store
+.idea/
+.vscode/
+*.swp

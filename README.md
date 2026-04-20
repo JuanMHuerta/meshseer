@@ -7,6 +7,7 @@ Meshseer is a web view of a Meshtastic receiver's LongFast traffic. It shows wha
 Try it:
 
 - Live site: <https://meshseer.nemexix.com/>
+- Container image: `ghcr.io/juanmhuerta/meshseer`
 
 [![Meshseer dashboard](docs/images/meshseer-dashboard.png)](https://meshseer.nemexix.com/)
 

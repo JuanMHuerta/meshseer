@@ -8,6 +8,7 @@ Try it:
 
 - Live site: <https://meshseer.nemexix.com/>
 - Container image: `ghcr.io/juanmhuerta/meshseer`
+- Tags: `latest` for the newest published build, or a pinned release such as `v1.0.0` for reproducible installs
 
 [![Meshseer dashboard](docs/images/meshseer-dashboard.png)](https://meshseer.nemexix.com/)
 
@@ -41,15 +42,29 @@ MESHSEER_MESHTASTIC_PORT=4403
 MESHSEER_ENV=production
 ```
 
-3. Start Meshseer:
+3. Pull the published image:
 
 ```bash
-docker compose up -d --build
+docker pull ghcr.io/juanmhuerta/meshseer:latest
 ```
 
-4. Open `http://127.0.0.1:8000/`
+4. Start Meshseer:
 
-5. Optional sanity check:
+```bash
+docker run --name meshseer \
+  --env-file .env \
+  -e MESHSEER_BIND_HOST=0.0.0.0 \
+  -e MESHSEER_BIND_PORT=8000 \
+  -e MESHSEER_DB_PATH=/data/meshseer.db \
+  -p 127.0.0.1:8000:8000 \
+  -v meshseer-data:/data \
+  --restart unless-stopped \
+  -d ghcr.io/juanmhuerta/meshseer:latest
+```
+
+5. Open `http://127.0.0.1:8000/`
+
+6. Optional sanity check:
 
 ```bash
 curl http://127.0.0.1:8000/api/status
@@ -57,10 +72,11 @@ curl http://127.0.0.1:8000/api/status
 
 Notes:
 
-- The Compose setup persists SQLite data in the named volume `meshseer-data`.
+- The container stores SQLite data in the Docker volume `meshseer-data`.
 - The container listens on `0.0.0.0:8000` internally and is published on `127.0.0.1:8000` by default.
 - If you want local-only admin routes, also set `MESHSEER_ADMIN_BEARER_TOKEN` in `.env`.
 - Docker support currently assumes Meshtastic TCP. USB serial passthrough and BLE are not implemented.
+- If you prefer Compose, use the included [`compose.yaml`](compose.yaml) as a starting point or replace the local `build:` step with `image: ghcr.io/juanmhuerta/meshseer:latest`.
 
 ## Run From Source
 

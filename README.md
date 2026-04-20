@@ -1,6 +1,6 @@
 # Meshseer
 
-[![Tests](https://github.com/JuanMHuerta/meshseer/actions/workflows/tests.yml/badge.svg)](https://github.com/JuanMHuerta/meshseer/actions/workflows/tests.yml)
+[![Tests](https://github.com/JuanMHuerta/meshseer/actions/workflows/tests.yml/badge.svg)](https://github.com/JuanMHuerta/meshseer/actions/workflows/tests.yml) [![Release](https://img.shields.io/github/v/release/JuanMHuerta/meshseer)](https://github.com/JuanMHuerta/meshseer/releases)
 
 Meshseer is a web view of a Meshtastic receiver's LongFast traffic. It shows what one receiver has heard on the primary channel: node map, broadcast chat, recent packets, and passive route data.
 
@@ -8,7 +8,6 @@ Try it:
 
 - Live site: <https://meshseer.nemexix.com/>
 - Container image: `ghcr.io/juanmhuerta/meshseer`
-- Tags: `latest` for the newest published build, or a pinned release such as `v1.0.0` for reproducible installs
 
 [![Meshseer dashboard](docs/images/meshseer-dashboard.png)](https://meshseer.nemexix.com/)
 

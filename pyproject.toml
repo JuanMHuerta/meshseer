@@ -1,6 +1,6 @@
 [project]
 name = "meshseer"
-version = "0.1.0"
+version = "1.0.0"
 description = "Public Meshtastic mesh view from the perspective of your receiver node"
 readme = "README.md"
 requires-python = ">=3.13"

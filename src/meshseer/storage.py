@@ -51,7 +51,9 @@ class MeshRepository:
         )
         self._prune_interval_seconds = max(1, int(prune_interval_seconds))
         self._maintenance_lock = threading.Lock()
-        self._next_prune_at: datetime | None = None
+        self._next_prune_at: datetime | None = utc_now() + timedelta(
+            seconds=self._prune_interval_seconds
+        )
         self._initialize()
 
     def _connect(self) -> sqlite3.Connection:
@@ -760,7 +762,6 @@ class MeshRepository:
             connection.execute("DELETE FROM route_node_activity")
             self._backfill_route_node_activity(connection)
 
-            connection.execute("DELETE FROM autotrace_target_state")
             self._backfill_autotrace_target_state(connection)
 
         return {
@@ -1442,8 +1443,7 @@ class MeshRepository:
 
     @classmethod
     def _backfill_autotrace_target_state(cls, connection: sqlite3.Connection) -> None:
-        if connection.execute("SELECT 1 FROM autotrace_target_state LIMIT 1").fetchone() is not None:
-            return
+        connection.execute("DELETE FROM autotrace_target_state")
 
         cursor = connection.execute(
             """

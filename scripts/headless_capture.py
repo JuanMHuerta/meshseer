@@ -47,6 +47,7 @@ def _start_demo_server(host: str, port: int, db_path: Path) -> tuple[uvicorn.Ser
         port=port,
         log_level="warning",
         access_log=False,
+        ws="websockets-sansio",
     )
     server = uvicorn.Server(config)
     thread = threading.Thread(target=server.run, name="meshseer-demo-server", daemon=True)

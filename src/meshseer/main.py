@@ -27,4 +27,5 @@ def run() -> None:
         port=settings.bind_port,
         ws_ping_interval=settings.ws_ping_interval_seconds,
         ws_ping_timeout=settings.ws_ping_timeout_seconds,
+        ws="websockets-sansio",
     )

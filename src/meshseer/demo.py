@@ -823,7 +823,7 @@ def run(argv: Sequence[str] | None = None) -> None:
     db_path = Path(args.db_path)
     db_path.parent.mkdir(parents=True, exist_ok=True)
     app = build_demo_app(db_path)
-    uvicorn.run(app, host=args.host, port=args.port)
+    uvicorn.run(app, host=args.host, port=args.port, ws="websockets-sansio")
 
 
 if __name__ == "__main__":

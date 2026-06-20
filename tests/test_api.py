@@ -234,6 +234,7 @@ def test_api_routes_and_filters(tmp_path):
     assert "detail" not in status.json()["collector"]
     assert status.json()["perspective"]["local_node_num"] == 101
     assert status.json()["perspective"]["label"] == "ALFA"
+    assert status.json()["ui"]["default_style"] == "amber-monochrome"
     assert status.json()["version"] == __version__
     assert "channel_name" not in status.json()["perspective"]
     assert "database" not in health.json()
@@ -268,6 +269,16 @@ def test_api_routes_and_filters(tmp_path):
     assert admin_nodes.json()[0]["short_name"] == "ALFA"
     assert admin_nodes.json()[0]["raw_json"] == '{"num":101}'
     assert "Meshseer" in index.text
+
+
+def test_status_reflects_ui_default_style_override(tmp_path):
+    app, _collector = build_app(tmp_path, extra_env={"MESHSEER_UI_DEFAULT_STYLE": "classic"})
+
+    with TestClient(app) as client:
+        status = client.get("/api/status")
+
+    assert status.status_code == 200
+    assert status.json()["ui"]["default_style"] == "classic"
 
 
 def test_docs_routes_are_hidden_in_production(tmp_path):

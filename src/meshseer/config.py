@@ -65,6 +65,17 @@ def _environment(value: str | None) -> str:
     raise ValueError("MESHSEER_ENV must be one of: development, dev, production, prod")
 
 
+def _ui_style(value: str | None) -> str:
+    if value is None:
+        return "amber-monochrome"
+    normalized = value.strip().lower()
+    if normalized == "":
+        return "amber-monochrome"
+    if normalized in {"classic", "amber-monochrome"}:
+        return normalized
+    raise ValueError("MESHSEER_UI_DEFAULT_STYLE must be one of: classic, amber-monochrome")
+
+
 @dataclass(frozen=True)
 class Settings:
     environment: str
@@ -75,6 +86,7 @@ class Settings:
     db_path: Path
     local_node_num: int | None
     admin_bearer_token: str | None
+    ui_default_style: str
     autotrace_enabled: bool
     autotrace_interval_seconds: int
     autotrace_target_window_hours: int
@@ -107,6 +119,7 @@ class Settings:
             db_path=Path(values.get("MESHSEER_DB_PATH", "./data/meshseer.db")),
             local_node_num=_optional_int(values.get("MESHSEER_LOCAL_NODE_NUM")),
             admin_bearer_token=_optional_stripped(values.get("MESHSEER_ADMIN_BEARER_TOKEN")),
+            ui_default_style=_ui_style(values.get("MESHSEER_UI_DEFAULT_STYLE")),
             autotrace_enabled=_optional_bool(values.get("MESHSEER_AUTOTRACE_ENABLED")),
             autotrace_interval_seconds=int(values.get("MESHSEER_AUTOTRACE_INTERVAL_SECONDS", "300")),
             autotrace_target_window_hours=int(values.get("MESHSEER_AUTOTRACE_TARGET_WINDOW_HOURS", "24")),

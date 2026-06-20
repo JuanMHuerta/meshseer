@@ -7,6 +7,9 @@ __pycache__/
 .coverage
 .coverage.*
 htmlcov/
+dist/
+build/
+*.egg-info/
 
 # Local virtualenvs and env files
 .venv/

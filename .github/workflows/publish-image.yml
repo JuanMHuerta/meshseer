@@ -25,6 +25,9 @@ jobs:
       - name: Sync dependencies
         run: uv sync --extra dev --frozen
 
+      - name: Run Ruff
+        run: uv run --extra dev ruff check .
+
       - name: Run tests
         run: uv run --extra dev pytest -q
 

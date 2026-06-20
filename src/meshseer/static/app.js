@@ -24,6 +24,7 @@ const mapPanel = document.getElementById("mesh-map");
 const nodesPanel = document.getElementById("mesh-nodes");
 const intelPanel = document.getElementById("mesh-intel");
 const chatPanel = document.getElementById("mesh-chat");
+const optionsPanel = document.getElementById("mesh-options");
 const trafficPanel = document.getElementById("mesh-traffic");
 
 const mapViewport = document.querySelector(".map-viewport");
@@ -34,8 +35,16 @@ const railToggleNodes = document.getElementById("rail-toggle-nodes");
 const railToggleChat = document.getElementById("rail-toggle-chat");
 const railToggleSignals = document.getElementById("rail-toggle-signals");
 const railToggleTraffic = document.getElementById("rail-toggle-traffic");
+const railToggleOptions = document.getElementById("rail-toggle-options");
 const rosterToolbar = document.getElementById("roster-toolbar");
 const appVersionLabel = document.getElementById("app-version");
+const uiThemeSelect = document.getElementById("ui-theme-select");
+const statusBarDotForward = document.getElementById("status-bar-dot-forward");
+const statusBarLabelForward = document.getElementById("status-bar-label-forward");
+const statusBarDotReturn = document.getElementById("status-bar-dot-return");
+const statusBarLabelReturn = document.getElementById("status-bar-label-return");
+const statusBarDotTertiary = document.getElementById("status-bar-dot-tertiary");
+const statusBarLabelTertiary = document.getElementById("status-bar-label-tertiary");
 
 const timeFormatter = new Intl.DateTimeFormat(undefined, {
   month: "short",
@@ -71,6 +80,129 @@ const SOCKET_TRY_AGAIN_LATER_CLOSE_CODE = 1013;
 const SOCKET_FAST_RECONNECT_DELAY_MS = 1500;
 const SOCKET_BACKOFF_BASE_DELAY_MS = 1500;
 const SOCKET_BACKOFF_MAX_DELAY_MS = 30_000;
+const UI_THEME_STORAGE_KEY = "meshseer.ui.theme";
+const LEGACY_UI_STYLE_STORAGE_KEY = "meshseer.ui.style";
+const DEFAULT_UI_THEME = "amber-monochrome";
+const CARTO_ATTRIBUTION = '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; CARTO';
+const CARTO_TILE_OPTIONS = Object.freeze({
+  subdomains: "abcd",
+  maxZoom: 20,
+});
+
+function cartoLayer(path, options = {}) {
+  return {
+    url: `https://{s}.basemaps.cartocdn.com/${path}/{z}/{x}/{y}{r}.png`,
+    options: {
+      ...CARTO_TILE_OPTIONS,
+      attribution: CARTO_ATTRIBUTION,
+      ...options,
+    },
+  };
+}
+
+function defineTheme({ id, label, basemapLayers, overlay }) {
+  return Object.freeze({
+    id,
+    label,
+    basemapLayers: Object.freeze(basemapLayers),
+    overlay: Object.freeze(overlay),
+  });
+}
+
+const THEME_REGISTRY = Object.freeze({
+  "amber-monochrome": defineTheme({
+    id: "amber-monochrome",
+    label: "Amber Monochrome",
+    basemapLayers: [
+      cartoLayer("dark_nolabels"),
+      cartoLayer("dark_only_labels", {
+        opacity: 0.4,
+        pane: "overlayPane",
+      }),
+    ],
+    overlay: {
+      markerShape: "radar",
+      markerLabelColor: "#e8dcc8",
+      routeColor: "#e8a94d",
+      routeReturnColor: "#d59b47",
+      routeSelectedColor: "#fff3db",
+      preserveRouteColorOnSelect: false,
+      routeLegend: {
+        forward: { label: "Forward", color: "#e8a94d" },
+        return: { label: "Return", color: "#d59b47" },
+        tertiary: { label: "Older", color: "rgba(255, 255, 255, 0.2)" },
+      },
+      markerPalette: {
+        direct: {
+          fillColor: "#e8a94d",
+          glyphColor: "#2f1a03",
+          borderColor: "#f5b862",
+          haloColor: "rgba(232, 169, 77, 0.35)",
+        },
+        relayed: {
+          fillColor: "#d39a4f",
+          glyphColor: "#2f1a03",
+          borderColor: "#c49455",
+          haloColor: "rgba(232, 169, 77, 0.22)",
+        },
+        mqtt: {
+          fillColor: "#7d8ea1",
+          glyphColor: "#11161b",
+          borderColor: "#9eb0c2",
+          haloColor: "rgba(158, 176, 194, 0.22)",
+        },
+        selected: {
+          borderColor: "#fff3db",
+          haloColor: "rgba(255, 243, 219, 0.35)",
+        },
+      },
+    },
+  }),
+  classic: defineTheme({
+    id: "classic",
+    label: "Classic",
+    basemapLayers: [
+      cartoLayer("rastertiles/voyager"),
+    ],
+    overlay: {
+      markerShape: "pin",
+      markerLabelColor: "#314551",
+      routeColor: "#4f86c6",
+      routeReturnColor: "#68a95f",
+      routeSelectedColor: "#2f7c91",
+      preserveRouteColorOnSelect: true,
+      routeLegend: {
+        forward: { label: "Forward", color: "#4f86c6" },
+        return: { label: "Return", color: "#68a95f" },
+        tertiary: { label: "", color: "transparent" },
+      },
+      markerPalette: {
+        direct: {
+          fillColor: "#4f86c6",
+          glyphColor: "#f8fbfd",
+          borderColor: "#2f5d8a",
+          haloColor: "rgba(79, 134, 198, 0.28)",
+        },
+        relayed: {
+          fillColor: "#68a95f",
+          glyphColor: "#f8fbfd",
+          borderColor: "#4b7f45",
+          haloColor: "rgba(104, 169, 95, 0.24)",
+        },
+        mqtt: {
+          fillColor: "#b978c6",
+          glyphColor: "#fdf9ff",
+          borderColor: "#875292",
+          haloColor: "rgba(185, 120, 198, 0.24)",
+        },
+        selected: {
+          borderColor: "#245d6d",
+          haloColor: "rgba(47, 124, 145, 0.26)",
+        },
+      },
+    },
+  }),
+});
 
 const pulseTimers = new WeakMap();
 const inflightNodeDetails = new Set();
@@ -108,6 +240,8 @@ const state = {
   activeDrawerView: "nodes",
   trafficDrawerOpen: false,
   meshSummaryPrevious: null,
+  uiDefaultTheme: DEFAULT_UI_THEME,
+  currentTheme: DEFAULT_UI_THEME,
 };
 
 const mapState = {
@@ -118,6 +252,7 @@ const mapState = {
   routeLinesByKey: new Map(),
   initialViewApplied: false,
   zoomListenerBound: false,
+  basemapLayers: [],
 };
 
 const reducedMotionQuery = window.matchMedia ? window.matchMedia("(prefers-reduced-motion: reduce)") : null;
@@ -129,6 +264,160 @@ function escapeHtml(value) {
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#39;");
+}
+
+function normalizeThemeId(value) {
+  if (typeof value !== "string") {
+    return null;
+  }
+  const normalized = value.trim().toLowerCase();
+  return Object.prototype.hasOwnProperty.call(THEME_REGISTRY, normalized) ? normalized : null;
+}
+
+function currentThemeDefinition() {
+  return THEME_REGISTRY[state.currentTheme] || THEME_REGISTRY[DEFAULT_UI_THEME];
+}
+
+function currentThemeOverlay() {
+  return currentThemeDefinition().overlay || THEME_REGISTRY[DEFAULT_UI_THEME].overlay;
+}
+
+function renderStatusBarLegend() {
+  const overlay = currentThemeOverlay();
+  const legend = overlay.routeLegend || {
+    forward: { label: "Forward", color: overlay.routeColor },
+    return: { label: "Return", color: overlay.routeReturnColor },
+    tertiary: { label: "Selected", color: overlay.routeSelectedColor },
+  };
+  if (statusBarDotForward) {
+    statusBarDotForward.style.background = legend.forward.color;
+  }
+  if (statusBarLabelForward) {
+    statusBarLabelForward.textContent = legend.forward.label;
+  }
+  if (statusBarDotReturn) {
+    statusBarDotReturn.style.background = legend.return.color;
+  }
+  if (statusBarLabelReturn) {
+    statusBarLabelReturn.textContent = legend.return.label;
+  }
+  if (statusBarDotTertiary) {
+    statusBarDotTertiary.style.background = legend.tertiary.color;
+    statusBarDotTertiary.hidden = !legend.tertiary.label;
+  }
+  if (statusBarLabelTertiary) {
+    statusBarLabelTertiary.textContent = legend.tertiary.label;
+    statusBarLabelTertiary.hidden = !legend.tertiary.label;
+  }
+}
+
+function readStoredThemeId() {
+  try {
+    const savedTheme = window.localStorage.getItem(UI_THEME_STORAGE_KEY);
+    const normalizedTheme = normalizeThemeId(savedTheme);
+    if (savedTheme != null) {
+      if (normalizedTheme == null) {
+        window.localStorage.removeItem(UI_THEME_STORAGE_KEY);
+      }
+      return normalizedTheme;
+    }
+
+    const legacyStyle = window.localStorage.getItem(LEGACY_UI_STYLE_STORAGE_KEY);
+    const normalizedLegacyTheme = normalizeThemeId(legacyStyle);
+    if (legacyStyle != null) {
+      window.localStorage.removeItem(LEGACY_UI_STYLE_STORAGE_KEY);
+      if (normalizedLegacyTheme != null) {
+        window.localStorage.setItem(UI_THEME_STORAGE_KEY, normalizedLegacyTheme);
+      }
+      return normalizedLegacyTheme;
+    }
+
+    return null;
+  } catch (_error) {
+    return null;
+  }
+}
+
+function writeStoredThemeId(themeId) {
+  try {
+    window.localStorage.setItem(UI_THEME_STORAGE_KEY, themeId);
+    window.localStorage.removeItem(LEGACY_UI_STYLE_STORAGE_KEY);
+  } catch (_error) {
+    return false;
+  }
+  return true;
+}
+
+function removeStoredThemeId() {
+  try {
+    window.localStorage.removeItem(UI_THEME_STORAGE_KEY);
+    window.localStorage.removeItem(LEGACY_UI_STYLE_STORAGE_KEY);
+  } catch (_error) {
+    return false;
+  }
+  return true;
+}
+
+function syncThemeControls() {
+  if (uiThemeSelect) {
+    uiThemeSelect.value = state.currentTheme;
+  }
+}
+
+function applyBasemapTheme() {
+  if (!mapState.map) {
+    return;
+  }
+  mapState.basemapLayers.forEach((layer) => {
+    mapState.map.removeLayer(layer);
+  });
+  mapState.basemapLayers = currentThemeDefinition().basemapLayers.map((definition) => {
+    const layer = L.tileLayer(definition.url, definition.options);
+    layer.addTo(mapState.map);
+    return layer;
+  });
+}
+
+function renderThemeDependentMapLayers() {
+  if (!mapState.map || !state.nodes.length) {
+    return;
+  }
+  renderMap(state.nodes);
+}
+
+function syncThemeCssProperties(theme = currentThemeDefinition()) {
+  const rootStyle = document.documentElement.style;
+  const overlay = theme.overlay || {};
+  const palette = overlay.markerPalette || {};
+  rootStyle.setProperty("--map-node-direct", palette.direct?.fillColor || "#e8a94d");
+  rootStyle.setProperty("--map-node-relayed", palette.relayed?.fillColor || "#d39a4f");
+  rootStyle.setProperty("--map-node-mqtt", palette.mqtt?.fillColor || "#7d8ea1");
+  rootStyle.setProperty("--map-route-forward", overlay.routeColor || "#e8a94d");
+  rootStyle.setProperty("--map-route-return", overlay.routeReturnColor || "#d59b47");
+}
+
+function applyThemeSelection(themeId, { persist = false } = {}) {
+  const normalized = normalizeThemeId(themeId) || DEFAULT_UI_THEME;
+  const theme = THEME_REGISTRY[normalized];
+  const themeChanged = state.currentTheme !== normalized
+    || document.documentElement.dataset.theme !== normalized;
+  state.currentTheme = normalized;
+  document.documentElement.dataset.theme = normalized;
+  syncThemeCssProperties(theme);
+  syncThemeControls();
+  renderStatusBarLegend();
+  if (themeChanged) {
+    applyBasemapTheme();
+    renderThemeDependentMapLayers();
+  }
+  if (persist) {
+    writeStoredThemeId(normalized);
+  }
+  return normalized;
+}
+
+function resolveStartupTheme(serverDefaultStyle) {
+  return readStoredThemeId() || normalizeThemeId(serverDefaultStyle) || DEFAULT_UI_THEME;
 }
 
 function formatTime(value) {
@@ -848,6 +1137,7 @@ function activeMeshRoutes(nowMs = Date.now()) {
 }
 
 function routeStyle(route, ctx) {
+  const overlay = currentThemeOverlay();
   const nowMs = ctx.nowMs;
   const neighborhood = ctx.neighborhood;
   const isSelected = routeSelected(route);
@@ -858,8 +1148,10 @@ function routeStyle(route, ctx) {
   const baseWeight = clamp(1.8 + ((intValue(route.count) - 1) * 0.4), 1.8, 4.2);
   const dimmedRoute = neighborhood != null && !isSelected;
   const baseOpacity = interpolate(ROUTE_MAX_OPACITY, ROUTE_MIN_OPACITY, ageRatio);
+  const baseColor = route.direction === "return" ? overlay.routeReturnColor : overlay.routeColor;
+  const selectedColor = overlay.preserveRouteColorOnSelect ? baseColor : overlay.routeSelectedColor;
   return {
-    color: isSelected ? "#fff3db" : "#e8a94d",
+    color: isSelected ? selectedColor : baseColor,
     weight: isSelected ? Math.min(baseWeight + 1.0, 5.2) : baseWeight,
     opacity: isSelected ? 0.98 : (dimmedRoute ? Math.min(baseOpacity * 0.15, 0.06) : baseOpacity),
     dashArray: route.direction === "return" ? "12 10" : null,
@@ -1907,20 +2199,6 @@ function renderNodeDetail(node) {
   `;
 }
 
-function nodeRowChromeStyle(node, nowMs = Date.now()) {
-  const decay = nodeDecayFraction(node, nowMs);
-  const borderAlpha = interpolate(0.2, 0.08, decay);
-  const hoverBorderAlpha = interpolate(0.28, 0.12, decay);
-  const backgroundAlpha = interpolate(0.82, 0.52, decay);
-  const hoverBackgroundAlpha = interpolate(0.92, 0.62, decay);
-  return [
-    `--node-row-border: rgba(91, 112, 121, ${borderAlpha.toFixed(3)})`,
-    `--node-row-hover-border: rgba(152, 170, 178, ${hoverBorderAlpha.toFixed(3)})`,
-    `--node-row-bg: rgba(13, 28, 34, ${backgroundAlpha.toFixed(3)})`,
-    `--node-row-hover-bg: rgba(17, 35, 42, ${hoverBackgroundAlpha.toFixed(3)})`,
-  ].join("; ");
-}
-
 function nodeProximityTone(node) {
   const status = nodeStatus(node);
   if (status === "mqtt") return "mqtt";
@@ -1951,15 +2229,12 @@ function renderNodeList() {
         const status = nodeStatus(node);
         const proxTone = nodeProximityTone(node);
         const selectedClass = node.node_num === state.selectedNodeNum ? " selected" : "";
-        const hops = Number(node.hops_away);
         const isDirect = proxTone === "direct";
         const hopPill = isDirect
           ? ""
           : (status === "mqtt"
             ? `<span class="node-row-hop">MQTT</span>`
-            : (node.hops_away != null
-              ? `<span class="node-row-hop">${hops} ${hops === 1 ? "hop" : "hops"}</span>`
-              : ""));
+            : `<span class="node-row-hop">Relayed</span>`);
         const nodeId = node.node_id ? `!${escapeHtml(node.node_id)}` : (node.node_num ? `#${node.node_num}` : "");
         return `
           <button
@@ -1994,17 +2269,6 @@ function ensureMap() {
   });
 
   L.control.zoom({ position: "bottomright" }).addTo(map);
-  L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}{r}.png", {
-    subdomains: "abcd",
-    maxZoom: 20,
-    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; CARTO',
-  }).addTo(map);
-  L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_only_labels/{z}/{x}/{y}{r}.png", {
-    subdomains: "abcd",
-    maxZoom: 20,
-    opacity: 0.4,
-    pane: "overlayPane",
-  }).addTo(map);
 
   const routePane = map.createPane("mesh-routes");
   routePane.style.zIndex = "340";
@@ -2014,6 +2278,7 @@ function ensureMap() {
   mapState.markerLayer = L.layerGroup();
   mapState.markerLayer.addTo(map);
   mapState.map = map;
+  applyBasemapTheme();
   if (!mapState.zoomListenerBound) {
     map.on("zoomend", () => {
       if (state.nodes.length) {
@@ -2031,13 +2296,15 @@ function ensureMap() {
 }
 
 function markerStyle(node, ctx) {
+  const overlay = currentThemeOverlay();
+  const markerPalette = overlay.markerPalette || THEME_REGISTRY[DEFAULT_UI_THEME].overlay.markerPalette;
   const nowMs = ctx.nowMs;
   const neighborhood = ctx.neighborhood;
   const degreeMap = ctx.degreeMap;
   const isSelected = node.node_num === state.selectedNodeNum;
   const active = nodeIsWindowActive(node, nowMs);
-  const direct = isDirectNode(node);
-  const type = nodeType(node);
+  const status = nodeStatus(node);
+  const palette = markerPalette[status] || markerPalette.relayed;
   const significance = degreeMap ? nodeSignificance(node, degreeMap) : clamp(nodeActivityCount(node) / 6, 0, 1);
   const size = Math.round(
     interpolate(14, 32, significance)
@@ -2047,15 +2314,17 @@ function markerStyle(node, ctx) {
   const baseOpacity = clamp(nodeSignalOpacity(node, nowMs) + (active ? 0.08 : 0), NODE_MIN_OPACITY, 0.98);
   const dimmed = neighborhood != null && !neighborhood.has(node.node_num);
   const opacity = dimmed ? clamp(baseOpacity * 0.25, 0.06, 0.20) : baseOpacity;
+  const borderColor = isSelected ? markerPalette.selected.borderColor : palette.borderColor;
+  const haloColor = isSelected ? markerPalette.selected.haloColor : palette.haloColor;
   return {
     size,
     opacity,
-    type,
-    fillColor: "#e8a94d",
-    glyphColor: "#2f1a03",
-    borderColor: isSelected ? "#fff3db" : (direct ? "#f5b862" : "#c49455"),
-    borderWidth: isSelected ? 3.1 : (direct ? 2.2 : 1.8),
-    haloColor: isSelected ? "rgba(255, 243, 219, 0.35)" : (active ? "rgba(232, 169, 77, 0.35)" : "rgba(232, 169, 77, 0.18)"),
+    shape: overlay.markerShape,
+    fillColor: palette.fillColor,
+    glyphColor: palette.glyphColor,
+    borderColor,
+    borderWidth: isSelected ? 3.1 : (status === "direct" ? 2.2 : 1.8),
+    haloColor,
     haloOpacity: dimmed ? 0.15 : (isSelected || active ? 1 : 0.7),
     fillOpacity: dimmed ? 0.3 : (active ? 0.9 : 0.78),
   };
@@ -2066,6 +2335,7 @@ function nodeGlyphMarkup(_type, _color) {
 }
 
 function markerIcon(node, ctx) {
+  const overlay = currentThemeOverlay();
   const style = markerStyle(node, ctx);
   const size = style.size;
   const zoom = ctx.zoom;
@@ -2083,12 +2353,33 @@ function markerIcon(node, ctx) {
 
   const labelHeight = showLabel ? 12 : 0;
   const labelHtml = showLabel
-    ? `<span class="node-marker-label" style="color:#e8dcc8">${escapeHtml(node.short_name)}</span>`
+    ? `<span class="node-marker-label" style="color:${overlay.markerLabelColor}">${escapeHtml(node.short_name)}</span>`
     : "";
-  return L.divIcon({
-    className: "",
-    html: `
-      <div class="node-marker-shell" style="width:${size}px;opacity:${style.opacity.toFixed(3)};">
+  const iconSize = style.shape === "pin"
+    ? [size, size + Math.round(size * 0.6) + labelHeight]
+    : [size, size + labelHeight];
+  const iconAnchor = style.shape === "pin"
+    ? [size / 2, size + Math.round(size * 0.28)]
+    : [size / 2, size / 2];
+  const tooltipAnchor = style.shape === "pin"
+    ? [0, -(size * 0.7)]
+    : [0, -(size / 2)];
+  const svgMarkup = style.shape === "pin"
+    ? `
+        <svg width="${size}" height="${size + Math.round(size * 0.6)}" viewBox="0 0 40 56" aria-hidden="true">
+          <defs>
+            <filter id="pin-shadow-${node.node_num}" x="-50%" y="-50%" width="200%" height="200%">
+              <feDropShadow dx="0" dy="3" stdDeviation="3" flood-color="rgba(22,35,43,0.18)"/>
+            </filter>
+          </defs>
+          <path d="M20 54C20 54 35 34.4 35 21C35 12.7 28.3 6 20 6S5 12.7 5 21c0 13.4 15 33 15 33Z"
+            fill="${style.fillColor}" fill-opacity="${style.fillOpacity}"
+            stroke="${style.borderColor}" stroke-width="${style.borderWidth}"
+            filter="url(#pin-shadow-${node.node_num})"></path>
+          <circle cx="20" cy="21" r="6.5" fill="${style.glyphColor}" fill-opacity="0.94"></circle>
+        </svg>
+      `
+    : `
         <svg width="${size}" height="${size}" viewBox="0 0 36 36" aria-hidden="true">
           <defs>
             <radialGradient id="halo-${node.node_num}">
@@ -2100,12 +2391,18 @@ function markerIcon(node, ctx) {
           <circle cx="18" cy="18" r="17" fill="url(#halo-${node.node_num})"></circle>
           <circle cx="18" cy="18" r="12.5" fill="${style.fillColor}" fill-opacity="${style.fillOpacity}"></circle>
         </svg>
+      `;
+  return L.divIcon({
+    className: "",
+    html: `
+      <div class="node-marker-shell" style="width:${size}px;opacity:${style.opacity.toFixed(3)};">
+        ${svgMarkup}
         ${labelHtml}
       </div>
     `,
-    iconSize: [size, size + labelHeight],
-    iconAnchor: [size / 2, size / 2],
-    tooltipAnchor: [0, -(size / 2)],
+    iconSize,
+    iconAnchor,
+    tooltipAnchor,
   });
 }
 
@@ -2174,6 +2471,9 @@ function renderRailView() {
       scheduleChatScrollToBottom("auto");
     }
   }
+  if (optionsPanel) {
+    optionsPanel.hidden = state.activeDrawerView !== "options" || !expanded;
+  }
   if (mapViewport) {
     mapViewport.classList.toggle("rail-expanded", expanded);
   }
@@ -2189,13 +2489,19 @@ function renderRailView() {
     railToggleSignals.classList.toggle("active", expanded && state.activeDrawerView === "signals");
     railToggleSignals.setAttribute("aria-expanded", String(expanded && state.activeDrawerView === "signals"));
   }
+  if (railToggleOptions) {
+    railToggleOptions.classList.toggle("active", expanded && state.activeDrawerView === "options");
+    railToggleOptions.setAttribute("aria-expanded", String(expanded && state.activeDrawerView === "options"));
+  }
   if (chatVisible && chatPendingScrollBehavior) {
     scheduleChatScrollToBottom(chatPendingScrollBehavior);
   }
 }
 
 function setDrawerView(nextView) {
-  state.activeDrawerView = nextView === "signals" || nextView === "chat" ? nextView : "nodes";
+  state.activeDrawerView = nextView === "signals" || nextView === "chat" || nextView === "options"
+    ? nextView
+    : "nodes";
   renderRailView();
   syncMapSize();
 }
@@ -2705,6 +3011,8 @@ async function loadNodeDetail(nodeNum, { force = false } = {}) {
 async function loadHealth() {
   return runSingleFlight("health", async () => {
     const payload = await fetchJson("/api/status");
+    state.uiDefaultTheme = normalizeThemeId(payload?.ui?.default_style) || DEFAULT_UI_THEME;
+    applyThemeSelection(resolveStartupTheme(state.uiDefaultTheme));
     setCollectorStatus(payload.collector);
     setPerspective(payload.perspective);
     if (appVersionLabel && typeof payload.version === "string" && payload.version.trim()) {
@@ -2772,15 +3080,20 @@ async function loadMeshRoutes() {
 }
 
 async function loadAll() {
-  const results = await Promise.allSettled([
+  const healthResults = await Promise.allSettled([
     loadHealth(),
-    loadNodes(),
-    loadPackets(),
-    loadRecentActivityPackets(),
-    loadChat(),
-    loadMeshSummary(),
-    loadMeshRoutes(),
   ]);
+  const results = [
+    ...healthResults,
+    ...(await Promise.allSettled([
+      loadNodes(),
+      loadPackets(),
+      loadRecentActivityPackets(),
+      loadChat(),
+      loadMeshSummary(),
+      loadMeshRoutes(),
+    ])),
+  ];
   if (results.some((result) => result.status === "fulfilled")) {
     markUpdated();
   }
@@ -2973,12 +3286,15 @@ function selectNodeFromTarget(target) {
 }
 
 function initializeStaticUI() {
+  applyThemeSelection(DEFAULT_UI_THEME);
   renderPerspectiveLabel();
   renderConnectionIndicator();
+  renderStatusBarLegend();
   refreshKpiTicker();
   renderRouteToggle();
   updatePacketFilterButtons();
   updateNodeFilterButtons();
+  syncThemeControls();
   setDrawerView("nodes");
   setNodeRailOpen(false);
   setTrafficDrawerOpen(false);
@@ -3080,8 +3396,27 @@ railToggleSignals?.addEventListener("click", () => {
   setNodeRailOpen(true);
 });
 
+railToggleOptions?.addEventListener("click", () => {
+  if (state.nodesDrawerOpen && state.activeDrawerView === "options") {
+    setNodeRailOpen(false);
+    return;
+  }
+  setDrawerView("options");
+  setNodeRailOpen(true);
+});
+
 railToggleTraffic?.addEventListener("click", () => {
   setTrafficDrawerOpen(!state.trafficDrawerOpen);
+});
+
+uiThemeSelect?.addEventListener("change", (event) => {
+  const nextTheme = normalizeThemeId(event.target.value);
+  if (!nextTheme) {
+    removeStoredThemeId();
+    applyThemeSelection(state.uiDefaultTheme);
+    return;
+  }
+  applyThemeSelection(nextTheme, { persist: true });
 });
 
 document.addEventListener("keydown", (event) => {

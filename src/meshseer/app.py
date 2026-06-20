@@ -124,6 +124,9 @@ def _public_status_payload(settings: Settings, repository: MeshRepository, colle
             "local_node_num": perspective["local_node_num"],
             "label": perspective["label"],
         },
+        "ui": {
+            "default_style": settings.ui_default_style,
+        },
         "version": __version__,
     }
 

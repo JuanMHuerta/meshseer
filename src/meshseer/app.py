@@ -179,6 +179,24 @@ def _is_public_chat_packet(packet: Mapping[str, Any]) -> bool:
     )
 
 
+def _packet_position(packet: Mapping[str, Any]) -> tuple[float, float] | None:
+    try:
+        raw_json = json.loads(packet.get("raw_json") or "{}")
+    except (TypeError, ValueError):
+        return None
+    decoded = raw_json.get("decoded")
+    if not isinstance(decoded, dict):
+        return None
+    position = decoded.get("position")
+    if not isinstance(position, dict):
+        return None
+    latitude = position.get("latitude")
+    longitude = position.get("longitude")
+    if not isinstance(latitude, (int, float)) or not isinstance(longitude, (int, float)):
+        return None
+    return float(latitude), float(longitude)
+
+
 def _websocket_origin_allowed(websocket: WebSocket) -> bool:
     origin = websocket.headers.get("origin")
     host = websocket.headers.get("host")
@@ -299,6 +317,22 @@ def create_app(
                     "data": public_chat_message_payload(chat_packet),
                 }
             )
+        if (
+            packet_record.portnum == "POSITION_APP"
+            and isinstance(packet_record.from_node_num, int)
+            and not packet_record.via_mqtt
+        ):
+            position = _packet_position(stored)
+            if position is not None:
+                repository.mark_position_trace_candidate(
+                    node_num=packet_record.from_node_num,
+                    triggered_at=packet_record.received_at,
+                    latitude=position[0],
+                    longitude=position[1],
+                    movement_distance_meters=settings.autotrace_position_movement_distance_meters,
+                    cooldown_hours=settings.autotrace_cooldown_hours,
+                    primary_only=True,
+                )
 
     def handle_node(node: dict[str, Any]) -> None:
         if not _is_longfast_node(node):
@@ -343,6 +377,9 @@ def create_app(
             cooldown_hours=settings.autotrace_cooldown_hours,
             ack_only_cooldown_hours=settings.autotrace_ack_only_cooldown_hours,
             response_timeout_seconds=settings.autotrace_response_timeout_seconds,
+            position_priority_window_minutes=settings.autotrace_position_priority_window_minutes,
+            position_movement_distance_meters=settings.autotrace_position_movement_distance_meters,
+            position_movement_cooldown_minutes=settings.autotrace_position_movement_cooldown_minutes,
         ),
     )
 

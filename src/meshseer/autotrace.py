@@ -15,6 +15,9 @@ class AutoTracerouteConfig:
     cooldown_hours: int
     ack_only_cooldown_hours: int
     response_timeout_seconds: int
+    position_priority_window_minutes: int = 15
+    position_movement_distance_meters: float = 150.0
+    position_movement_cooldown_minutes: int = 60
     recent_attempt_limit: int = 10
 
 
@@ -70,6 +73,12 @@ class AutoTracerouteService:
         with self._lock:
             return self._enabled
 
+    @staticmethod
+    def _trace_baseline_coordinates(target: dict[str, Any]) -> tuple[float | None, float | None]:
+        if target.get("position_recent"):
+            return target.get("last_position_lat"), target.get("last_position_lon")
+        return target.get("latitude"), target.get("longitude")
+
     def _wait(self, seconds: float) -> None:
         self._wake_event.wait(seconds)
         self._wake_event.clear()
@@ -110,6 +119,8 @@ class AutoTracerouteService:
             target_window_hours=self._config.target_window_hours,
             cooldown_hours=self._config.cooldown_hours,
             ack_only_cooldown_hours=self._config.ack_only_cooldown_hours,
+            position_priority_window_minutes=self._config.position_priority_window_minutes,
+            position_movement_cooldown_minutes=self._config.position_movement_cooldown_minutes,
             primary_only=True,
             now=self._now_provider(),
         )
@@ -120,10 +131,13 @@ class AutoTracerouteService:
         hops_away = target.get("hops_away")
         hop_limit = max(1, min(hops_away if isinstance(hops_away, int) else 1, 7))
         requested_at = to_utc_iso(self._now_provider())
+        traced_latitude, traced_longitude = self._trace_baseline_coordinates(target)
         attempt_id = self._repository.start_traceroute_attempt(
             target_node_num=target_node_num,
             requested_at=requested_at,
             hop_limit=hop_limit,
+            traced_latitude=traced_latitude,
+            traced_longitude=traced_longitude,
         )
 
         status = "error"
@@ -165,11 +179,16 @@ class AutoTracerouteService:
             "ack_only_cooldown_hours": self._config.ack_only_cooldown_hours,
             "target_window_hours": self._config.target_window_hours,
             "response_timeout_seconds": self._config.response_timeout_seconds,
+            "position_priority_window_minutes": self._config.position_priority_window_minutes,
+            "position_movement_distance_meters": self._config.position_movement_distance_meters,
+            "position_movement_cooldown_minutes": self._config.position_movement_cooldown_minutes,
             "eligible_targets": self._repository.count_autotrace_candidates(
                 local_node_num=local_node_num,
                 target_window_hours=self._config.target_window_hours,
                 cooldown_hours=self._config.cooldown_hours,
                 ack_only_cooldown_hours=self._config.ack_only_cooldown_hours,
+                position_priority_window_minutes=self._config.position_priority_window_minutes,
+                position_movement_cooldown_minutes=self._config.position_movement_cooldown_minutes,
                 primary_only=True,
                 now=self._now_provider(),
             ),

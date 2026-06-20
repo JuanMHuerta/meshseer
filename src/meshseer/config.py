@@ -93,6 +93,9 @@ class Settings:
     autotrace_cooldown_hours: int
     autotrace_ack_only_cooldown_hours: int
     autotrace_response_timeout_seconds: int
+    autotrace_position_priority_window_minutes: int
+    autotrace_position_movement_distance_meters: float
+    autotrace_position_movement_cooldown_minutes: int
     ws_max_connections: int
     ws_queue_size: int
     ws_send_timeout_seconds: float
@@ -129,6 +132,21 @@ class Settings:
             ),
             autotrace_response_timeout_seconds=int(
                 values.get("MESHSEER_AUTOTRACE_RESPONSE_TIMEOUT_SECONDS", "20")
+            ),
+            autotrace_position_priority_window_minutes=_positive_int(
+                values.get("MESHSEER_AUTOTRACE_POSITION_PRIORITY_WINDOW_MINUTES"),
+                default=15,
+                name="MESHSEER_AUTOTRACE_POSITION_PRIORITY_WINDOW_MINUTES",
+            ),
+            autotrace_position_movement_distance_meters=_positive_float(
+                values.get("MESHSEER_AUTOTRACE_POSITION_MOVEMENT_DISTANCE_METERS"),
+                default=150.0,
+                name="MESHSEER_AUTOTRACE_POSITION_MOVEMENT_DISTANCE_METERS",
+            ),
+            autotrace_position_movement_cooldown_minutes=_positive_int(
+                values.get("MESHSEER_AUTOTRACE_POSITION_MOVEMENT_COOLDOWN_MINUTES"),
+                default=60,
+                name="MESHSEER_AUTOTRACE_POSITION_MOVEMENT_COOLDOWN_MINUTES",
             ),
             ws_max_connections=_positive_int(
                 values.get("MESHSEER_WS_MAX_CONNECTIONS"),

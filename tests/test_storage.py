@@ -1215,6 +1215,304 @@ def test_repository_selects_autotrace_candidates_with_cooldowns(tmp_path):
     assert next_target["node_num"] == 202
 
 
+def test_repository_prioritizes_recent_position_triggers(tmp_path):
+    repo = MeshRepository(tmp_path / "mesh.db")
+    now = datetime(2026, 3, 30, 12, 0, 0, tzinfo=UTC)
+
+    for node_num, short_name, latitude, longitude, hops_away in (
+        (101, "LOCAL", None, None, None),
+        (202, "MOBILE", -34.6000, -58.3800, 2),
+        (303, "STATIC", -34.6100, -58.3900, 3),
+    ):
+        repo.upsert_node(
+            NodeRecord(
+                node_num=node_num,
+                node_id=f"!{node_num:08x}",
+                short_name=short_name,
+                long_name=f"{short_name} Node",
+                hardware_model="TBEAM",
+                role="CLIENT",
+                channel_index=0,
+                last_heard_at="2026-03-30T11:58:00Z",
+                last_snr=4.0,
+                latitude=latitude,
+                longitude=longitude,
+                altitude=None,
+                battery_level=None,
+                channel_utilization=None,
+                air_util_tx=None,
+                raw_json=f'{{"num":{node_num}}}',
+                updated_at="2026-03-30T11:58:00Z",
+                hops_away=hops_away,
+                via_mqtt=False,
+            )
+        )
+
+    reason = repo.mark_position_trace_candidate(
+        node_num=202,
+        triggered_at="2026-03-30T11:59:30Z",
+        latitude=-34.6000,
+        longitude=-58.3800,
+        movement_distance_meters=150.0,
+        cooldown_hours=24,
+        primary_only=True,
+    )
+
+    next_target = repo.get_next_autotrace_target(
+        local_node_num=101,
+        target_window_hours=24,
+        cooldown_hours=24,
+        ack_only_cooldown_hours=6,
+        position_priority_window_minutes=15,
+        position_movement_cooldown_minutes=60,
+        primary_only=True,
+        now=now,
+    )
+
+    assert reason == "first_fix"
+    assert next_target is not None
+    assert next_target["node_num"] == 202
+    assert next_target["position_reason"] == "first_fix"
+
+
+def test_repository_allows_movement_retrace_after_shorter_cooldown(tmp_path):
+    repo = MeshRepository(tmp_path / "mesh.db")
+    now = datetime(2026, 3, 30, 12, 0, 0, tzinfo=UTC)
+    repo.upsert_node(
+        NodeRecord(
+            node_num=101,
+            node_id="!00000065",
+            short_name="LOCAL",
+            long_name="LOCAL Node",
+            hardware_model="TBEAM",
+            role="CLIENT",
+            channel_index=0,
+            last_heard_at="2026-03-30T12:00:00Z",
+            last_snr=4.0,
+            latitude=None,
+            longitude=None,
+            altitude=None,
+            battery_level=None,
+            channel_utilization=None,
+            air_util_tx=None,
+            raw_json='{"num":101}',
+            updated_at="2026-03-30T12:00:00Z",
+            hops_away=None,
+            via_mqtt=False,
+        )
+    )
+    repo.upsert_node(
+        NodeRecord(
+            node_num=202,
+            node_id="!000000ca",
+            short_name="MOBILE",
+            long_name="MOBILE Node",
+            hardware_model="TBEAM",
+            role="CLIENT",
+            channel_index=0,
+            last_heard_at="2026-03-30T11:58:00Z",
+            last_snr=4.0,
+            latitude=-34.6020,
+            longitude=-58.3810,
+            altitude=None,
+            battery_level=None,
+            channel_utilization=None,
+            air_util_tx=None,
+            raw_json='{"num":202}',
+            updated_at="2026-03-30T11:58:00Z",
+            hops_away=2,
+            via_mqtt=False,
+        )
+    )
+
+    attempt_id = repo.start_traceroute_attempt(
+        target_node_num=202,
+        requested_at="2026-03-30T10:20:00Z",
+        hop_limit=2,
+        traced_latitude=-34.6037,
+        traced_longitude=-58.3816,
+    )
+    repo.complete_traceroute_attempt(
+        attempt_id,
+        completed_at="2026-03-30T10:20:05Z",
+        status="success",
+        request_mesh_packet_id=11,
+        response_mesh_packet_id=12,
+        detail=None,
+    )
+
+    reason = repo.mark_position_trace_candidate(
+        node_num=202,
+        triggered_at="2026-03-30T12:00:00Z",
+        latitude=-34.6020,
+        longitude=-58.3810,
+        movement_distance_meters=150.0,
+        cooldown_hours=24,
+        primary_only=True,
+    )
+    eligible = repo.get_next_autotrace_target(
+        local_node_num=101,
+        target_window_hours=24,
+        cooldown_hours=24,
+        ack_only_cooldown_hours=6,
+        position_priority_window_minutes=15,
+        position_movement_cooldown_minutes=60,
+        primary_only=True,
+        now=now,
+    )
+
+    assert reason == "moved"
+    assert eligible is not None
+    assert eligible["node_num"] == 202
+    assert eligible["position_reason"] == "moved"
+
+
+def test_repository_blocks_movement_retrace_before_shorter_cooldown(tmp_path):
+    repo = MeshRepository(tmp_path / "mesh.db")
+    repo.upsert_node(
+        NodeRecord(
+            node_num=101,
+            node_id="!00000065",
+            short_name="LOCAL",
+            long_name="LOCAL Node",
+            hardware_model="TBEAM",
+            role="CLIENT",
+            channel_index=0,
+            last_heard_at="2026-03-30T12:00:00Z",
+            last_snr=4.0,
+            latitude=None,
+            longitude=None,
+            altitude=None,
+            battery_level=None,
+            channel_utilization=None,
+            air_util_tx=None,
+            raw_json='{"num":101}',
+            updated_at="2026-03-30T12:00:00Z",
+            hops_away=None,
+            via_mqtt=False,
+        )
+    )
+    repo.upsert_node(
+        NodeRecord(
+            node_num=202,
+            node_id="!000000ca",
+            short_name="MOBILE",
+            long_name="MOBILE Node",
+            hardware_model="TBEAM",
+            role="CLIENT",
+            channel_index=0,
+            last_heard_at="2026-03-30T11:58:00Z",
+            last_snr=4.0,
+            latitude=-34.6020,
+            longitude=-58.3810,
+            altitude=None,
+            battery_level=None,
+            channel_utilization=None,
+            air_util_tx=None,
+            raw_json='{"num":202}',
+            updated_at="2026-03-30T11:58:00Z",
+            hops_away=2,
+            via_mqtt=False,
+        )
+    )
+
+    attempt_id = repo.start_traceroute_attempt(
+        target_node_num=202,
+        requested_at="2026-03-30T11:35:00Z",
+        hop_limit=2,
+        traced_latitude=-34.6037,
+        traced_longitude=-58.3816,
+    )
+    repo.complete_traceroute_attempt(
+        attempt_id,
+        completed_at="2026-03-30T11:35:05Z",
+        status="success",
+        request_mesh_packet_id=11,
+        response_mesh_packet_id=12,
+        detail=None,
+    )
+
+    repo.mark_position_trace_candidate(
+        node_num=202,
+        triggered_at="2026-03-30T12:00:00Z",
+        latitude=-34.6020,
+        longitude=-58.3810,
+        movement_distance_meters=150.0,
+        cooldown_hours=24,
+        primary_only=True,
+    )
+    blocked = repo.get_next_autotrace_target(
+        local_node_num=101,
+        target_window_hours=24,
+        cooldown_hours=24,
+        ack_only_cooldown_hours=6,
+        position_priority_window_minutes=15,
+        position_movement_cooldown_minutes=60,
+        primary_only=True,
+        now=datetime(2026, 3, 30, 12, 0, 0, tzinfo=UTC),
+    )
+
+    assert blocked is None
+
+
+def test_repository_maintenance_preserves_zero_coordinate_trace_baseline(tmp_path):
+    repo = MeshRepository(tmp_path / "mesh.db")
+    repo.upsert_node(
+        NodeRecord(
+            node_num=202,
+            node_id="!000000ca",
+            short_name="ZERO",
+            long_name="ZERO Node",
+            hardware_model="TBEAM",
+            role="CLIENT",
+            channel_index=0,
+            last_heard_at="2026-03-30T12:00:00Z",
+            last_snr=4.0,
+            latitude=0.0,
+            longitude=0.0,
+            altitude=None,
+            battery_level=None,
+            channel_utilization=None,
+            air_util_tx=None,
+            raw_json='{"num":202}',
+            updated_at="2026-03-30T12:00:00Z",
+            hops_away=1,
+            via_mqtt=False,
+        )
+    )
+
+    attempt_id = repo.start_traceroute_attempt(
+        target_node_num=202,
+        requested_at="2026-03-30T12:00:05Z",
+        hop_limit=1,
+        traced_latitude=0.0,
+        traced_longitude=0.0,
+    )
+    repo.complete_traceroute_attempt(
+        attempt_id,
+        completed_at="2026-03-30T12:00:10Z",
+        status="success",
+        request_mesh_packet_id=11,
+        response_mesh_packet_id=12,
+        detail=None,
+    )
+
+    repo.run_maintenance(force=True)
+
+    with repo._connect() as connection:
+        state = connection.execute(
+            """
+            SELECT last_traced_position_lat, last_traced_position_lon
+            FROM autotrace_target_state
+            WHERE target_node_num = ?
+            """,
+            (202,),
+        ).fetchone()
+
+    assert state is not None
+    assert tuple(state) == (0.0, 0.0)
+
+
 def test_repository_retries_ack_only_nodes_after_ack_only_cooldown(tmp_path):
     repo = MeshRepository(tmp_path / "mesh.db")
     now = datetime(2026, 3, 30, 12, 0, 0, tzinfo=UTC)

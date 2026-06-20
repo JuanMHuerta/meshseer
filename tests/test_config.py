@@ -19,6 +19,9 @@ def test_settings_defaults():
     assert settings.admin_bearer_token is None
     assert settings.ui_default_style == "amber-monochrome"
     assert settings.autotrace_enabled is False
+    assert settings.autotrace_position_priority_window_minutes == 15
+    assert settings.autotrace_position_movement_distance_meters == 150.0
+    assert settings.autotrace_position_movement_cooldown_minutes == 60
     assert settings.ws_max_connections == 32
     assert settings.ws_queue_size == 32
     assert settings.ws_send_timeout_seconds == 5.0
@@ -44,6 +47,9 @@ def test_settings_override_from_env(tmp_path):
             "MESHSEER_ADMIN_BEARER_TOKEN": "  secret-token  ",
             "MESHSEER_UI_DEFAULT_STYLE": "classic",
             "MESHSEER_AUTOTRACE_ENABLED": "true",
+            "MESHSEER_AUTOTRACE_POSITION_PRIORITY_WINDOW_MINUTES": "20",
+            "MESHSEER_AUTOTRACE_POSITION_MOVEMENT_DISTANCE_METERS": "250",
+            "MESHSEER_AUTOTRACE_POSITION_MOVEMENT_COOLDOWN_MINUTES": "90",
             "MESHSEER_WS_MAX_CONNECTIONS": "12",
             "MESHSEER_WS_QUEUE_SIZE": "8",
             "MESHSEER_WS_SEND_TIMEOUT_SECONDS": "7.5",
@@ -66,6 +72,9 @@ def test_settings_override_from_env(tmp_path):
     assert settings.admin_bearer_token == "secret-token"
     assert settings.ui_default_style == "classic"
     assert settings.autotrace_enabled is True
+    assert settings.autotrace_position_priority_window_minutes == 20
+    assert settings.autotrace_position_movement_distance_meters == 250.0
+    assert settings.autotrace_position_movement_cooldown_minutes == 90
     assert settings.ws_max_connections == 12
     assert settings.ws_queue_size == 8
     assert settings.ws_send_timeout_seconds == 7.5

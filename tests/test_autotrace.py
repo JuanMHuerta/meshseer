@@ -28,6 +28,8 @@ def upsert_node(
     last_heard_at: str,
     hops_away: int | None,
     via_mqtt: bool,
+    latitude: float | None = None,
+    longitude: float | None = None,
 ) -> None:
     repo.upsert_node(
         NodeRecord(
@@ -40,8 +42,8 @@ def upsert_node(
             channel_index=0,
             last_heard_at=last_heard_at,
             last_snr=5.0,
-            latitude=None,
-            longitude=None,
+            latitude=latitude,
+            longitude=longitude,
             altitude=None,
             battery_level=None,
             channel_utilization=None,
@@ -127,6 +129,78 @@ def test_autotrace_service_failed_attempt_enters_cooldown(tmp_path):
     assert first["status"] == "timeout"
     assert second is None
     assert len(collector.calls) == 1
+
+
+def test_autotrace_service_uses_recent_position_trigger_as_trace_baseline(tmp_path):
+    repo = MeshRepository(tmp_path / "mesh.db")
+    upsert_node(repo, node_num=101, short_name="LOCAL", last_heard_at="2026-03-30T12:00:00Z", hops_away=None, via_mqtt=False)
+    upsert_node(
+        repo,
+        node_num=202,
+        short_name="MOBILE",
+        last_heard_at="2026-03-30T11:59:00Z",
+        hops_away=2,
+        via_mqtt=False,
+        latitude=-34.6037,
+        longitude=-58.3816,
+    )
+    repo.mark_position_trace_candidate(
+        node_num=202,
+        triggered_at="2026-03-30T12:00:00Z",
+        latitude=-34.6020,
+        longitude=-58.3810,
+        movement_distance_meters=150.0,
+        cooldown_hours=24,
+        primary_only=True,
+    )
+    collector = FakeCollector(
+        TraceRouteResult(
+            status="success",
+            request_mesh_packet_id=77,
+            response_mesh_packet_id=88,
+            detail=None,
+        )
+    )
+    now = datetime(2026, 3, 30, 12, 0, 5, tzinfo=UTC)
+    service = AutoTracerouteService(
+        repository=repo,
+        collector=collector,
+        local_node_num_getter=lambda: 101,
+        config=AutoTracerouteConfig(
+            interval_seconds=300,
+            target_window_hours=24,
+            cooldown_hours=24,
+            ack_only_cooldown_hours=6,
+            response_timeout_seconds=20,
+        ),
+        now_provider=lambda: now,
+    )
+
+    service.enable()
+    attempt = service.run_cycle()
+    with repo._connect() as connection:
+        state = connection.execute(
+            """
+            SELECT last_traced_position_lat, last_traced_position_lon
+            FROM autotrace_target_state
+            WHERE target_node_num = ?
+            """,
+            (202,),
+        ).fetchone()
+    next_reason = repo.mark_position_trace_candidate(
+        node_num=202,
+        triggered_at="2026-03-30T13:30:00Z",
+        latitude=-34.6020,
+        longitude=-58.3810,
+        movement_distance_meters=150.0,
+        cooldown_hours=24,
+        primary_only=True,
+    )
+
+    assert attempt is not None
+    assert state is not None
+    assert tuple(state) == (-34.6020, -58.3810)
+    assert next_reason != "moved"
 
 
 def test_autotrace_service_does_nothing_when_disabled_or_disconnected(tmp_path):

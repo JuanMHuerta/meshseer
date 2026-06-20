@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
+import math
 import sqlite3
 import threading
 from datetime import UTC, datetime, timedelta
@@ -20,6 +21,12 @@ ROSTER_ACTIVITY_COUNT_WINDOW_MINUTES = 60
 SQLITE_BUSY_TIMEOUT_MS = 5000
 SQLITE_CONNECT_TIMEOUT_SECONDS = SQLITE_BUSY_TIMEOUT_MS / 1000
 DAILY_NODE_TOTALS_WINDOW_DAYS = 30
+POSITION_PRIORITY_REASONS = {
+    "first_fix": 0,
+    "moved": 1,
+    "stale_refresh": 2,
+    "fresh_position": 3,
+}
 
 
 class MeshRepository:
@@ -884,7 +891,14 @@ class MeshRepository:
                     target_node_num INTEGER PRIMARY KEY,
                     last_activity_at TEXT NOT NULL,
                     last_status TEXT NOT NULL,
-                    ack_only_streak INTEGER NOT NULL DEFAULT 0
+                    ack_only_streak INTEGER NOT NULL DEFAULT 0,
+                    position_trigger_pending INTEGER NOT NULL DEFAULT 0,
+                    last_position_trigger_at TEXT,
+                    last_position_lat REAL,
+                    last_position_lon REAL,
+                    last_position_trigger_reason TEXT,
+                    last_traced_position_lat REAL,
+                    last_traced_position_lon REAL
                 );
                 """
             )
@@ -898,6 +912,23 @@ class MeshRepository:
             self._ensure_column(connection, "nodes", "hops_away", "INTEGER")
             self._ensure_column(connection, "nodes", "via_mqtt", "INTEGER")
             self._ensure_column(connection, "daily_node_totals", "mapped_nodes", "INTEGER")
+            self._ensure_column(
+                connection,
+                "autotrace_target_state",
+                "position_trigger_pending",
+                "INTEGER NOT NULL DEFAULT 0",
+            )
+            self._ensure_column(connection, "autotrace_target_state", "last_position_trigger_at", "TEXT")
+            self._ensure_column(connection, "autotrace_target_state", "last_position_lat", "REAL")
+            self._ensure_column(connection, "autotrace_target_state", "last_position_lon", "REAL")
+            self._ensure_column(
+                connection,
+                "autotrace_target_state",
+                "last_position_trigger_reason",
+                "TEXT",
+            )
+            self._ensure_column(connection, "autotrace_target_state", "last_traced_position_lat", "REAL")
+            self._ensure_column(connection, "autotrace_target_state", "last_traced_position_lon", "REAL")
             self._backfill_node_channels(connection)
             self._backfill_packet_metadata(connection)
             self._backfill_node_metadata(connection)
@@ -954,6 +985,8 @@ class MeshRepository:
         payload = {key: row[key] for key in row.keys()}
         if "via_mqtt" in payload and payload["via_mqtt"] is not None:
             payload["via_mqtt"] = bool(payload["via_mqtt"])
+        if "position_trigger_pending" in payload and payload["position_trigger_pending"] is not None:
+            payload["position_trigger_pending"] = bool(payload["position_trigger_pending"])
         return payload
 
     @classmethod
@@ -968,6 +1001,38 @@ class MeshRepository:
             except ValueError:
                 return None
         return None
+
+    @staticmethod
+    def _parse_utc_timestamp(value: Any) -> datetime | None:
+        if not isinstance(value, str) or not value:
+            return None
+        try:
+            return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(UTC)
+        except ValueError:
+            return None
+
+    @staticmethod
+    def _haversine_distance_meters(
+        lat_a: float | None,
+        lon_a: float | None,
+        lat_b: float | None,
+        lon_b: float | None,
+    ) -> float | None:
+        if None in {lat_a, lon_a, lat_b, lon_b}:
+            return None
+        if not all(isinstance(value, (int, float)) and math.isfinite(float(value)) for value in (lat_a, lon_a, lat_b, lon_b)):
+            return None
+
+        radius_m = 6_371_008.8
+        phi_a = math.radians(float(lat_a))
+        phi_b = math.radians(float(lat_b))
+        delta_phi = math.radians(float(lat_b) - float(lat_a))
+        delta_lambda = math.radians(float(lon_b) - float(lon_a))
+        hav = (
+            math.sin(delta_phi / 2.0) ** 2
+            + math.cos(phi_a) * math.cos(phi_b) * math.sin(delta_lambda / 2.0) ** 2
+        )
+        return radius_m * 2.0 * math.atan2(math.sqrt(hav), math.sqrt(1.0 - hav))
 
     @staticmethod
     def _primary_channel_clause(column_name: str = "channel_index") -> str:
@@ -1424,6 +1489,8 @@ class MeshRepository:
         last_activity_at: str,
         last_status: str,
         ack_only_streak: int,
+        traced_latitude: float | None = None,
+        traced_longitude: float | None = None,
     ) -> None:
         connection.execute(
             """
@@ -1431,18 +1498,51 @@ class MeshRepository:
                 target_node_num,
                 last_activity_at,
                 last_status,
-                ack_only_streak
-            ) VALUES (?, ?, ?, ?)
+                ack_only_streak,
+                position_trigger_pending,
+                last_position_trigger_at,
+                last_position_lat,
+                last_position_lon,
+                last_position_trigger_reason,
+                last_traced_position_lat,
+                last_traced_position_lon
+            ) VALUES (?, ?, ?, ?, 0, NULL, NULL, NULL, NULL, ?, ?)
             ON CONFLICT(target_node_num) DO UPDATE SET
                 last_activity_at = excluded.last_activity_at,
                 last_status = excluded.last_status,
-                ack_only_streak = excluded.ack_only_streak
+                ack_only_streak = excluded.ack_only_streak,
+                position_trigger_pending = CASE
+                    WHEN autotrace_target_state.last_position_trigger_at IS NOT NULL
+                         AND autotrace_target_state.last_position_trigger_at > excluded.last_activity_at
+                    THEN autotrace_target_state.position_trigger_pending
+                    ELSE 0
+                END,
+                last_traced_position_lat = COALESCE(
+                    excluded.last_traced_position_lat,
+                    autotrace_target_state.last_traced_position_lat
+                ),
+                last_traced_position_lon = COALESCE(
+                    excluded.last_traced_position_lon,
+                    autotrace_target_state.last_traced_position_lon
+                )
             """,
-            (target_node_num, last_activity_at, last_status, ack_only_streak),
+            (
+                target_node_num,
+                last_activity_at,
+                last_status,
+                ack_only_streak,
+                traced_latitude,
+                traced_longitude,
+            ),
         )
 
     @classmethod
     def _backfill_autotrace_target_state(cls, connection: sqlite3.Connection) -> None:
+        existing_rows = {
+            cls._coerce_optional_int(row["target_node_num"]): dict(row)
+            for row in connection.execute("SELECT * FROM autotrace_target_state").fetchall()
+            if cls._coerce_optional_int(row["target_node_num"]) is not None
+        }
         connection.execute("DELETE FROM autotrace_target_state")
 
         cursor = connection.execute(
@@ -1505,6 +1605,175 @@ class MeshRepository:
                 last_status=current_status,
                 ack_only_streak=ack_only_streak,
             )
+
+        for target_node_num, row in existing_rows.items():
+            if target_node_num is None:
+                continue
+            if not cls._has_autotrace_position_state(row):
+                continue
+            connection.execute(
+                """
+                INSERT INTO autotrace_target_state (
+                    target_node_num,
+                    last_activity_at,
+                    last_status,
+                    ack_only_streak,
+                    position_trigger_pending,
+                    last_position_trigger_at,
+                    last_position_lat,
+                    last_position_lon,
+                    last_position_trigger_reason,
+                    last_traced_position_lat,
+                    last_traced_position_lon
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(target_node_num) DO UPDATE SET
+                    position_trigger_pending = excluded.position_trigger_pending,
+                    last_position_trigger_at = excluded.last_position_trigger_at,
+                    last_position_lat = excluded.last_position_lat,
+                    last_position_lon = excluded.last_position_lon,
+                    last_position_trigger_reason = excluded.last_position_trigger_reason,
+                    last_traced_position_lat = COALESCE(
+                        autotrace_target_state.last_traced_position_lat,
+                        excluded.last_traced_position_lat
+                    ),
+                    last_traced_position_lon = COALESCE(
+                        autotrace_target_state.last_traced_position_lon,
+                        excluded.last_traced_position_lon
+                    )
+                """,
+                (
+                    target_node_num,
+                    row.get("last_activity_at") or "",
+                    row.get("last_status") or "idle",
+                    int(row.get("ack_only_streak") or 0),
+                    int(row.get("position_trigger_pending") or 0),
+                    row.get("last_position_trigger_at"),
+                    row.get("last_position_lat"),
+                    row.get("last_position_lon"),
+                    row.get("last_position_trigger_reason"),
+                    row.get("last_traced_position_lat"),
+                    row.get("last_traced_position_lon"),
+                ),
+            )
+
+    @classmethod
+    def _position_trigger_reason(
+        cls,
+        *,
+        latitude: float,
+        longitude: float,
+        last_traced_latitude: float | None,
+        last_traced_longitude: float | None,
+        last_route_activity_at: str | None,
+        triggered_at: str,
+        movement_distance_meters: float,
+        cooldown_hours: int,
+    ) -> str:
+        if last_traced_latitude is None or last_traced_longitude is None:
+            return "first_fix"
+
+        moved_meters = cls._haversine_distance_meters(
+            last_traced_latitude,
+            last_traced_longitude,
+            latitude,
+            longitude,
+        )
+        if moved_meters is not None and moved_meters >= movement_distance_meters:
+            return "moved"
+
+        route_activity = cls._parse_utc_timestamp(last_route_activity_at)
+        trigger_time = cls._parse_utc_timestamp(triggered_at)
+        if route_activity is None or trigger_time is None:
+            return "stale_refresh"
+
+        if route_activity <= (trigger_time - timedelta(hours=max(1, cooldown_hours))):
+            return "stale_refresh"
+        return "fresh_position"
+
+    @classmethod
+    def _has_autotrace_position_state(cls, row: Mapping[str, Any]) -> bool:
+        if bool(row.get("position_trigger_pending")):
+            return True
+
+        for key in ("last_position_trigger_at", "last_position_trigger_reason"):
+            value = row.get(key)
+            if isinstance(value, str) and value:
+                return True
+
+        for key in (
+            "last_position_lat",
+            "last_position_lon",
+            "last_traced_position_lat",
+            "last_traced_position_lon",
+        ):
+            if cls._coerce_optional_float(row.get(key)) is not None:
+                return True
+
+        return False
+
+    def mark_position_trace_candidate(
+        self,
+        *,
+        node_num: int,
+        triggered_at: str,
+        latitude: float,
+        longitude: float,
+        movement_distance_meters: float,
+        cooldown_hours: int,
+        primary_only: bool = False,
+    ) -> str:
+        observed_column = self._route_activity_column(primary_only=primary_only)
+        with self._connect() as connection:
+            row = connection.execute(
+                f"""
+                SELECT
+                    s.last_traced_position_lat,
+                    s.last_traced_position_lon,
+                    r.{observed_column} AS last_route_activity_at
+                FROM nodes AS n
+                LEFT JOIN autotrace_target_state AS s
+                    ON s.target_node_num = n.node_num
+                LEFT JOIN route_node_activity AS r
+                    ON r.node_num = n.node_num
+                WHERE n.node_num = ?
+                """,
+                (node_num,),
+            ).fetchone()
+            reason = type(self)._position_trigger_reason(
+                latitude=latitude,
+                longitude=longitude,
+                last_traced_latitude=self._coerce_optional_float(None if row is None else row["last_traced_position_lat"]),
+                last_traced_longitude=self._coerce_optional_float(None if row is None else row["last_traced_position_lon"]),
+                last_route_activity_at=None if row is None else row["last_route_activity_at"],
+                triggered_at=triggered_at,
+                movement_distance_meters=max(0.0, float(movement_distance_meters)),
+                cooldown_hours=max(1, cooldown_hours),
+            )
+            connection.execute(
+                """
+                INSERT INTO autotrace_target_state (
+                    target_node_num,
+                    last_activity_at,
+                    last_status,
+                    ack_only_streak,
+                    position_trigger_pending,
+                    last_position_trigger_at,
+                    last_position_lat,
+                    last_position_lon,
+                    last_position_trigger_reason,
+                    last_traced_position_lat,
+                    last_traced_position_lon
+                ) VALUES (?, '', 'idle', 0, 1, ?, ?, ?, ?, NULL, NULL)
+                ON CONFLICT(target_node_num) DO UPDATE SET
+                    position_trigger_pending = 1,
+                    last_position_trigger_at = excluded.last_position_trigger_at,
+                    last_position_lat = excluded.last_position_lat,
+                    last_position_lon = excluded.last_position_lon,
+                    last_position_trigger_reason = excluded.last_position_trigger_reason
+                """,
+                (node_num, triggered_at, latitude, longitude, reason),
+            )
+        return reason
 
     @classmethod
     def _route_observation_row_to_dict(cls, row: sqlite3.Row | None) -> dict[str, Any] | None:
@@ -1739,80 +2008,191 @@ class MeshRepository:
     def _route_activity_column(self, *, primary_only: bool = False) -> str:
         return "last_primary_route_seen_at" if primary_only else "last_route_seen_at"
 
-    def _autotrace_candidates_query(
+    @staticmethod
+    def _last_trace_activity_at(candidate: Mapping[str, Any], *, primary_only: bool) -> str | None:
+        route_key = "last_primary_route_seen_at" if primary_only else "last_route_seen_at"
+        attempt_activity = candidate.get("last_activity_at")
+        route_activity = candidate.get(route_key)
+        if not isinstance(attempt_activity, str) or not attempt_activity:
+            return route_activity if isinstance(route_activity, str) and route_activity else None
+        if not isinstance(route_activity, str) or not route_activity:
+            return attempt_activity
+        return attempt_activity if attempt_activity >= route_activity else route_activity
+
+    def _autotrace_candidate_rows(
         self,
         *,
         local_node_num: int,
         heard_cutoff: str,
-        now_iso: str,
-        cooldown_hours: int,
-        ack_only_cooldown_hours: int,
         primary_only: bool,
-    ) -> tuple[str, list[Any]]:
-        observed_column = self._route_activity_column(primary_only=primary_only)
+    ) -> list[dict[str, Any]]:
         clauses = [
             "n.node_num != ?",
             "COALESCE(n.via_mqtt, 0) = 0",
             "n.hops_away IS NOT NULL",
             "n.last_heard_at IS NOT NULL",
             "n.last_heard_at >= ?",
-            """
-            (
-                s.last_activity_at IS NULL OR
-                julianday(s.last_activity_at) < (
-                    julianday(?) - (
-                        CASE
-                            WHEN s.last_status = 'ack_only' THEN MIN(
-                                ? * CASE
-                                    WHEN COALESCE(s.ack_only_streak, 0) < 1 THEN 1
-                                    ELSE s.ack_only_streak
-                                END,
-                                ?
-                            )
-                            ELSE ?
-                        END / 24.0
-                    )
-                )
-            )
-            """,
-            f"""
-            (
-                r.{observed_column} IS NULL OR
-                julianday(r.{observed_column}) < (julianday(?) - (? / 24.0))
-            )
-            """,
         ]
-        params: list[Any] = [
-            local_node_num,
-            heard_cutoff,
-            now_iso,
-            max(1, ack_only_cooldown_hours),
-            max(1, cooldown_hours),
-            max(1, cooldown_hours),
-            now_iso,
-            max(1, cooldown_hours),
-        ]
+        params: list[Any] = [local_node_num, heard_cutoff]
         if primary_only:
             clauses.append(self._primary_channel_clause("n.channel_index"))
 
+        observed_column = self._route_activity_column(primary_only=primary_only)
         where = self._where_clause(clauses)
-        query = f"""
-            SELECT
-                n.*,
-                CASE
-                    WHEN s.last_activity_at IS NULL THEN r.{observed_column}
-                    WHEN r.{observed_column} IS NULL THEN s.last_activity_at
-                    WHEN s.last_activity_at >= r.{observed_column} THEN s.last_activity_at
-                    ELSE r.{observed_column}
-                END AS last_trace_activity_at
-            FROM nodes AS n
-            LEFT JOIN autotrace_target_state AS s
-                ON s.target_node_num = n.node_num
-            LEFT JOIN route_node_activity AS r
-                ON r.node_num = n.node_num
-            {where}
-        """
-        return query, params
+        with self._connect() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT
+                    n.*,
+                    s.last_activity_at,
+                    s.last_status,
+                    s.ack_only_streak,
+                    s.position_trigger_pending,
+                    s.last_position_trigger_at,
+                    s.last_position_lat,
+                    s.last_position_lon,
+                    s.last_position_trigger_reason,
+                    s.last_traced_position_lat,
+                    s.last_traced_position_lon,
+                    r.{observed_column} AS {observed_column}
+                FROM nodes AS n
+                LEFT JOIN autotrace_target_state AS s
+                    ON s.target_node_num = n.node_num
+                LEFT JOIN route_node_activity AS r
+                    ON r.node_num = n.node_num
+                {where}
+                """,
+                params,
+            ).fetchall()
+        return [
+            {
+                **candidate,
+                "last_trace_activity_at": self._last_trace_activity_at(candidate, primary_only=primary_only),
+            }
+            for row in rows
+            if (candidate := self._row_to_dict(row)) is not None
+        ]
+
+    def _position_trigger_metadata(
+        self,
+        candidate: Mapping[str, Any],
+        *,
+        now: datetime,
+        priority_window_minutes: int,
+    ) -> dict[str, Any]:
+        trigger_at = self._parse_utc_timestamp(candidate.get("last_position_trigger_at"))
+        reason = candidate.get("last_position_trigger_reason")
+        pending = bool(candidate.get("position_trigger_pending"))
+        recent = (
+            pending
+            and trigger_at is not None
+            and trigger_at >= (now - timedelta(minutes=max(1, priority_window_minutes)))
+        )
+        moved_meters = self._haversine_distance_meters(
+            self._coerce_optional_float(candidate.get("last_traced_position_lat")),
+            self._coerce_optional_float(candidate.get("last_traced_position_lon")),
+            self._coerce_optional_float(candidate.get("last_position_lat")),
+            self._coerce_optional_float(candidate.get("last_position_lon")),
+        )
+        return {
+            "pending": pending,
+            "recent": recent,
+            "trigger_at": trigger_at,
+            "reason": reason if isinstance(reason, str) else None,
+            "moved_meters": moved_meters,
+        }
+
+    def _candidate_is_eligible(
+        self,
+        candidate: Mapping[str, Any],
+        *,
+        now: datetime,
+        cooldown_hours: int,
+        ack_only_cooldown_hours: int,
+        position_priority_window_minutes: int,
+        position_movement_cooldown_minutes: int,
+        primary_only: bool,
+    ) -> tuple[bool, dict[str, Any]]:
+        position = self._position_trigger_metadata(
+            candidate,
+            now=now,
+            priority_window_minutes=position_priority_window_minutes,
+        )
+        last_activity = self._parse_utc_timestamp(candidate.get("last_activity_at"))
+        last_route_activity = self._parse_utc_timestamp(
+            candidate.get(self._route_activity_column(primary_only=primary_only))
+        )
+        last_trace_activity = self._parse_utc_timestamp(candidate.get("last_trace_activity_at"))
+        last_status = candidate.get("last_status")
+
+        attempt_cooldown_hours = max(1, cooldown_hours)
+        if isinstance(last_status, str) and last_status == "ack_only":
+            attempt_cooldown_hours = self._ack_only_backoff_hours(
+                dict(candidate),
+                ack_only_cooldown_hours=ack_only_cooldown_hours,
+                cooldown_hours=cooldown_hours,
+            )
+
+        standard_cooldown_ok = (
+            last_activity is None
+            or last_activity <= (now - timedelta(hours=attempt_cooldown_hours))
+        )
+        movement_override_ok = (
+            position["recent"]
+            and position["reason"] in {"first_fix", "moved"}
+            and (
+                last_activity is None
+                or last_activity <= (
+                    now - timedelta(minutes=max(1, position_movement_cooldown_minutes))
+                )
+            )
+        )
+        cooldown_ok = standard_cooldown_ok or movement_override_ok
+
+        standard_route_ok = (
+            last_route_activity is None
+            or last_route_activity <= (now - timedelta(hours=max(1, cooldown_hours)))
+        )
+        route_override_ok = (
+            position["recent"]
+            and position["reason"] in {"first_fix", "moved", "stale_refresh"}
+        )
+        route_ok = standard_route_ok or route_override_ok
+
+        return cooldown_ok and route_ok, {
+            "position_recent": position["recent"],
+            "position_reason": position["reason"],
+            "position_trigger_at": position["trigger_at"],
+            "position_moved_meters": position["moved_meters"],
+            "last_trace_activity": last_trace_activity,
+        }
+
+    @staticmethod
+    def _candidate_sort_key(candidate: Mapping[str, Any]) -> tuple[Any, ...]:
+        if candidate.get("position_recent"):
+            trigger_at = candidate.get("position_trigger_at")
+            return (
+                0,
+                POSITION_PRIORITY_REASONS.get(
+                    candidate.get("position_reason"),
+                    len(POSITION_PRIORITY_REASONS),
+                ),
+                0.0 if trigger_at is None else -trigger_at.timestamp(),
+                -(MeshRepository._parse_utc_timestamp(candidate.get("last_heard_at")) or datetime.min.replace(tzinfo=UTC)).timestamp(),
+                candidate.get("hops_away") if isinstance(candidate.get("hops_away"), int) else 999,
+                candidate.get("node_num") if isinstance(candidate.get("node_num"), int) else 0,
+            )
+
+        last_trace_activity = candidate.get("last_trace_activity")
+        return (
+            1,
+            0 if last_trace_activity is None else 1,
+            datetime.max.replace(tzinfo=UTC).timestamp()
+            if last_trace_activity is None else last_trace_activity.timestamp(),
+            -(MeshRepository._parse_utc_timestamp(candidate.get("last_heard_at")) or datetime.min.replace(tzinfo=UTC)).timestamp(),
+            candidate.get("hops_away") if isinstance(candidate.get("hops_away"), int) else 999,
+            candidate.get("node_num") if isinstance(candidate.get("node_num"), int) else 0,
+        )
 
     def _eligible_autotrace_nodes(
         self,
@@ -1821,6 +2201,8 @@ class MeshRepository:
         target_window_hours: int,
         cooldown_hours: int,
         ack_only_cooldown_hours: int,
+        position_priority_window_minutes: int = 15,
+        position_movement_cooldown_minutes: int = 60,
         primary_only: bool = False,
         now: datetime | None = None,
         limit: int | None = None,
@@ -1830,33 +2212,28 @@ class MeshRepository:
 
         current = utc_now() if now is None else now.astimezone(UTC)
         heard_cutoff = timestamp_to_utc_iso((current - timedelta(hours=target_window_hours)).timestamp())
-        now_iso = to_utc_iso(current)
-        query, params = self._autotrace_candidates_query(
+        candidates = self._autotrace_candidate_rows(
             local_node_num=local_node_num,
             heard_cutoff=heard_cutoff,
-            now_iso=now_iso,
-            cooldown_hours=cooldown_hours,
-            ack_only_cooldown_hours=ack_only_cooldown_hours,
             primary_only=primary_only,
         )
-        limit_clause = "LIMIT ?" if limit is not None else ""
+        eligible: list[dict[str, Any]] = []
+        for candidate in candidates:
+            is_eligible, metadata = self._candidate_is_eligible(
+                candidate,
+                now=current,
+                cooldown_hours=cooldown_hours,
+                ack_only_cooldown_hours=ack_only_cooldown_hours,
+                position_priority_window_minutes=position_priority_window_minutes,
+                position_movement_cooldown_minutes=position_movement_cooldown_minutes,
+                primary_only=primary_only,
+            )
+            if not is_eligible:
+                continue
+            eligible.append({**candidate, **metadata})
 
-        with self._connect() as connection:
-            rows = connection.execute(
-                f"""
-                {query}
-                ORDER BY
-                    CASE WHEN last_trace_activity_at IS NULL THEN 0 ELSE 1 END ASC,
-                    last_trace_activity_at ASC,
-                    last_heard_at DESC,
-                    hops_away ASC,
-                    node_num ASC
-                {limit_clause}
-                """,
-                [*params, *([limit] if limit is not None else [])],
-            ).fetchall()
-
-        return [self._row_to_dict(row) for row in rows if row is not None]
+        eligible.sort(key=self._candidate_sort_key)
+        return eligible if limit is None else eligible[:limit]
 
     def _count_eligible_autotrace_nodes(
         self,
@@ -1865,36 +2242,24 @@ class MeshRepository:
         target_window_hours: int,
         cooldown_hours: int,
         ack_only_cooldown_hours: int,
+        position_priority_window_minutes: int = 15,
+        position_movement_cooldown_minutes: int = 60,
         primary_only: bool = False,
         now: datetime | None = None,
     ) -> int:
-        if local_node_num is None:
-            return 0
-
-        current = utc_now() if now is None else now.astimezone(UTC)
-        heard_cutoff = timestamp_to_utc_iso((current - timedelta(hours=target_window_hours)).timestamp())
-        now_iso = to_utc_iso(current)
-        query, params = self._autotrace_candidates_query(
-            local_node_num=local_node_num,
-            heard_cutoff=heard_cutoff,
-            now_iso=now_iso,
-            cooldown_hours=cooldown_hours,
-            ack_only_cooldown_hours=ack_only_cooldown_hours,
-            primary_only=primary_only,
+        return len(
+            self._eligible_autotrace_nodes(
+                local_node_num=local_node_num,
+                target_window_hours=target_window_hours,
+                cooldown_hours=cooldown_hours,
+                ack_only_cooldown_hours=ack_only_cooldown_hours,
+                position_priority_window_minutes=position_priority_window_minutes,
+                position_movement_cooldown_minutes=position_movement_cooldown_minutes,
+                primary_only=primary_only,
+                now=now,
+                limit=None,
+            )
         )
-
-        with self._connect() as connection:
-            row = connection.execute(
-                f"""
-                SELECT COUNT(*) AS total
-                FROM (
-                    {query}
-                ) AS eligible
-                """,
-                params,
-            ).fetchone()
-
-        return int(row["total"] or 0) if row is not None else 0
 
     def count_autotrace_candidates(
         self,
@@ -1903,6 +2268,8 @@ class MeshRepository:
         target_window_hours: int,
         cooldown_hours: int,
         ack_only_cooldown_hours: int,
+        position_priority_window_minutes: int = 15,
+        position_movement_cooldown_minutes: int = 60,
         primary_only: bool = False,
         now: datetime | None = None,
     ) -> int:
@@ -1911,6 +2278,8 @@ class MeshRepository:
             target_window_hours=target_window_hours,
             cooldown_hours=cooldown_hours,
             ack_only_cooldown_hours=ack_only_cooldown_hours,
+            position_priority_window_minutes=position_priority_window_minutes,
+            position_movement_cooldown_minutes=position_movement_cooldown_minutes,
             primary_only=primary_only,
             now=now,
         )
@@ -1922,6 +2291,8 @@ class MeshRepository:
         target_window_hours: int,
         cooldown_hours: int,
         ack_only_cooldown_hours: int,
+        position_priority_window_minutes: int = 15,
+        position_movement_cooldown_minutes: int = 60,
         primary_only: bool = False,
         now: datetime | None = None,
     ) -> dict[str, Any] | None:
@@ -1930,6 +2301,8 @@ class MeshRepository:
             target_window_hours=target_window_hours,
             cooldown_hours=cooldown_hours,
             ack_only_cooldown_hours=ack_only_cooldown_hours,
+            position_priority_window_minutes=position_priority_window_minutes,
+            position_movement_cooldown_minutes=position_movement_cooldown_minutes,
             primary_only=primary_only,
             now=now,
             limit=1,
@@ -1942,6 +2315,8 @@ class MeshRepository:
         target_node_num: int,
         requested_at: str,
         hop_limit: int,
+        traced_latitude: float | None = None,
+        traced_longitude: float | None = None,
     ) -> int:
         with self._connect() as connection:
             cursor = connection.execute(
@@ -1966,6 +2341,8 @@ class MeshRepository:
                 last_activity_at=requested_at,
                 last_status="pending",
                 ack_only_streak=0,
+                traced_latitude=self._coerce_optional_float(traced_latitude),
+                traced_longitude=self._coerce_optional_float(traced_longitude),
             )
             attempt_id = int(cursor.lastrowid)
         self.run_maintenance()

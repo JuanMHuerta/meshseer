@@ -599,6 +599,13 @@ def seed_demo_data(repository: MeshRepository) -> None:
             hop_limit=3,
             rx_snr=10.8,
             rx_rssi=-89,
+            raw_decoded={
+                "position": {
+                    "latitude": -34.5636,
+                    "longitude": -58.4569,
+                    "altitude": 42.0,
+                }
+            },
             text_preview="Belgrano rooftop beacon",
         ),
         _packet_record(
@@ -734,6 +741,25 @@ def seed_demo_data(repository: MeshRepository) -> None:
             text_preview="Cordoba gateway barely making the frame.",
         ),
         _packet_record(
+            mesh_packet_id=70125,
+            minutes_ago=25,
+            from_node_num=909,
+            to_node_num=BROADCAST_NODE_NUM,
+            portnum="POSITION_APP",
+            hop_start=4,
+            hop_limit=4,
+            rx_snr=2.4,
+            rx_rssi=-108,
+            raw_decoded={
+                "position": {
+                    "latitude": -34.6464,
+                    "longitude": -58.6121,
+                    "altitude": 26.0,
+                }
+            },
+            text_preview="Moron mobile earlier position",
+        ),
+        _packet_record(
             mesh_packet_id=7013,
             minutes_ago=46,
             from_node_num=909,
@@ -744,6 +770,25 @@ def seed_demo_data(repository: MeshRepository) -> None:
             rx_snr=2.2,
             rx_rssi=-109,
             text_preview="Moron mobile on the move, GPS drifting.",
+        ),
+        _packet_record(
+            mesh_packet_id=70135,
+            minutes_ago=43,
+            from_node_num=909,
+            to_node_num=BROADCAST_NODE_NUM,
+            portnum="POSITION_APP",
+            hop_start=4,
+            hop_limit=4,
+            rx_snr=2.1,
+            rx_rssi=-110,
+            raw_decoded={
+                "position": {
+                    "latitude": -34.6609,
+                    "longitude": -58.6332,
+                    "altitude": 24.0,
+                }
+            },
+            text_preview="Moron mobile historical position",
         ),
         _packet_record(
             mesh_packet_id=7014,

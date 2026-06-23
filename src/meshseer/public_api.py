@@ -233,3 +233,29 @@ def public_mesh_summary_payload(
         "windowed_activity": dict(summary.get("windowed_activity") or {}),
         "receiver": dict(receiver),
     }
+
+
+def public_mesh_history_frame_payload(frame: Mapping[str, Any]) -> dict[str, Any]:
+    raw_nodes = frame.get("nodes")
+    public_nodes: dict[str, Any] = {}
+    if isinstance(raw_nodes, Mapping):
+        for key, value in raw_nodes.items():
+            if not isinstance(value, Mapping):
+                continue
+            payload = {
+                "node_num": _coerce_int(value.get("node_num")),
+                "latitude": _obfuscated_coordinate(value.get("latitude")),
+                "longitude": _obfuscated_coordinate(value.get("longitude")),
+                "altitude": value.get("altitude"),
+                "position_recorded_at": value.get("position_recorded_at"),
+                "last_heard_at": value.get("last_heard_at"),
+            }
+            public_nodes[str(key)] = payload
+
+    return {
+        "frame_at": frame.get("frame_at"),
+        "requested_at": frame.get("requested_at"),
+        "nodes": public_nodes,
+        "routes": list(frame.get("routes") or []),
+        "stats": dict(frame.get("stats") or {}),
+    }

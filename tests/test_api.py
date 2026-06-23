@@ -1796,6 +1796,101 @@ def test_mesh_routes_clamps_since_to_one_week_lookback(tmp_path, monkeypatch):
     assert routes.json()["routes"][0]["path_node_nums"] == [101, 202, 404]
 
 
+def test_mesh_history_range_and_frame_are_public_and_obfuscated(tmp_path):
+    app, _collector = build_app(tmp_path)
+    repo = app.state.repository
+    repo.upsert_node(
+        NodeRecord(
+            node_num=303,
+            node_id="!0000012f",
+            short_name="GAMMA",
+            long_name="Gamma Node",
+            hardware_model="TBEAM",
+            role="CLIENT",
+            channel_index=0,
+            last_heard_at="2026-03-30T12:18:00Z",
+            last_snr=3.5,
+            latitude=10.456789,
+            longitude=-84.123456,
+            altitude=18.0,
+            battery_level=None,
+            channel_utilization=None,
+            air_util_tx=None,
+            raw_json='{"num":303}',
+            updated_at="2026-03-30T12:16:00Z",
+            hops_away=2,
+            via_mqtt=False,
+        )
+    )
+    repo.insert_packet(
+        PacketRecord(
+            mesh_packet_id=81,
+            received_at="2026-03-30T12:12:00Z",
+            from_node_num=303,
+            to_node_num=101,
+            portnum="TRACEROUTE_APP",
+            channel_index=0,
+            hop_limit=3,
+            hop_start=3,
+            rx_snr=4.5,
+            rx_rssi=-95,
+            text_preview=None,
+            payload_base64=encode_traceroute_payload(route=[202], snr_towards=[20, 12]),
+            raw_json="{}",
+            via_mqtt=False,
+        )
+    )
+
+    with TestClient(app) as client:
+        history_range = client.get("/api/mesh/history/range")
+        frame = client.get("/api/mesh/history/frame", params={"at": "2026-03-30T12:17:00Z"})
+
+    assert history_range.status_code == 200
+    assert history_range.json()["start_at"] == "2026-03-30T12:00:00Z"
+    assert history_range.json()["end_at"] == "2026-03-30T12:18:00Z"
+    assert frame.status_code == 200
+    assert frame.json()["frame_at"] == "2026-03-30T12:17:00Z"
+    assert frame.json()["nodes"]["303"]["latitude"] == 10.4567
+    assert frame.json()["nodes"]["303"]["longitude"] == -84.1234
+    assert frame.json()["routes"][0]["mesh_packet_id"] == 81
+
+
+def test_mesh_history_frame_clamps_to_available_bounds(tmp_path):
+    app, _collector = build_app(tmp_path)
+
+    with TestClient(app) as client:
+        frame = client.get("/api/mesh/history/frame", params={"at": "2026-03-01T00:00:00Z"})
+
+    assert frame.status_code == 200
+    assert frame.json()["frame_at"] == "2026-03-30T12:00:00Z"
+
+
+def test_mesh_history_empty_payload_is_safe(tmp_path):
+    app = create_app(
+        Settings.from_env(
+            {
+                "MESHSEER_DB_PATH": str(tmp_path / "empty.db"),
+                "MESHSEER_LOCAL_NODE_NUM": "101",
+            }
+        ),
+        collector=StubCollector(local_node_num=101),
+        autotrace_service=StubAutotraceService(),
+        start_collector=False,
+        start_autotrace_service=False,
+    )
+
+    with TestClient(app) as client:
+        history_range = client.get("/api/mesh/history/range")
+        frame = client.get("/api/mesh/history/frame", params={"at": "2026-03-30T12:00:00Z"})
+
+    assert history_range.status_code == 200
+    assert history_range.json()["start_at"] is None
+    assert frame.status_code == 200
+    assert frame.json()["frame_at"] is None
+    assert frame.json()["nodes"] == {}
+    assert frame.json()["routes"] == []
+
+
 def test_admin_routes_require_bearer_and_are_absent_when_unconfigured(tmp_path):
     app_without_admin, _collector = build_app(tmp_path)
 

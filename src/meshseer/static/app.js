@@ -26,6 +26,14 @@ const intelPanel = document.getElementById("mesh-intel");
 const chatPanel = document.getElementById("mesh-chat");
 const optionsPanel = document.getElementById("mesh-options");
 const trafficPanel = document.getElementById("mesh-traffic");
+const historyControls = document.getElementById("map-history-controls");
+const historyLive = document.getElementById("history-live");
+const historyPlay = document.getElementById("history-play");
+const historyStepBack = document.getElementById("history-step-back");
+const historyStepForward = document.getElementById("history-step-forward");
+const historyTimestamp = document.getElementById("history-timestamp");
+const historyTimestampLabel = document.getElementById("history-timestamp-label");
+const historyScrubber = document.getElementById("history-scrubber");
 
 const mapViewport = document.querySelector(".map-viewport");
 const nodeRail = document.getElementById("node-rail");
@@ -35,6 +43,7 @@ const railToggleNodes = document.getElementById("rail-toggle-nodes");
 const railToggleChat = document.getElementById("rail-toggle-chat");
 const railToggleSignals = document.getElementById("rail-toggle-signals");
 const railToggleTraffic = document.getElementById("rail-toggle-traffic");
+const railToggleHistory = document.getElementById("rail-toggle-history");
 const railToggleOptions = document.getElementById("rail-toggle-options");
 const rosterToolbar = document.getElementById("roster-toolbar");
 const appVersionLabel = document.getElementById("app-version");
@@ -75,6 +84,8 @@ const CHAT_STICKY_THRESHOLD_PX = 16;
 const SUMMARY_REFRESH_DEBOUNCE_MS = 750;
 const ROUTES_REFRESH_DEBOUNCE_MS = 1000;
 const NODE_DETAIL_REFRESH_DEBOUNCE_MS = 500;
+const HISTORY_PLAY_INTERVAL_MS = 900;
+const HISTORY_UI_SLIDER_STOPS = 1000;
 const SOCKET_POLICY_CLOSE_CODE = 1008;
 const SOCKET_TRY_AGAIN_LATER_CLOSE_CODE = 1013;
 const SOCKET_FAST_RECONNECT_DELAY_MS = 1500;
@@ -209,11 +220,15 @@ const inflightNodeDetails = new Set();
 const inflightLoads = new Map();
 const scheduledRefreshes = new Map();
 let decayRefreshTimerId = null;
+let historyPlaybackTimerId = null;
+let historyFrameRequestToken = 0;
+let historyPointerScrubActive = false;
 let chatStickToBottom = true;
 let chatPendingScrollBehavior = null;
 let chatLastMessageKey = null;
 let socketReconnectTimerId = null;
 let socketReconnectAttempts = 0;
+const historyFrameCache = new Map();
 
 const state = {
   nodes: [],
@@ -242,6 +257,16 @@ const state = {
   meshSummaryPrevious: null,
   uiDefaultTheme: DEFAULT_UI_THEME,
   currentTheme: DEFAULT_UI_THEME,
+  history: {
+    controlsOpen: false,
+    historyActive: false,
+    range: null,
+    selectedAt: null,
+    previewAt: null,
+    frame: null,
+    loading: false,
+    playing: false,
+  },
 };
 
 const mapState = {
@@ -379,10 +404,10 @@ function applyBasemapTheme() {
 }
 
 function renderThemeDependentMapLayers() {
-  if (!mapState.map || !state.nodes.length) {
+  if (!mapState.map) {
     return;
   }
-  renderMap(state.nodes);
+  renderMap();
 }
 
 function syncThemeCssProperties(theme = currentThemeDefinition()) {
@@ -597,6 +622,168 @@ function toUtcIso(date) {
   return date.toISOString().replace(/\.\d{3}Z$/, "Z");
 }
 
+function historyRangeAvailable() {
+  return Boolean(state.history.range?.start_at && state.history.range?.end_at);
+}
+
+function historyStartMs() {
+  return parseUtcDateMs(state.history.range?.start_at);
+}
+
+function historyEndMs() {
+  return parseUtcDateMs(state.history.range?.end_at);
+}
+
+function historyScrubStepSeconds() {
+  return Number(state.history.range?.scrub_step_seconds) || 60;
+}
+
+function historyPlaybackStepSeconds() {
+  return Number(state.history.range?.playback_step_seconds) || 300;
+}
+
+function historySelectedMs() {
+  return parseUtcDateMs(state.history.previewAt)
+    ?? parseUtcDateMs(state.history.selectedAt)
+    ?? historyEndMs();
+}
+
+function historyCommittedMs() {
+  return parseUtcDateMs(state.history.selectedAt) ?? historyEndMs();
+}
+
+function clampHistoryMs(valueMs) {
+  const startMs = historyStartMs();
+  const endMs = historyEndMs();
+  if (startMs == null || endMs == null) {
+    return null;
+  }
+  return clamp(valueMs, startMs, endMs);
+}
+
+function historyMsToIso(valueMs) {
+  const clamped = clampHistoryMs(valueMs);
+  if (clamped == null) {
+    return null;
+  }
+  const endMs = historyEndMs();
+  if (endMs != null && clamped >= endMs) {
+    return historyLiveAtIso();
+  }
+  const stepMs = historyScrubStepSeconds() * 1000;
+  const startMs = historyStartMs();
+  if (startMs == null || !Number.isFinite(stepMs) || stepMs <= 0) {
+    return toUtcIso(new Date(clamped));
+  }
+  const snapped = startMs + (Math.round((clamped - startMs) / stepMs) * stepMs);
+  return toUtcIso(new Date(clampHistoryMs(snapped)));
+}
+
+function historySliderMax() {
+  const startMs = historyStartMs();
+  const endMs = historyEndMs();
+  if (startMs == null || endMs == null) {
+    return 0;
+  }
+  const timelineSteps = Math.max(0, Math.round((endMs - startMs) / (historyScrubStepSeconds() * 1000)));
+  return Math.max(0, Math.min(HISTORY_UI_SLIDER_STOPS, timelineSteps));
+}
+
+function historySliderValue() {
+  const startMs = historyStartMs();
+  const selectedMs = historySelectedMs();
+  const endMs = historyEndMs();
+  if (startMs == null || selectedMs == null) {
+    return 0;
+  }
+  const sliderMax = historySliderMax();
+  if (sliderMax <= 0 || endMs == null || endMs <= startMs) {
+    return 0;
+  }
+  return Math.max(0, Math.round(((selectedMs - startMs) / (endMs - startMs)) * sliderMax));
+}
+
+function historyLiveAtIso() {
+  return state.history.range?.end_at || null;
+}
+
+function historyIsLiveSelected() {
+  if (!historyRangeAvailable()) {
+    return true;
+  }
+  const selectedMs = historySelectedMs();
+  const endMs = historyEndMs();
+  return selectedMs == null || endMs == null || selectedMs >= endMs;
+}
+
+function historyIsoIsLive(at) {
+  const selectedMs = parseUtcDateMs(at);
+  const endMs = historyEndMs();
+  return selectedMs == null || endMs == null || selectedMs >= endMs;
+}
+
+function historySliderValueToIso(sliderValue) {
+  const startMs = historyStartMs();
+  const endMs = historyEndMs();
+  const sliderMax = historySliderMax();
+  if (startMs == null || endMs == null || sliderMax <= 0) {
+    return null;
+  }
+  if (Number(sliderValue) >= sliderMax) {
+    return historyLiveAtIso();
+  }
+  const ratio = clamp(Number(sliderValue) / sliderMax, 0, 1);
+  return historyMsToIso(startMs + ((endMs - startMs) * ratio));
+}
+
+function historySelectedLabel() {
+  if (historyIsLiveSelected()) {
+    return "Live";
+  }
+  if (state.history.previewAt) {
+    return formatTime(state.history.previewAt);
+  }
+  return formatTime(state.history.frame?.frame_at || state.history.selectedAt || state.history.range?.default_at);
+}
+
+function historyFrameNodes() {
+  const rawNodes = state.history.frame?.nodes;
+  if (!rawNodes || typeof rawNodes !== "object") {
+    return [];
+  }
+  return Object.values(rawNodes)
+    .filter((node) => node && node.node_num != null)
+    .map((node) => ({
+      ...(nodeByNum(node.node_num) || {}),
+      ...node,
+      updated_at: node.position_recorded_at || node.updated_at || null,
+    }));
+}
+
+function effectiveMapContext() {
+  if (state.history.historyActive && historyRangeAvailable()) {
+    const frameAt = state.history.frame?.frame_at || state.history.selectedAt || state.history.range?.default_at;
+    return {
+      historyMode: true,
+      frameAt,
+      nowMs: parseUtcDateMs(frameAt) || Date.now(),
+      nodes: historyFrameNodes(),
+      routes: Array.isArray(state.history.frame?.routes) ? state.history.frame.routes : [],
+    };
+  }
+  return {
+    historyMode: false,
+    frameAt: null,
+    nowMs: Date.now(),
+    nodes: state.nodes,
+    routes: Array.isArray(state.meshRoutes?.routes) ? state.meshRoutes.routes : [],
+  };
+}
+
+function effectiveMapNodeByNum(nodeNum) {
+  return effectiveMapContext().nodes.find((item) => item.node_num === nodeNum) || null;
+}
+
 function nodeLabel(node) {
   return node?.short_name || node?.long_name || node?.node_id || `Node ${node?.node_num ?? "?"}`;
 }
@@ -809,6 +996,9 @@ function scheduleMeshRoutesRefresh() {
 }
 
 function scheduleSelectedNodeDetailRefresh(nodeNum = state.selectedNodeNum) {
+  if (state.history.historyActive) {
+    return;
+  }
   if (nodeNum == null) {
     return;
   }
@@ -1070,9 +1260,9 @@ function routeAgeMinutes(route, nowMs = Date.now()) {
   return ageMinutesSince(route?.latest_received_at || route?.received_at, nowMs);
 }
 
-function groupedMeshRoutes() {
+function groupedMeshRoutes(routeItems) {
   const groupedRoutes = new Map();
-  state.meshRoutes.routes.forEach((route) => {
+  (Array.isArray(routeItems) ? routeItems : []).forEach((route) => {
     const key = routeIdentityKey(route);
     const existing = groupedRoutes.get(key);
     if (!existing) {
@@ -1107,10 +1297,10 @@ function routeSelected(route) {
   return state.selectedNodeNum != null && route.path_node_nums.includes(state.selectedNodeNum);
 }
 
-function routeLatLngs(route, nowMs = Date.now()) {
+function routeLatLngs(route, nodesByNum, nowMs = Date.now()) {
   const points = [];
   for (const nodeNum of route.path_node_nums) {
-    const node = nodeByNum(nodeNum);
+    const node = nodesByNum.get(nodeNum) || null;
     if (!nodeHasCoordinates(node) || !nodeIsVisible(node, nowMs)) {
       return null;
     }
@@ -1119,15 +1309,15 @@ function routeLatLngs(route, nowMs = Date.now()) {
   return points.length >= 2 ? points : null;
 }
 
-function visibleMeshRoutes(nowMs = Date.now()) {
-  return groupedMeshRoutes().filter((route) => routeLatLngs(route, nowMs));
+function visibleMeshRoutes(routeItems, nodesByNum, nowMs = Date.now()) {
+  return groupedMeshRoutes(routeItems).filter((route) => routeLatLngs(route, nodesByNum, nowMs));
 }
 
-function activeMeshRoutes(nowMs = Date.now()) {
+function activeMeshRoutes(routeItems, nodesByNum, nowMs = Date.now()) {
   if (!state.showRoutes) {
     return [];
   }
-  return visibleMeshRoutes(nowMs).filter((route) => {
+  return visibleMeshRoutes(routeItems, nodesByNum, nowMs).filter((route) => {
     const ageMinutes = routeAgeMinutes(route, nowMs);
     if (ageMinutes == null) {
       return false;
@@ -2133,19 +2323,27 @@ function selectedNeighborhood(routes) {
   return neighborSet;
 }
 
-function renderMapNotes() {
+function renderMapNotes({ historyMode = false, frameAt = null, routes = [] } = {}) {
+  const parts = [];
+  if (historyMode) {
+    parts.push("Historical map view.");
+    parts.push("Side panels remain live/current.");
+  }
   if (!state.showRoutes) {
-    mapNote.hidden = false;
-    mapNote.textContent = "Route overlays are hidden.";
+    parts.push(historyMode ? "Route overlays are hidden for the selected time." : "Route overlays are hidden.");
+  } else if (!routes.length) {
+    parts.push(historyMode ? "No route overlays were retained for the selected time." : "No route overlays available for the current node set.");
+  }
+
+  if (!parts.length) {
+    mapNote.hidden = true;
+    mapNote.textContent = "";
+    mapNote.innerHTML = "";
     return;
   }
-  if (!activeMeshRoutes().length) {
-    mapNote.hidden = false;
-    mapNote.textContent = "No route overlays available for the current node set.";
-    return;
-  }
-  mapNote.hidden = true;
-  mapNote.textContent = "";
+
+  mapNote.hidden = false;
+  mapNote.innerHTML = parts.map((part) => `<p>${escapeHtml(part)}</p>`).join("");
 }
 
 
@@ -2160,6 +2358,40 @@ function updateOverviewStats() {
 }
 
 function renderNodeDetail(node) {
+  if (state.history.historyActive) {
+    if (!node) {
+      nodeDetail.innerHTML = `
+        <div class="hud-empty">
+          <h3>No Node Selected</h3>
+          <p>Select a historical marker to inspect the selected map frame.</p>
+        </div>
+      `;
+      return;
+    }
+
+    const roleLabel = [node.role, node.hardware_model].filter(Boolean).join(" / ") || "Historical node";
+    nodeDetail.innerHTML = `
+      <div class="node-hud-card warm">
+        <div class="node-hud-head">
+          <div>
+            <h3>${escapeHtml(nodeLabel(node))}</h3>
+            <p class="node-hud-subtitle">${escapeHtml(`${roleLabel} · historical map frame`)}</p>
+          </div>
+          <div class="node-hud-state warm">HISTORY</div>
+        </div>
+        <div class="node-hud-metrics">
+          ${metric("Frame", formatTime(state.history.frame?.frame_at || state.history.selectedAt))}
+          ${metric("Position Seen", formatTime(node.position_recorded_at))}
+          ${metric("Last Heard", formatTime(node.last_heard_at))}
+          ${metric("Path", nodePathLabel(node))}
+          ${metric("Hops Away", node.hops_away ?? "n/a")}
+          ${metric("Altitude", node.altitude == null ? "n/a" : `${Math.round(node.altitude)} m`)}
+        </div>
+      </div>
+    `;
+    return;
+  }
+
   if (!node) {
     nodeDetail.innerHTML = `
       <div class="hud-empty">
@@ -2274,6 +2506,18 @@ function ensureMap() {
   routePane.style.zIndex = "340";
   routePane.style.pointerEvents = "none";
 
+  if (historyControls) {
+    L.DomEvent.disableClickPropagation(historyControls);
+    L.DomEvent.disableScrollPropagation(historyControls);
+  }
+  if (historyScrubber) {
+    ["pointerdown", "pointermove", "mousedown", "mousemove", "touchstart", "touchmove"].forEach((eventName) => {
+      historyScrubber.addEventListener(eventName, (event) => {
+        event.stopPropagation();
+      }, { passive: true });
+    });
+  }
+
   mapState.routeLayer = L.layerGroup().addTo(map);
   mapState.markerLayer = L.layerGroup();
   mapState.markerLayer.addTo(map);
@@ -2282,7 +2526,7 @@ function ensureMap() {
   if (!mapState.zoomListenerBound) {
     map.on("zoomend", () => {
       if (state.nodes.length) {
-        renderMap(state.nodes);
+        renderNodesView();
       } else {
         renderMapNotes();
       }
@@ -2419,8 +2663,8 @@ function popupMarkup(node) {
   `;
 }
 
-function fitMapToFocus() {
-  const mappedNodes = sortNodes(state.nodes).filter((node) => nodeHasCoordinates(node) && nodeIsVisible(node));
+function fitMapToFocus(items = effectiveMapContext().nodes, nowMs = effectiveMapContext().nowMs) {
+  const mappedNodes = sortNodes(items).filter((node) => nodeHasCoordinates(node) && nodeIsVisible(node, nowMs));
   if (!mappedNodes.length) {
     return;
   }
@@ -2563,7 +2807,56 @@ function activeElementIsEditable() {
     && Boolean(activeElement.closest("input, textarea, select, [contenteditable]:not([contenteditable='false'])"));
 }
 
-function renderMapHud() {}
+function renderMapHud() {
+  if (!historyControls || !historyLive || !historyPlay || !historyStepBack || !historyStepForward || !historyTimestamp || !historyScrubber || !historyTimestampLabel) {
+    return;
+  }
+
+  const available = historyRangeAvailable();
+  historyControls.hidden = !available || !state.history.controlsOpen;
+  if (railToggleHistory) {
+    railToggleHistory.hidden = !available;
+    railToggleHistory.disabled = !available;
+    railToggleHistory.classList.toggle("active", available && state.history.controlsOpen);
+    railToggleHistory.setAttribute("aria-pressed", String(available && state.history.controlsOpen));
+  }
+  if (!available) {
+    return;
+  }
+
+  const liveSelected = historyIsLiveSelected();
+  const isLoadingHistoricalFrame = state.history.loading && !liveSelected;
+  const sliderMax = historySliderMax();
+  const sliderValue = historySliderValue();
+  const sliderProgress = sliderMax > 0 ? clamp(sliderValue / sliderMax, 0, 1) : 1;
+
+  historyControls.dataset.state = isLoadingHistoricalFrame
+    ? "loading"
+    : state.history.playing
+      ? "playing"
+      : liveSelected
+        ? "live"
+        : "paused";
+  historyControls.style.setProperty("--history-progress", `${sliderProgress * 100}%`);
+  historyLive.hidden = !state.history.historyActive;
+  historyLive.disabled = false;
+  historyPlay.disabled = liveSelected || state.history.loading;
+  historyPlay.textContent = state.history.playing ? "Pause" : "Play";
+  historyPlay.classList.toggle("inactive", liveSelected);
+  historyStepBack.disabled = state.history.loading || historySliderValue() <= 0;
+  historyStepForward.disabled = state.history.loading || liveSelected;
+  historyStepBack.textContent = `-${Math.round(historyPlaybackStepSeconds() / 60)}m`;
+  historyStepForward.textContent = `+${Math.round(historyPlaybackStepSeconds() / 60)}m`;
+  historyTimestamp.dataset.state = historyControls.dataset.state;
+  historyTimestampLabel.textContent = state.history.loading
+    ? "Loading historical frame…"
+    : historySelectedLabel();
+  historyScrubber.disabled = false;
+  historyScrubber.min = "0";
+  historyScrubber.max = String(sliderMax);
+  historyScrubber.step = "1";
+  historyScrubber.value = String(sliderValue);
+}
 
 function renderRouteToggle() {
   if (!routeToggle) {
@@ -2573,22 +2866,27 @@ function renderRouteToggle() {
   routeToggle.setAttribute('aria-pressed', String(state.showRoutes));
 }
 
-function renderMap(items) {
-  const nowMs = Date.now();
+function renderMap(items = effectiveMapContext().nodes, options = {}) {
+  const mapContext = effectiveMapContext();
+  const nowMs = options.nowMs ?? mapContext.nowMs;
+  const historyMode = options.historyMode ?? mapContext.historyMode;
+  const frameAt = options.frameAt ?? mapContext.frameAt;
+  const routeItems = options.routes ?? mapContext.routes;
   const mappedNodes = sortNodes(items).filter((node) => nodeHasCoordinates(node) && nodeIsVisible(node, nowMs));
   const map = ensureMap();
-  const routes = activeMeshRoutes(nowMs);
+  const nodesByNum = new Map(items.map((node) => [node.node_num, node]));
+  const routes = activeMeshRoutes(routeItems, nodesByNum, nowMs);
   renderRouteToggle();
-  renderMapNotes();
+  renderMapNotes({ historyMode, frameAt, routes });
 
   if (!mappedNodes.length) {
     state.remoteNodeNums = new Set();
-    mapEmpty.textContent = state.nodes.some(nodeHasCoordinates)
-      ? "No mapped nodes heard in the last 24 hours."
-      : "Waiting for LongFast node locations.";
+    mapEmpty.textContent = historyMode
+      ? "No mapped nodes were retained for this frame."
+      : (state.nodes.some(nodeHasCoordinates)
+        ? "No mapped nodes heard in the last 24 hours."
+        : "Waiting for LongFast node locations.");
     mapEmpty.hidden = false;
-    mapNote.hidden = true;
-    mapNote.textContent = "";
     if (mapState.routeLayer) {
       mapState.routeLayer.clearLayers();
       mapState.routeLinesByKey.clear();
@@ -2615,7 +2913,7 @@ function renderMap(items) {
   mapState.markersByNodeNum.clear();
 
   routes
-    .map((route) => [route, routeLatLngs(route, nowMs)])
+    .map((route) => [route, routeLatLngs(route, nodesByNum, nowMs)])
     .filter((entry) => entry[1] !== null)
     .forEach(([route, latLngs]) => {
       const style = routeStyle(route, ctx);
@@ -2669,7 +2967,7 @@ function renderMap(items) {
   selectedRoutes.forEach((line) => line.bringToFront());
 
   if (!mapState.initialViewApplied) {
-    fitMapToFocus();
+    fitMapToFocus(items, nowMs);
   } else {
     map.invalidateSize();
   }
@@ -2679,13 +2977,14 @@ function renderMap(items) {
 
 function renderNodesView() {
   ensureSelectedNode();
-  renderMap(state.nodes);
-  renderNodeDetail(nodeByNum(state.selectedNodeNum));
+  const mapContext = effectiveMapContext();
+  renderMap(mapContext.nodes, mapContext);
+  renderNodeDetail(state.history.historyActive ? effectiveMapNodeByNum(state.selectedNodeNum) : nodeByNum(state.selectedNodeNum));
   renderNodeList();
   setInspectorOpen(state.selectedNodeNum != null);
   syncMapSize();
 
-  if (state.selectedNodeNum != null) {
+  if (!state.history.historyActive && state.selectedNodeNum != null) {
     void loadNodeDetail(state.selectedNodeNum);
   }
 }
@@ -2806,7 +3105,7 @@ function renderMeshSummary(data) {
 function renderMeshRoutes(data) {
   state.meshRoutes = data || { routes: [], stats: { total: 0, forward: 0, return: 0 } };
   if (state.nodes.length) {
-    renderMap(state.nodes);
+    renderNodesView();
   }
   // Update paths stat in top bar (T-06)
   refreshKpiTicker();
@@ -2968,6 +3267,208 @@ function renderChat(items) {
   updateOverviewStats();
 }
 
+function clearHistoryPlaybackTimer() {
+  if (historyPlaybackTimerId == null) {
+    return;
+  }
+  window.clearTimeout(historyPlaybackTimerId);
+  historyPlaybackTimerId = null;
+}
+
+function stopHistoryPlayback() {
+  state.history.playing = false;
+  clearHistoryPlaybackTimer();
+  renderMapHud();
+}
+
+function queueHistoryPlaybackStep() {
+  clearHistoryPlaybackTimer();
+  if (!state.history.playing) {
+    return;
+  }
+  historyPlaybackTimerId = window.setTimeout(() => {
+    historyPlaybackTimerId = null;
+    void advanceHistoryPlayback();
+  }, HISTORY_PLAY_INTERVAL_MS);
+}
+
+async function loadHistoryRange() {
+  return runSingleFlight("historyRange", async () => {
+    state.history.range = await fetchJson("/api/mesh/history/range");
+    const selectedMs = parseUtcDateMs(state.history.selectedAt);
+    const endMs = historyEndMs();
+    state.history.selectedAt = selectedMs == null || endMs == null || selectedMs >= endMs
+      ? historyLiveAtIso()
+      : historyMsToIso(selectedMs);
+    state.history.previewAt = null;
+    renderMapHud();
+  });
+}
+
+async function loadHistoryFrame(at, { useCache = true } = {}) {
+  const requestedAt = typeof at === "string" ? at : historyMsToIso(Number(at));
+  if (!requestedAt || !historyRangeAvailable() || historyIsoIsLive(requestedAt)) {
+    return null;
+  }
+
+  const requestToken = ++historyFrameRequestToken;
+  state.history.loading = true;
+  renderMapHud();
+  try {
+    let payload = useCache ? historyFrameCache.get(requestedAt) : null;
+    if (!payload) {
+      payload = await fetchJson(`/api/mesh/history/frame?at=${encodeURIComponent(requestedAt)}`);
+      historyFrameCache.set(requestedAt, payload);
+      if (payload?.frame_at) {
+        historyFrameCache.set(payload.frame_at, payload);
+      }
+    }
+    if (requestToken !== historyFrameRequestToken || historyIsoIsLive(requestedAt)) {
+      return null;
+    }
+    state.history.frame = payload;
+    state.history.selectedAt = payload?.frame_at || requestedAt;
+    state.history.previewAt = null;
+    state.history.historyActive = !historyIsLiveSelected();
+    renderNodesView();
+    renderMapHud();
+    return payload;
+  } finally {
+    if (requestToken === historyFrameRequestToken) {
+      state.history.loading = false;
+      renderMapHud();
+    }
+  }
+}
+
+async function openHistoryControls() {
+  await loadHistoryRange();
+  if (!historyRangeAvailable()) {
+    return;
+  }
+  state.history.controlsOpen = true;
+  state.history.selectedAt = historyIsLiveSelected()
+    ? historyLiveAtIso()
+    : historyMsToIso(historyCommittedMs());
+  state.history.previewAt = null;
+  state.history.historyActive = !historyIsLiveSelected();
+  renderMapHud();
+  if (state.history.historyActive) {
+    await loadHistoryFrame(state.history.selectedAt);
+  } else {
+    renderNodesView();
+  }
+}
+
+function setHistoryLiveSelection({ keepControlsOpen = true } = {}) {
+  historyFrameRequestToken += 1;
+  stopHistoryPlayback();
+  state.history.controlsOpen = keepControlsOpen && historyRangeAvailable();
+  state.history.historyActive = false;
+  state.history.selectedAt = historyLiveAtIso();
+  state.history.previewAt = null;
+  state.history.frame = null;
+  state.history.loading = false;
+  renderNodesView();
+  renderMapHud();
+}
+
+function closeHistoryControls() {
+  setHistoryLiveSelection({ keepControlsOpen: false });
+}
+
+function previewHistoryScrubberValue(sliderValue) {
+  const nextAt = historySliderValueToIso(sliderValue);
+  if (!nextAt) {
+    return null;
+  }
+  state.history.previewAt = nextAt;
+  renderMapHud();
+  return nextAt;
+}
+
+function commitHistoryPreview() {
+  const nextAt = state.history.previewAt;
+  if (!nextAt) {
+    return;
+  }
+  state.history.previewAt = null;
+  state.history.selectedAt = nextAt;
+  if (historyIsoIsLive(nextAt)) {
+    setHistoryLiveSelection({ keepControlsOpen: true });
+    return;
+  }
+  state.history.historyActive = true;
+  renderMapHud();
+  void loadHistoryFrame(nextAt);
+}
+
+function stepHistoryBy(seconds) {
+  const currentMs = historySelectedMs();
+  if (currentMs == null) {
+    return;
+  }
+  const nextAt = historyMsToIso(currentMs + (seconds * 1000));
+  if (!nextAt) {
+    return;
+  }
+  state.history.previewAt = null;
+  state.history.selectedAt = nextAt;
+  if (historyIsoIsLive(nextAt)) {
+    setHistoryLiveSelection({ keepControlsOpen: true });
+    return;
+  }
+  state.history.historyActive = true;
+  renderMapHud();
+  void loadHistoryFrame(nextAt);
+}
+
+function setHistoryScrubberFromClientX(clientX) {
+  if (!historyScrubber) {
+    return;
+  }
+  const rect = historyScrubber.getBoundingClientRect();
+  if (!rect.width) {
+    return;
+  }
+  const max = historySliderMax();
+  const ratio = clamp((clientX - rect.left) / rect.width, 0, 1);
+  const sliderValue = Math.round(ratio * max);
+  historyScrubber.value = String(sliderValue);
+  previewHistoryScrubberValue(sliderValue);
+}
+
+async function advanceHistoryPlayback() {
+  if (!state.history.playing || !historyRangeAvailable()) {
+    return;
+  }
+  const currentMs = historySelectedMs();
+  const endMs = historyEndMs();
+  if (currentMs == null || endMs == null) {
+    stopHistoryPlayback();
+    return;
+  }
+  if (currentMs >= endMs) {
+    setHistoryLiveSelection({ keepControlsOpen: true });
+    return;
+  }
+  const nextAt = historyMsToIso(Math.min(currentMs + (historyPlaybackStepSeconds() * 1000), endMs));
+  if (!nextAt) {
+    stopHistoryPlayback();
+    return;
+  }
+  if ((parseUtcDateMs(nextAt) || 0) >= endMs) {
+    setHistoryLiveSelection({ keepControlsOpen: true });
+    return;
+  }
+  const payload = await loadHistoryFrame(nextAt);
+  if (!payload?.frame_at || (parseUtcDateMs(payload.frame_at) || 0) >= endMs) {
+    setHistoryLiveSelection({ keepControlsOpen: true });
+    return;
+  }
+  queueHistoryPlaybackStep();
+}
+
 async function fetchJson(url) {
   const response = await fetch(url);
   if (!response.ok) {
@@ -2977,6 +3478,9 @@ async function fetchJson(url) {
 }
 
 async function loadNodeDetail(nodeNum, { force = false } = {}) {
+  if (state.history.historyActive) {
+    return;
+  }
   if (nodeNum == null || !nodeByNum(nodeNum)) {
     return;
   }
@@ -3040,7 +3544,7 @@ async function loadPackets() {
     setLastPacketReceivedAt(state.packets[0]?.received_at);
     renderPackets(state.packets);
     if (state.nodes.length) {
-      renderMap(state.nodes);
+      renderNodesView();
     }
   });
 }
@@ -3052,7 +3556,7 @@ async function loadRecentActivityPackets() {
       .filter(packetCountsForRecentActivity);
     setLastPacketReceivedAt(state.recentActivityPackets[0]?.received_at);
     if (state.nodes.length) {
-      renderMap(state.nodes);
+      renderNodesView();
     }
   });
 }
@@ -3092,6 +3596,7 @@ async function loadAll() {
       loadChat(),
       loadMeshSummary(),
       loadMeshRoutes(),
+      loadHistoryRange(),
     ])),
   ];
   if (results.some((result) => result.status === "fulfilled")) {
@@ -3131,7 +3636,7 @@ function handleLoadError(error) {
 }
 
 function selectNode(nodeNum, { flyTo = false, openTooltip = false } = {}) {
-  const node = nodeByNum(nodeNum);
+  const node = state.history.historyActive ? effectiveMapNodeByNum(nodeNum) : nodeByNum(nodeNum);
   if (!node) {
     return;
   }
@@ -3167,6 +3672,9 @@ function pulsePanel(element, tone) {
 }
 
 function maybeRefreshSelectedNodeDetail(packet) {
+  if (state.history.historyActive) {
+    return false;
+  }
   if (state.selectedNodeNum == null) {
     return false;
   }
@@ -3357,7 +3865,7 @@ document.addEventListener("visibilitychange", () => {
 routeToggle.addEventListener('click', () => {
   state.showRoutes = !state.showRoutes;
   renderRouteToggle();
-  renderMap(state.nodes);
+  renderNodesView();
 });
 
 refreshDashboard.addEventListener("click", () => {
@@ -3367,6 +3875,106 @@ refreshDashboard.addEventListener("click", () => {
 
 resetMap.addEventListener("click", () => {
   fitMapToFocus();
+});
+
+railToggleHistory?.addEventListener("click", () => {
+  if (state.history.controlsOpen) {
+    closeHistoryControls();
+    return;
+  }
+  void openHistoryControls().catch(handleLoadError);
+});
+
+historyLive?.addEventListener("click", () => {
+  setHistoryLiveSelection({ keepControlsOpen: true });
+});
+
+historyPlay?.addEventListener("click", () => {
+  if (historyIsLiveSelected() || state.history.loading) {
+    return;
+  }
+  if (state.history.playing) {
+    stopHistoryPlayback();
+    return;
+  }
+  state.history.playing = true;
+  renderMapHud();
+  void advanceHistoryPlayback().catch((error) => {
+    stopHistoryPlayback();
+    handleLoadError(error);
+  });
+});
+
+function handleHistoryScrubberInput(event) {
+  if (!state.history.controlsOpen) {
+    return;
+  }
+  const slider = event.currentTarget;
+  if (!(slider instanceof HTMLInputElement)) {
+    return;
+  }
+  stopHistoryPlayback();
+  previewHistoryScrubberValue(slider.value);
+}
+
+function handleHistoryScrubberChange(event) {
+  handleHistoryScrubberInput(event);
+  commitHistoryPreview();
+}
+
+function handleHistoryScrubberPointerDown(event) {
+  if (!state.history.controlsOpen) {
+    return;
+  }
+  historyPointerScrubActive = true;
+  stopHistoryPlayback();
+  event.preventDefault();
+  event.stopPropagation();
+  if (historyScrubber && typeof historyScrubber.setPointerCapture === "function") {
+    historyScrubber.setPointerCapture(event.pointerId);
+  }
+  setHistoryScrubberFromClientX(event.clientX);
+}
+
+function handleHistoryScrubberPointerMove(event) {
+  if (!historyPointerScrubActive) {
+    return;
+  }
+  event.preventDefault();
+  event.stopPropagation();
+  setHistoryScrubberFromClientX(event.clientX);
+}
+
+function finishHistoryPointerScrub(event) {
+  if (!historyPointerScrubActive) {
+    return;
+  }
+  historyPointerScrubActive = false;
+  if (historyScrubber && typeof historyScrubber.releasePointerCapture === "function") {
+    try {
+      historyScrubber.releasePointerCapture(event.pointerId);
+    } catch (_error) {
+      // Ignore capture release failures from synthetic/browser-cancelled sequences.
+    }
+  }
+  commitHistoryPreview();
+}
+
+historyScrubber?.addEventListener("input", handleHistoryScrubberInput);
+historyScrubber?.addEventListener("change", handleHistoryScrubberChange);
+historyScrubber?.addEventListener("pointerdown", handleHistoryScrubberPointerDown);
+historyScrubber?.addEventListener("pointermove", handleHistoryScrubberPointerMove);
+historyScrubber?.addEventListener("pointerup", finishHistoryPointerScrub);
+historyScrubber?.addEventListener("pointercancel", finishHistoryPointerScrub);
+
+historyStepBack?.addEventListener("click", () => {
+  stopHistoryPlayback();
+  stepHistoryBy(-historyPlaybackStepSeconds());
+});
+
+historyStepForward?.addEventListener("click", () => {
+  stopHistoryPlayback();
+  stepHistoryBy(historyPlaybackStepSeconds());
 });
 
 railToggleNodes?.addEventListener("click", () => {

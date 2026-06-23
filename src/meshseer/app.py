@@ -27,6 +27,7 @@ from meshseer.public_api import (
     collector_status_payload,
     public_chat_message_payload,
     public_chat_messages_payload,
+    public_mesh_history_frame_payload,
     public_mesh_summary_payload,
     public_node_detail_payload,
     public_nodes_payload,
@@ -155,6 +156,16 @@ def _parse_query_timestamp(value: str) -> datetime:
         raise HTTPException(status_code=400, detail="invalid since timestamp") from exc
     if parsed.tzinfo is None:
         raise HTTPException(status_code=400, detail="invalid since timestamp")
+    return parsed.astimezone(UTC)
+
+
+def _parse_history_timestamp(value: str) -> datetime:
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="invalid at timestamp") from exc
+    if parsed.tzinfo is None:
+        raise HTTPException(status_code=400, detail="invalid at timestamp")
     return parsed.astimezone(UTC)
 
 
@@ -554,6 +565,18 @@ def create_app(
     @public_router.get("/api/mesh/routes")
     async def mesh_routes(since: str | None = None) -> dict[str, Any]:
         return repository.get_mesh_routes(since=_bounded_routes_since(since), primary_only=True)
+
+    @public_router.get("/api/mesh/history/range")
+    async def mesh_history_range() -> dict[str, Any]:
+        return repository.get_mesh_history_range(primary_only=True)
+
+    @public_router.get("/api/mesh/history/frame")
+    async def mesh_history_frame(at: str) -> dict[str, Any]:
+        frame = repository.get_mesh_history_frame(
+            _parse_history_timestamp(at),
+            primary_only=True,
+        )
+        return public_mesh_history_frame_payload(frame)
 
     @public_router.get("/api/nodes/roster")
     async def list_nodes_roster() -> list[dict[str, Any]]:

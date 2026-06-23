@@ -80,6 +80,18 @@
         <!-- FULL-SCREEN MAP -->
         <div class="map-shell" id="mesh-map">
           <div id="leaflet-map" aria-label="LongFast node map"></div>
+          <div class="map-history-controls" id="map-history-controls" hidden>
+            <div class="map-history-toolbar">
+              <button type="button" class="map-history-button map-history-button-live" id="history-live" hidden>Live</button>
+              <button type="button" class="map-history-button" id="history-play" disabled>Play</button>
+              <button type="button" class="map-history-button map-history-step" id="history-step-back" disabled aria-label="Step back in history">-5m</button>
+              <button type="button" class="map-history-button map-history-step" id="history-step-forward" disabled aria-label="Step forward in history">+5m</button>
+              <span class="map-history-stamp mono-text" id="history-timestamp" aria-live="polite">
+                <span id="history-timestamp-label">Loading history…</span>
+              </span>
+            </div>
+            <input type="range" id="history-scrubber" min="0" max="0" step="1" value="0" disabled aria-label="Historical timeline">
+          </div>
           <div class="map-empty" id="map-empty">Waiting for LongFast node locations.</div>
           <div class="map-note" id="map-note" hidden></div>
         </div>
@@ -128,6 +140,14 @@
                 <line x1="2" y1="7" x2="16" y2="7" stroke="currentColor" stroke-width="1.5"/>
               </svg>
               <span class="rail-icon-label">Traffic</span>
+            </button>
+            <button type="button" class="rail-icon" id="rail-toggle-history" aria-label="Toggle history controls" aria-pressed="false">
+              <svg width="18" height="18" viewBox="0 0 18 18" fill="none" aria-hidden="true">
+                <path d="M9 3.25a5.75 5.75 0 1 1-4.07 1.68" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+                <path d="M2.75 3.5v3.25H6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                <path d="M9 6v3.25l2.25 1.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+              <span class="rail-icon-label">History</span>
             </button>
             <button type="button" class="rail-icon" id="rail-toggle-options" aria-label="Toggle options panel" aria-expanded="false">
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">

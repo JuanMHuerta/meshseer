@@ -15,6 +15,8 @@ def test_demo_app_seeds_dashboard_data(tmp_path):
         chat = client.get("/api/chat")
         packets = client.get("/api/packets")
         routes = client.get("/api/mesh/routes")
+        history_range = client.get("/api/mesh/history/range")
+        history_frame = client.get("/api/mesh/history/frame", params={"at": history_range.json()["default_at"]})
 
     assert health.status_code == 200
     assert health.json() == {"status": "ok"}
@@ -25,3 +27,5 @@ def test_demo_app_seeds_dashboard_data(tmp_path):
     assert len(chat.json()) >= 3
     assert len(packets.json()) >= 10
     assert routes.json()["stats"]["total"] >= 2
+    assert history_range.json()["start_at"] is not None
+    assert history_frame.json()["stats"]["nodes"] >= 1

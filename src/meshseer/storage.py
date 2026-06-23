@@ -21,6 +21,10 @@ ROSTER_ACTIVITY_COUNT_WINDOW_MINUTES = 60
 SQLITE_BUSY_TIMEOUT_MS = 5000
 SQLITE_CONNECT_TIMEOUT_SECONDS = SQLITE_BUSY_TIMEOUT_MS / 1000
 DAILY_NODE_TOTALS_WINDOW_DAYS = 30
+HISTORY_NODE_VISIBLE_WINDOW_MINUTES = 24 * 60
+HISTORY_ROUTE_WINDOW_DAYS = 7
+HISTORY_SCRUB_STEP_SECONDS = 60
+HISTORY_PLAYBACK_STEP_SECONDS = 5 * 60
 POSITION_PRIORITY_REASONS = {
     "first_fix": 0,
     "moved": 1,
@@ -278,6 +282,31 @@ class MeshRepository:
             )
 
     @staticmethod
+    def _position_payload_from_raw_json(raw_json: Any) -> dict[str, Any] | None:
+        if not isinstance(raw_json, str) or not raw_json:
+            return None
+        try:
+            payload = json.loads(raw_json)
+        except (TypeError, ValueError):
+            return None
+        decoded = payload.get("decoded")
+        if not isinstance(decoded, dict):
+            return None
+        position = decoded.get("position")
+        if not isinstance(position, dict):
+            return None
+        latitude = position.get("latitude")
+        longitude = position.get("longitude")
+        if not isinstance(latitude, (int, float)) or not isinstance(longitude, (int, float)):
+            return None
+        altitude = position.get("altitude")
+        return {
+            "latitude": float(latitude),
+            "longitude": float(longitude),
+            "altitude": float(altitude) if isinstance(altitude, (int, float)) else None,
+        }
+
+    @staticmethod
     def _utc_day_key(value: datetime) -> str:
         return value.astimezone(UTC).date().isoformat()
 
@@ -457,6 +486,111 @@ class MeshRepository:
                 node.air_util_tx,
             ),
         )
+
+    @classmethod
+    def _append_node_position_observation(
+        cls,
+        connection: sqlite3.Connection,
+        *,
+        node_num: int,
+        recorded_at: str,
+        latitude: float,
+        longitude: float,
+        altitude: float | None,
+        last_heard_at: str | None,
+        channel_index: int | None,
+    ) -> None:
+        if not recorded_at:
+            return
+        connection.execute(
+            """
+            INSERT OR REPLACE INTO node_position_observations (
+                node_num,
+                recorded_at,
+                latitude,
+                longitude,
+                altitude,
+                last_heard_at,
+                channel_index
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                node_num,
+                recorded_at,
+                latitude,
+                longitude,
+                altitude,
+                last_heard_at,
+                channel_index,
+            ),
+        )
+
+    @classmethod
+    def _backfill_node_position_observations(cls, connection: sqlite3.Connection) -> None:
+        packet_rows = connection.execute(
+            """
+            SELECT
+                from_node_num,
+                received_at,
+                channel_index,
+                raw_json
+            FROM packets
+            WHERE from_node_num IS NOT NULL
+              AND portnum = 'POSITION_APP'
+            ORDER BY received_at ASC, id ASC
+            """
+        ).fetchall()
+        for row in packet_rows:
+            node_num = cls._coerce_optional_int(row["from_node_num"])
+            recorded_at = row["received_at"]
+            position = cls._position_payload_from_raw_json(row["raw_json"])
+            if node_num is None or not isinstance(recorded_at, str) or position is None:
+                continue
+            cls._append_node_position_observation(
+                connection,
+                node_num=node_num,
+                recorded_at=recorded_at,
+                latitude=position["latitude"],
+                longitude=position["longitude"],
+                altitude=position["altitude"],
+                last_heard_at=recorded_at,
+                channel_index=cls._coerce_optional_int(row["channel_index"]),
+            )
+
+        node_rows = connection.execute(
+            """
+            SELECT
+                node_num,
+                updated_at,
+                last_heard_at,
+                latitude,
+                longitude,
+                altitude,
+                channel_index
+            FROM nodes
+            WHERE latitude IS NOT NULL
+              AND longitude IS NOT NULL
+              AND updated_at IS NOT NULL
+            ORDER BY updated_at ASC, node_num ASC
+            """
+        ).fetchall()
+        for row in node_rows:
+            node_num = cls._coerce_optional_int(row["node_num"])
+            recorded_at = row["updated_at"]
+            latitude = cls._coerce_optional_float(row["latitude"])
+            longitude = cls._coerce_optional_float(row["longitude"])
+            if node_num is None or not isinstance(recorded_at, str) or latitude is None or longitude is None:
+                continue
+            cls._append_node_position_observation(
+                connection,
+                node_num=node_num,
+                recorded_at=recorded_at,
+                latitude=latitude,
+                longitude=longitude,
+                altitude=cls._coerce_optional_float(row["altitude"]),
+                last_heard_at=row["last_heard_at"],
+                channel_index=cls._coerce_optional_int(row["channel_index"]),
+            )
 
     @classmethod
     def _node_snapshot_counts(cls, connection: sqlite3.Connection, *, primary_only: bool) -> tuple[int, int]:
@@ -727,10 +861,15 @@ class MeshRepository:
     def _prune_expired_rows(self, *, now: datetime) -> dict[str, int]:
         with self._connect() as connection:
             packet_count = 0
+            node_position_count = 0
             if self._packets_retention_days is not None:
                 packet_cutoff = to_utc_iso(now - timedelta(days=self._packets_retention_days))
                 packet_count = connection.execute(
                     "DELETE FROM packets WHERE received_at < ?",
+                    (packet_cutoff,),
+                ).rowcount
+                node_position_count = connection.execute(
+                    "DELETE FROM node_position_observations WHERE recorded_at < ?",
                     (packet_cutoff,),
                 ).rowcount
 
@@ -773,6 +912,7 @@ class MeshRepository:
 
         return {
             "packets": int(packet_count),
+            "node_position_observations": int(node_position_count),
             "node_metric_history": int(node_metric_count),
             "traceroute_attempts": int(traceroute_count),
             "route_observations": int(route_count),
@@ -834,6 +974,16 @@ class MeshRepository:
                     recorded_at TEXT NOT NULL,
                     channel_utilization REAL,
                     air_util_tx REAL
+                );
+
+                CREATE TABLE IF NOT EXISTS node_position_observations (
+                    node_num INTEGER NOT NULL,
+                    recorded_at TEXT NOT NULL,
+                    latitude REAL NOT NULL,
+                    longitude REAL NOT NULL,
+                    altitude REAL,
+                    last_heard_at TEXT,
+                    channel_index INTEGER
                 );
 
                 CREATE TABLE IF NOT EXISTS daily_node_totals (
@@ -934,6 +1084,7 @@ class MeshRepository:
             self._backfill_node_metadata(connection)
             self._backfill_node_activity_from_packets(connection)
             self._backfill_node_metric_history(connection)
+            self._backfill_node_position_observations(connection)
             self._backfill_packet_traffic_rollups(connection)
             self._backfill_route_observations(connection)
             self._backfill_route_node_activity(connection)
@@ -958,6 +1109,13 @@ class MeshRepository:
                     ON node_metric_history(node_num, recorded_at);
                 CREATE INDEX IF NOT EXISTS idx_node_metric_history_recorded_at
                     ON node_metric_history(recorded_at DESC);
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_node_position_observations_node_recorded_at
+                    ON node_position_observations(node_num, recorded_at);
+                CREATE INDEX IF NOT EXISTS idx_node_position_observations_recorded_at
+                    ON node_position_observations(recorded_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_node_position_observations_primary_recorded_at
+                    ON node_position_observations(recorded_at DESC, node_num ASC)
+                    WHERE COALESCE(channel_index, 0) = 0;
                 CREATE INDEX IF NOT EXISTS idx_packets_primary_recent_sender
                     ON packets(received_at DESC, from_node_num)
                     WHERE COALESCE(channel_index, 0) = 0
@@ -1854,6 +2012,214 @@ class MeshRepository:
             },
         }
 
+    @staticmethod
+    def _history_empty_range() -> dict[str, Any]:
+        return {
+            "start_at": None,
+            "end_at": None,
+            "default_at": None,
+            "latest_activity_at": None,
+            "scrub_step_seconds": HISTORY_SCRUB_STEP_SECONDS,
+            "playback_step_seconds": HISTORY_PLAYBACK_STEP_SECONDS,
+        }
+
+    @classmethod
+    def _history_routes(
+        cls,
+        connection: sqlite3.Connection,
+        *,
+        since: str,
+        until: str,
+        primary_only: bool,
+    ) -> list[dict[str, Any]]:
+        clauses = ["received_at >= ?", "received_at <= ?"]
+        params: list[Any] = [since, until]
+        if primary_only:
+            clauses.append(cls._primary_channel_clause())
+        where = cls._where_clause(clauses)
+        route_from = (
+            "FROM route_observations INDEXED BY idx_route_observations_primary_received_at_packet"
+            if primary_only else
+            "FROM route_observations INDEXED BY idx_route_observations_received_at_packet"
+        )
+        rows = connection.execute(
+            f"""
+            SELECT
+                packet_id,
+                mesh_packet_id,
+                received_at,
+                portnum,
+                variant,
+                direction,
+                source_node_num,
+                destination_node_num,
+                path_node_nums_json,
+                edge_snr_db_json,
+                hop_count
+            {route_from}
+            {where}
+            ORDER BY
+                received_at DESC,
+                packet_id DESC,
+                CASE WHEN direction = 'forward' THEN 1 ELSE 0 END DESC
+            """,
+            params,
+        ).fetchall()
+        return [
+            route
+            for row in rows
+            if (route := cls._route_observation_row_to_dict(row)) is not None
+        ]
+
+    def get_mesh_history_range(self, *, primary_only: bool = False) -> dict[str, Any]:
+        with self._connect() as connection:
+            position_clause = self._primary_channel_clause("channel_index") if primary_only else "1 = 1"
+            node_clause = self._primary_channel_clause("channel_index") if primary_only else "1 = 1"
+            route_clause = self._primary_channel_clause("channel_index") if primary_only else "1 = 1"
+            earliest_row = connection.execute(
+                f"""
+                SELECT MIN(recorded_at) AS earliest_mappable_at
+                FROM node_position_observations
+                WHERE {position_clause}
+                """
+            ).fetchone()
+            earliest_mappable_at = None if earliest_row is None else earliest_row["earliest_mappable_at"]
+            if not isinstance(earliest_mappable_at, str) or not earliest_mappable_at:
+                return self._history_empty_range()
+
+            node_last_row = connection.execute(
+                f"""
+                SELECT MAX(last_heard_at) AS latest_node_activity_at
+                FROM nodes
+                WHERE last_heard_at IS NOT NULL
+                  AND {node_clause}
+                """
+            ).fetchone()
+            route_last_row = connection.execute(
+                f"""
+                SELECT MAX(received_at) AS latest_route_activity_at
+                FROM route_observations
+                WHERE {route_clause}
+                """
+            ).fetchone()
+            latest_activity_at = self._max_timestamp(
+                earliest_mappable_at,
+                None if node_last_row is None else node_last_row["latest_node_activity_at"],
+                None if route_last_row is None else route_last_row["latest_route_activity_at"],
+            )
+            return {
+                "start_at": earliest_mappable_at,
+                "end_at": latest_activity_at,
+                "default_at": latest_activity_at,
+                "latest_activity_at": latest_activity_at,
+                "scrub_step_seconds": HISTORY_SCRUB_STEP_SECONDS,
+                "playback_step_seconds": HISTORY_PLAYBACK_STEP_SECONDS,
+            }
+
+    def get_mesh_history_frame(
+        self,
+        at: str | datetime,
+        *,
+        primary_only: bool = False,
+    ) -> dict[str, Any]:
+        history_range = self.get_mesh_history_range(primary_only=primary_only)
+        start_at = history_range["start_at"]
+        end_at = history_range["end_at"]
+        if not isinstance(start_at, str) or not isinstance(end_at, str):
+            return {
+                "frame_at": None,
+                "requested_at": to_utc_iso(at) if isinstance(at, datetime) else at,
+                "nodes": {},
+                "routes": [],
+                "stats": {"nodes": 0, "routes": 0, "forward": 0, "return": 0},
+            }
+
+        requested_at = to_utc_iso(at.astimezone(UTC)) if isinstance(at, datetime) else at
+        frame_at = max(start_at, min(end_at, requested_at))
+        frame_dt = self._parse_utc_iso(frame_at)
+        if frame_dt is None:
+            raise ValueError("invalid history frame timestamp")
+        visible_cutoff = to_utc_iso(frame_dt - timedelta(minutes=HISTORY_NODE_VISIBLE_WINDOW_MINUTES))
+        route_cutoff = to_utc_iso(frame_dt - timedelta(days=HISTORY_ROUTE_WINDOW_DAYS))
+
+        with self._connect() as connection:
+            position_clause = self._primary_channel_clause("channel_index") if primary_only else "1 = 1"
+            latest_positions = connection.execute(
+                f"""
+                WITH latest_positions AS (
+                    SELECT node_num, MAX(recorded_at) AS recorded_at
+                    FROM node_position_observations
+                    WHERE recorded_at <= ?
+                      AND {position_clause}
+                    GROUP BY node_num
+                ),
+                latest_heard AS (
+                    SELECT node_num, MAX(last_heard_at) AS last_heard_at
+                    FROM (
+                        SELECT from_node_num AS node_num, received_at AS last_heard_at
+                        FROM packets
+                        WHERE from_node_num IS NOT NULL
+                          AND received_at <= ?
+                          AND {"COALESCE(channel_index, 0) = 0" if primary_only else "1 = 1"}
+                        UNION ALL
+                        SELECT node_num, last_heard_at
+                        FROM nodes
+                        WHERE last_heard_at IS NOT NULL
+                          AND last_heard_at <= ?
+                          AND {"COALESCE(channel_index, 0) = 0" if primary_only else "1 = 1"}
+                    )
+                    GROUP BY node_num
+                )
+                SELECT
+                    p.node_num,
+                    p.latitude,
+                    p.longitude,
+                    p.altitude,
+                    p.recorded_at AS position_recorded_at,
+                    h.last_heard_at
+                FROM latest_positions AS lp
+                JOIN node_position_observations AS p
+                  ON p.node_num = lp.node_num
+                 AND p.recorded_at = lp.recorded_at
+                JOIN latest_heard AS h
+                  ON h.node_num = p.node_num
+                WHERE h.last_heard_at >= ?
+                ORDER BY p.node_num ASC
+                """,
+                (frame_at, frame_at, frame_at, visible_cutoff),
+            ).fetchall()
+            routes = self._history_routes(
+                connection,
+                since=route_cutoff,
+                until=frame_at,
+                primary_only=primary_only,
+            )
+
+        nodes = {
+            int(row["node_num"]): {
+                "node_num": int(row["node_num"]),
+                "latitude": float(row["latitude"]),
+                "longitude": float(row["longitude"]),
+                "altitude": self._coerce_optional_float(row["altitude"]),
+                "position_recorded_at": row["position_recorded_at"],
+                "last_heard_at": row["last_heard_at"],
+            }
+            for row in latest_positions
+            if row is not None
+        }
+        return {
+            "frame_at": frame_at,
+            "requested_at": requested_at,
+            "nodes": nodes,
+            "routes": routes,
+            "stats": {
+                "nodes": len(nodes),
+                "routes": len(routes),
+                "forward": sum(1 for route in routes if route["direction"] == "forward"),
+                "return": sum(1 for route in routes if route["direction"] == "return"),
+            },
+        }
+
     def get_mesh_links(self, *, primary_only: bool = False) -> dict[str, Any]:
         clauses = ["portnum = ?"]
         params: list[Any] = ["NEIGHBORINFO_APP"]
@@ -2495,6 +2861,19 @@ class MeshRepository:
             }
             self._record_packet_traffic(connection, stored_packet)
             self._store_route_observations(connection, stored_packet)
+            if packet.portnum == "POSITION_APP" and packet.from_node_num is not None:
+                position = self._position_payload_from_raw_json(packet.raw_json)
+                if position is not None:
+                    self._append_node_position_observation(
+                        connection,
+                        node_num=packet.from_node_num,
+                        recorded_at=packet.received_at,
+                        latitude=position["latitude"],
+                        longitude=position["longitude"],
+                        altitude=position["altitude"],
+                        last_heard_at=packet.received_at,
+                        channel_index=packet.channel_index,
+                    )
         self.run_maintenance()
         return packet_id
 
@@ -2573,6 +2952,17 @@ class MeshRepository:
                 ),
             )
             self._append_node_metric_history(connection, node)
+            if node.latitude is not None and node.longitude is not None:
+                self._append_node_position_observation(
+                    connection,
+                    node_num=node.node_num,
+                    recorded_at=node.updated_at,
+                    latitude=node.latitude,
+                    longitude=node.longitude,
+                    altitude=node.altitude,
+                    last_heard_at=node.last_heard_at,
+                    channel_index=node.channel_index,
+                )
             current_primary = self._is_primary_channel_value(node.channel_index)
             current_mapped = bool(
                 current_primary

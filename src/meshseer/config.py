@@ -71,9 +71,9 @@ def _ui_style(value: str | None) -> str:
     normalized = value.strip().lower()
     if normalized == "":
         return "amber-monochrome"
-    if normalized in {"classic", "amber-monochrome"}:
+    if normalized in {"classic", "classic-dark", "amber-monochrome"}:
         return normalized
-    raise ValueError("MESHSEER_UI_DEFAULT_STYLE must be one of: classic, amber-monochrome")
+    raise ValueError("MESHSEER_UI_DEFAULT_STYLE must be one of: classic, classic-dark, amber-monochrome")
 
 
 @dataclass(frozen=True)

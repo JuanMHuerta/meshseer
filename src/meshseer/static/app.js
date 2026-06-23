@@ -17,6 +17,8 @@ const packetsBody = document.getElementById("packets-body");
 const refreshDashboard = document.getElementById("refresh-dashboard");
 const resetMap = document.getElementById("reset-map");
 const packetFilters = document.getElementById("packet-filters");
+const packetLimitSelect = document.getElementById("packet-limit-select");
+const exportPacketsButton = document.getElementById("export-packets");
 const nodeFilters = document.getElementById("node-filters");
 const nodeSearch = document.getElementById("node-search");
 const routeToggle = document.getElementById("route-toggle");
@@ -64,6 +66,9 @@ const DAILY_HEARD_NODES_WINDOW_DAYS = 30;
 const NETWORK_ROUTE_WINDOW_MINUTES = 7 * 24 * 60;
 const SELECTED_ROUTE_WINDOW_MINUTES = 7 * 24 * 60;
 const PACKETS_LIMIT = 40;
+const PACKET_LIMIT_OPTIONS = Object.freeze([40, 100, 200]);
+const PACKETS_API_MAX_LIMIT = 500;
+const PACKETS_FETCH_STEP = 50;
 const CHAT_MESSAGES_LIMIT = 40;
 const MAX_ACTIVITY_PACKETS = 500;
 const KPI_STALE_WINDOW_MINUTES = 10;
@@ -82,12 +87,14 @@ const SOCKET_BACKOFF_BASE_DELAY_MS = 1500;
 const SOCKET_BACKOFF_MAX_DELAY_MS = 30_000;
 const UI_THEME_STORAGE_KEY = "meshseer.ui.theme";
 const LEGACY_UI_STYLE_STORAGE_KEY = "meshseer.ui.style";
+const PACKET_LIMIT_STORAGE_KEY = "meshseer.packet.limit";
 const DEFAULT_UI_THEME = "amber-monochrome";
 const CARTO_ATTRIBUTION = '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; CARTO';
 const CARTO_TILE_OPTIONS = Object.freeze({
   subdomains: "abcd",
   maxZoom: 20,
 });
+const CSV_FORMULA_TEXT_PATTERN = /^[=+\-@]/;
 
 function cartoLayer(path, options = {}) {
   return {
@@ -126,6 +133,8 @@ const THEME_REGISTRY = Object.freeze({
       routeColor: "#e8a94d",
       routeReturnColor: "#d59b47",
       routeSelectedColor: "#fff3db",
+      routeArrowColor: "#ffffff",
+      routeArrowStrokeColor: "none",
       preserveRouteColorOnSelect: false,
       routeLegend: {
         forward: { label: "Forward", color: "#e8a94d" },
@@ -160,7 +169,7 @@ const THEME_REGISTRY = Object.freeze({
   }),
   classic: defineTheme({
     id: "classic",
-    label: "Classic",
+    label: "Classic (light)",
     basemapLayers: [
       cartoLayer("rastertiles/voyager"),
     ],
@@ -198,6 +207,54 @@ const THEME_REGISTRY = Object.freeze({
         selected: {
           borderColor: "#245d6d",
           haloColor: "rgba(47, 124, 145, 0.26)",
+        },
+      },
+    },
+  }),
+  "classic-dark": defineTheme({
+    id: "classic-dark",
+    label: "Classic (dark)",
+    basemapLayers: [
+      cartoLayer("dark_nolabels"),
+      cartoLayer("dark_only_labels", {
+        opacity: 0.45,
+        pane: "overlayPane",
+      }),
+    ],
+    overlay: {
+      markerShape: "pin",
+      markerLabelColor: "#d8e5ee",
+      routeColor: "#6ea8de",
+      routeReturnColor: "#78c06d",
+      routeSelectedColor: "#d9edf4",
+      preserveRouteColorOnSelect: true,
+      routeLegend: {
+        forward: { label: "Forward", color: "#6ea8de" },
+        return: { label: "Return", color: "#78c06d" },
+        tertiary: { label: "", color: "transparent" },
+      },
+      markerPalette: {
+        direct: {
+          fillColor: "#6ea8de",
+          glyphColor: "#0f1820",
+          borderColor: "#8ebde7",
+          haloColor: "rgba(110, 168, 222, 0.3)",
+        },
+        relayed: {
+          fillColor: "#78c06d",
+          glyphColor: "#0f1820",
+          borderColor: "#97d28e",
+          haloColor: "rgba(120, 192, 109, 0.28)",
+        },
+        mqtt: {
+          fillColor: "#c694d3",
+          glyphColor: "#1f1124",
+          borderColor: "#d7afdf",
+          haloColor: "rgba(198, 148, 211, 0.26)",
+        },
+        selected: {
+          borderColor: "#d9edf4",
+          haloColor: "rgba(217, 237, 244, 0.24)",
         },
       },
     },
@@ -242,11 +299,13 @@ const state = {
   meshSummaryPrevious: null,
   uiDefaultTheme: DEFAULT_UI_THEME,
   currentTheme: DEFAULT_UI_THEME,
+  packetLimit: PACKETS_LIMIT,
 };
 
 const mapState = {
   map: null,
   routeLayer: null,
+  routeArrowLayer: null,
   markerLayer: null,
   markersByNodeNum: new Map(),
   routeLinesByKey: new Map(),
@@ -272,6 +331,11 @@ function normalizeThemeId(value) {
   }
   const normalized = value.trim().toLowerCase();
   return Object.prototype.hasOwnProperty.call(THEME_REGISTRY, normalized) ? normalized : null;
+}
+
+function normalizePacketLimit(value) {
+  const numericValue = Number(value);
+  return PACKET_LIMIT_OPTIONS.includes(numericValue) ? numericValue : null;
 }
 
 function currentThemeDefinition() {
@@ -338,10 +402,32 @@ function readStoredThemeId() {
   }
 }
 
+function readStoredPacketLimit() {
+  try {
+    const savedLimit = window.localStorage.getItem(PACKET_LIMIT_STORAGE_KEY);
+    const normalizedLimit = normalizePacketLimit(savedLimit);
+    if (savedLimit != null && normalizedLimit == null) {
+      window.localStorage.removeItem(PACKET_LIMIT_STORAGE_KEY);
+    }
+    return normalizedLimit;
+  } catch (_error) {
+    return null;
+  }
+}
+
 function writeStoredThemeId(themeId) {
   try {
     window.localStorage.setItem(UI_THEME_STORAGE_KEY, themeId);
     window.localStorage.removeItem(LEGACY_UI_STYLE_STORAGE_KEY);
+  } catch (_error) {
+    return false;
+  }
+  return true;
+}
+
+function writeStoredPacketLimit(limit) {
+  try {
+    window.localStorage.setItem(PACKET_LIMIT_STORAGE_KEY, String(limit));
   } catch (_error) {
     return false;
   }
@@ -361,6 +447,12 @@ function removeStoredThemeId() {
 function syncThemeControls() {
   if (uiThemeSelect) {
     uiThemeSelect.value = state.currentTheme;
+  }
+}
+
+function syncPacketLimitControl() {
+  if (packetLimitSelect) {
+    packetLimitSelect.value = String(state.packetLimit);
   }
 }
 
@@ -470,6 +562,38 @@ function formatWholeNumber(value) {
     return "n/a";
   }
   return wholeNumberFormatter.format(Math.round(Number(value)));
+}
+
+function csvEscape(value) {
+  const text = csvSafeCellText(value);
+  return `"${text.replaceAll('"', '""')}"`;
+}
+
+function csvSafeCellText(value) {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return String(value);
+  }
+  const text = String(value ?? "");
+  const trimmedLeading = text.trimStart();
+  if (/^[\t\r\n]/.test(text) || (trimmedLeading && CSV_FORMULA_TEXT_PATTERN.test(trimmedLeading[0]))) {
+    return `'${text}`;
+  }
+  return text;
+}
+
+function fileTimestampPart(date = new Date()) {
+  const pad = (value) => String(value).padStart(2, "0");
+  return [
+    date.getFullYear(),
+    pad(date.getMonth() + 1),
+    pad(date.getDate()),
+  ].join("")
+    + "-"
+    + [
+      pad(date.getHours()),
+      pad(date.getMinutes()),
+      pad(date.getSeconds()),
+    ].join("");
 }
 
 function formatCompactChange(value, digits = 0, suffix = "") {
@@ -668,9 +792,10 @@ function upsertRosterNode(node) {
 
 function prependPacket(packet) {
   state.packets = prependUniqueItem(state.packets, packet, {
-    limit: PACKETS_LIMIT,
+    limit: packetStorageLimit(state.packets.length + 1),
     keyFor: packetKey,
   });
+  queuePacketTopUp();
 }
 
 function prependChatMessage(message) {
@@ -1103,8 +1228,20 @@ function groupedMeshRoutes() {
   });
 }
 
+function routeIncludesNode(route, selectedNodeNum = state.selectedNodeNum) {
+  if (selectedNodeNum == null) {
+    return false;
+  }
+  const targetNodeNum = Number(selectedNodeNum);
+  if (!Number.isFinite(targetNodeNum)) {
+    return false;
+  }
+  const pathNodeNums = Array.isArray(route?.path_node_nums) ? route.path_node_nums : [];
+  return pathNodeNums.some((nodeNum) => Number(nodeNum) === targetNodeNum);
+}
+
 function routeSelected(route) {
-  return state.selectedNodeNum != null && route.path_node_nums.includes(state.selectedNodeNum);
+  return routeIncludesNode(route);
 }
 
 function routeLatLngs(route, nowMs = Date.now()) {
@@ -1123,17 +1260,43 @@ function visibleMeshRoutes(nowMs = Date.now()) {
   return groupedMeshRoutes().filter((route) => routeLatLngs(route, nowMs));
 }
 
+function latestSelectedRoutesByDirection(routes) {
+  if (state.selectedNodeNum == null) {
+    return routes;
+  }
+
+  const latestByDirection = new Map();
+  routes.forEach((route) => {
+    const direction = route?.direction || "";
+    const existing = latestByDirection.get(direction);
+    const receivedAt = route?.received_at || route?.latest_received_at || "";
+    const existingReceivedAt = existing?.received_at || existing?.latest_received_at || "";
+    if (!existing || receivedAt > existingReceivedAt) {
+      latestByDirection.set(direction, route);
+    }
+  });
+  return [...latestByDirection.values()].sort((left, right) => {
+    const leftSeen = left?.received_at || left?.latest_received_at || "";
+    const rightSeen = right?.received_at || right?.latest_received_at || "";
+    return rightSeen.localeCompare(leftSeen);
+  });
+}
+
 function activeMeshRoutes(nowMs = Date.now()) {
   if (!state.showRoutes) {
     return [];
   }
-  return visibleMeshRoutes(nowMs).filter((route) => {
+  const routes = visibleMeshRoutes(nowMs).filter((route) => {
+    if (state.selectedNodeNum != null && !routeSelected(route)) {
+      return false;
+    }
     const ageMinutes = routeAgeMinutes(route, nowMs);
     if (ageMinutes == null) {
       return false;
     }
     return ageMinutes <= (routeSelected(route) ? SELECTED_ROUTE_WINDOW_MINUTES : NETWORK_ROUTE_WINDOW_MINUTES);
   });
+  return latestSelectedRoutesByDirection(routes);
 }
 
 function routeStyle(route, ctx) {
@@ -1158,6 +1321,90 @@ function routeStyle(route, ctx) {
     lineCap: "round",
     lineJoin: "round",
   };
+}
+
+function routeSegmentBearing(startLatLng, endLatLng) {
+  const start = L.latLng(startLatLng);
+  const end = L.latLng(endLatLng);
+  const averageLatitudeRadians = ((start.lat + end.lat) / 2) * (Math.PI / 180);
+  const deltaLongitude = (end.lng - start.lng) * Math.cos(averageLatitudeRadians);
+  const deltaLatitude = end.lat - start.lat;
+  if (deltaLongitude === 0 && deltaLatitude === 0) {
+    return 0;
+  }
+  return (Math.atan2(deltaLongitude, deltaLatitude) * 180) / Math.PI;
+}
+
+function routeArrowIcon({ color, opacity, weight, bearing }) {
+  const overlay = currentThemeOverlay();
+  const size = Math.round(clamp(16 + (weight * 2), 18, 24));
+  const strokeWidth = Math.max(1.1, Math.min(weight * 0.4, 1.8));
+  const arrowFillColor = overlay.routeArrowColor || color;
+  const arrowStrokeColor = overlay.routeArrowStrokeColor || "rgba(12, 16, 20, 0.34)";
+  const arrowStrokeWidth = arrowStrokeColor === "none" ? 0 : strokeWidth;
+  return L.divIcon({
+    className: "",
+    html: `
+      <div
+        class="route-arrow-marker"
+        style="width:${size}px;height:${size}px;opacity:${clamp(opacity, 0.35, 1).toFixed(3)};transform:rotate(${bearing.toFixed(2)}deg);pointer-events:none;"
+      >
+        <svg width="${size}" height="${size}" viewBox="0 0 24 24" aria-hidden="true">
+          <path
+            d="M12 3 L20 21 L12 16.4 L4 21 Z"
+            fill="${arrowFillColor}"
+            stroke="${arrowStrokeColor}"
+            stroke-width="${arrowStrokeWidth.toFixed(2)}"
+            stroke-linejoin="round"
+            style="filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.24));"
+          ></path>
+        </svg>
+      </div>
+    `,
+    iconSize: [size, size],
+    iconAnchor: [size / 2, size / 2],
+  });
+}
+
+function routeArrowPositionFraction(_route) {
+  return 0.38;
+}
+
+function routeArrowPoint(startLatLng, endLatLng, fraction) {
+  return L.latLng(
+    startLatLng.lat + ((endLatLng.lat - startLatLng.lat) * fraction),
+    startLatLng.lng + ((endLatLng.lng - startLatLng.lng) * fraction),
+  );
+}
+
+function routeArrowMarkers(_map, route, latLngs, style) {
+  if (!routeSelected(route) || !Array.isArray(latLngs) || latLngs.length < 2) {
+    return [];
+  }
+
+  const markers = [];
+  const positionFraction = routeArrowPositionFraction(route);
+  for (let index = 0; index < latLngs.length - 1; index += 1) {
+    const start = L.latLng(latLngs[index]);
+    const end = L.latLng(latLngs[index + 1]);
+    if (start.lat === end.lat && start.lng === end.lng) {
+      continue;
+    }
+    const point = routeArrowPoint(start, end, positionFraction);
+    markers.push(L.marker(point, {
+      icon: routeArrowIcon({
+        color: style.color,
+        opacity: style.opacity,
+        weight: style.weight,
+        bearing: routeSegmentBearing(start, end),
+      }),
+      keyboard: false,
+      interactive: false,
+      pane: "mesh-route-arrows",
+      zIndexOffset: 900,
+    }));
+  }
+  return markers;
 }
 
 function nodeFreshness(node) {
@@ -2124,7 +2371,7 @@ function selectedNeighborhood(routes) {
   const neighborSet = new Set();
   neighborSet.add(state.selectedNodeNum);
   for (const route of routes) {
-    if (route.path_node_nums.includes(state.selectedNodeNum)) {
+    if (routeSelected(route)) {
       for (const nodeNum of route.path_node_nums) {
         neighborSet.add(nodeNum);
       }
@@ -2157,6 +2404,70 @@ function updateOverviewStats() {
     nodesPanelCount.textContent = `${formatWholeNumber(nodeTotal)} heard · ${formatWholeNumber(activeCount)} active`;
   }
   renderMapHud();
+}
+
+function nodeRecentPacketMarkup(packet) {
+  const category = portCategory(packet?.portnum);
+  const pathTone = packet?.path_tone || packetPathTone(packet);
+  const pathLabel = packet?.path_label || packetPathLabel(packet);
+  const destinationLabel = packet?.destination_label || toNodeLabel(packet);
+  const textPreview = typeof packet?.text_preview === "string" ? packet.text_preview.trim() : "";
+  return `
+    <article class="node-packet-card ${pathTone}">
+      <div class="node-packet-meta">
+        <span class="mono-text">${escapeHtml(formatTime(packet?.received_at))}</span>
+        <span class="path-badge ${pathTone}">${escapeHtml(pathLabel)}</span>
+      </div>
+      <div class="node-packet-tags">
+        <span class="port-badge ${category}">${escapeHtml(portBadgeText(packet?.portnum))}</span>
+        <span class="node-packet-port mono-text">${escapeHtml(packet?.portnum || "Unknown")}</span>
+      </div>
+      <p class="node-packet-destination">To ${escapeHtml(destinationLabel)}</p>
+      ${textPreview ? `<p class="node-packet-text">${escapeHtml(textPreview)}</p>` : ""}
+    </article>
+  `;
+}
+
+function renderNodeRecentPackets(node, detailPayload) {
+  const isLoading = state.nodeDetailLoadingNodeNum === node.node_num && !detailPayload;
+  const hasError = state.nodeDetailErrorNodeNum === node.node_num && !detailPayload;
+  const recentPackets = Array.isArray(detailPayload?.recent_packets) ? detailPayload.recent_packets : [];
+
+  let bodyMarkup;
+  if (hasError) {
+    bodyMarkup = `
+      <div class="node-packets-empty">
+        <p>Recent packets are unavailable right now.</p>
+      </div>
+    `;
+  } else if (isLoading) {
+    bodyMarkup = `
+      <div class="node-packets-empty">
+        <p>Loading recent packets…</p>
+      </div>
+    `;
+  } else if (!recentPackets.length) {
+    bodyMarkup = `
+      <div class="node-packets-empty">
+        <p>No recent packets from this node yet.</p>
+      </div>
+    `;
+  } else {
+    bodyMarkup = `
+      <div class="node-packets-list">
+        ${recentPackets.map(nodeRecentPacketMarkup).join("")}
+      </div>
+    `;
+  }
+
+  return `
+    <section class="node-hud-section">
+      <div class="node-hud-section-head">
+        <h4>Recent packets</h4>
+      </div>
+      ${bodyMarkup}
+    </section>
+  `;
 }
 
 function renderNodeDetail(node) {
@@ -2195,6 +2506,8 @@ function renderNodeDetail(node) {
         ${metric("Packets Heard", formatWholeNumber(insights?.heard_packets))}
         ${metric("Battery", node.battery_level == null ? "n/a" : `${Math.round(node.battery_level)}%`)}
       </div>
+
+      ${renderNodeRecentPackets(node, detailPayload)}
     </div>
   `;
 }
@@ -2273,8 +2586,12 @@ function ensureMap() {
   const routePane = map.createPane("mesh-routes");
   routePane.style.zIndex = "340";
   routePane.style.pointerEvents = "none";
+  const routeArrowPane = map.createPane("mesh-route-arrows");
+  routeArrowPane.style.zIndex = "345";
+  routeArrowPane.style.pointerEvents = "none";
 
   mapState.routeLayer = L.layerGroup().addTo(map);
+  mapState.routeArrowLayer = L.layerGroup().addTo(map);
   mapState.markerLayer = L.layerGroup();
   mapState.markerLayer.addTo(map);
   mapState.map = map;
@@ -2593,6 +2910,9 @@ function renderMap(items) {
       mapState.routeLayer.clearLayers();
       mapState.routeLinesByKey.clear();
     }
+    if (mapState.routeArrowLayer) {
+      mapState.routeArrowLayer.clearLayers();
+    }
     if (mapState.markerLayer) {
       mapState.markerLayer.clearLayers();
       mapState.markersByNodeNum.clear();
@@ -2610,6 +2930,7 @@ function renderMap(items) {
   mapEmpty.textContent = "Waiting for LongFast node locations.";
   mapEmpty.hidden = true;
   mapState.routeLayer.clearLayers();
+  mapState.routeArrowLayer.clearLayers();
   mapState.routeLinesByKey.clear();
   mapState.markerLayer.clearLayers();
   mapState.markersByNodeNum.clear();
@@ -2640,6 +2961,9 @@ function renderMap(items) {
       );
       line.addTo(mapState.routeLayer);
       mapState.routeLinesByKey.set(routeKey(route), line);
+      routeArrowMarkers(map, route, latLngs, style).forEach((arrowMarker) => {
+        arrowMarker.addTo(mapState.routeArrowLayer);
+      });
     });
 
   mappedNodes.forEach((node) => {
@@ -2663,7 +2987,7 @@ function renderMap(items) {
   });
 
   const selectedRoutes = routes
-    .filter((route) => state.selectedNodeNum != null && route.path_node_nums.includes(state.selectedNodeNum))
+    .filter((route) => routeSelected(route))
     .map((route) => mapState.routeLinesByKey.get(routeKey(route)))
     .filter(Boolean);
   selectedRoutes.forEach((line) => line.bringToFront());
@@ -2853,6 +3177,108 @@ function packetRowMarkup(packet) {
   `;
 }
 
+function visiblePackets(items = state.packets) {
+  return items.filter(packetFilterMatches);
+}
+
+function packetRequestLimit(limit) {
+  return Math.min(PACKETS_API_MAX_LIMIT, limit + PACKETS_FETCH_STEP);
+}
+
+function packetStorageLimit(currentCount = state.packets.length) {
+  return Math.min(PACKETS_API_MAX_LIMIT, Math.max(currentCount, packetRequestLimit(state.packetLimit)));
+}
+
+function needsPacketTopUp(items = state.packets, visibleLimit = state.packetLimit) {
+  return visiblePackets(items).length < visibleLimit && items.length < PACKETS_API_MAX_LIMIT;
+}
+
+function queuePacketTopUp() {
+  if (!needsPacketTopUp()) {
+    return;
+  }
+  void loadPackets().catch(handleLoadError);
+}
+
+async function fetchPacketsForVisibleLimit(limit) {
+  let requestLimit = packetRequestLimit(limit);
+  let items = await fetchJson(`/api/packets?limit=${requestLimit}`);
+
+  while (
+    visiblePackets(items).length < limit
+    && items.length === requestLimit
+    && requestLimit < PACKETS_API_MAX_LIMIT
+  ) {
+    requestLimit = Math.min(PACKETS_API_MAX_LIMIT, requestLimit + PACKETS_FETCH_STEP);
+    items = await fetchJson(`/api/packets?limit=${requestLimit}`);
+  }
+
+  return items;
+}
+
+function updatePacketExportButton(items = visiblePackets()) {
+  if (!exportPacketsButton) {
+    return;
+  }
+  const visibleCount = items.length;
+  exportPacketsButton.disabled = visibleCount === 0;
+  const actionLabel = visibleCount
+    ? `Export ${formatWholeNumber(visibleCount)} visible packets as CSV`
+    : "No visible packets to export";
+  exportPacketsButton.title = actionLabel;
+  exportPacketsButton.setAttribute("aria-label", actionLabel);
+}
+
+function packetExportCsv(items) {
+  const header = [
+    "id",
+    "received_at",
+    "from_name",
+    "from_node_num",
+    "to_name",
+    "to_node_num",
+    "portnum",
+    "port_label",
+    "path_label",
+    "path_tone",
+  ];
+  const rows = items.map((packet) => [
+    packet?.id,
+    packet?.received_at,
+    fromNodeLabel(packet),
+    packet?.from_node_num,
+    toNodeLabel(packet),
+    packet?.to_node_num,
+    packet?.portnum,
+    portBadgeText(packet?.portnum),
+    packetPathLabel(packet),
+    packetPathTone(packet),
+  ]);
+  return [
+    header.map(csvEscape).join(","),
+    ...rows.map((row) => row.map(csvEscape).join(",")),
+  ].join("\n");
+}
+
+function exportVisiblePackets() {
+  const items = visiblePackets();
+  if (!items.length) {
+    updatePacketExportButton(items);
+    return;
+  }
+  const csv = packetExportCsv(items);
+  const filterSuffix = state.packetFilter === "all" ? "all" : state.packetFilter;
+  const link = document.createElement("a");
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  link.href = url;
+  link.download = `meshseer-packets-${filterSuffix}-${fileTimestampPart()}.csv`;
+  document.body.append(link);
+  link.click();
+  link.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 0);
+}
+
 function updatePacketFilterButtons() {
   packetFilters.querySelectorAll("[data-filter]").forEach((button) => {
     button.classList.toggle("active", button.dataset.filter === state.packetFilter);
@@ -2866,8 +3292,9 @@ function updateNodeFilterButtons() {
 }
 
 function renderPackets(items) {
-  const filteredItems = items.filter(packetFilterMatches);
+  const filteredItems = visiblePackets(items);
   updatePacketFilterButtons();
+  updatePacketExportButton(filteredItems);
 
   if (!filteredItems.length) {
     packetsBody.innerHTML = `
@@ -3036,7 +3463,7 @@ async function loadNodes() {
 
 async function loadPackets() {
   return runSingleFlight("packets", async () => {
-    state.packets = await fetchJson(`/api/packets?limit=${PACKETS_LIMIT}`);
+    state.packets = await fetchPacketsForVisibleLimit(state.packetLimit);
     setLastPacketReceivedAt(state.packets[0]?.received_at);
     renderPackets(state.packets);
     if (state.nodes.length) {
@@ -3286,6 +3713,7 @@ function selectNodeFromTarget(target) {
 }
 
 function initializeStaticUI() {
+  state.packetLimit = readStoredPacketLimit() || PACKETS_LIMIT;
   applyThemeSelection(DEFAULT_UI_THEME);
   renderPerspectiveLabel();
   renderConnectionIndicator();
@@ -3295,6 +3723,7 @@ function initializeStaticUI() {
   updatePacketFilterButtons();
   updateNodeFilterButtons();
   syncThemeControls();
+  syncPacketLimitControl();
   setDrawerView("nodes");
   setNodeRailOpen(false);
   setTrafficDrawerOpen(false);
@@ -3316,6 +3745,22 @@ packetFilters.addEventListener("click", (event) => {
   }
   state.packetFilter = nextFilter;
   renderPackets(state.packets);
+  queuePacketTopUp();
+});
+
+exportPacketsButton?.addEventListener("click", () => {
+  exportVisiblePackets();
+});
+
+packetLimitSelect?.addEventListener("change", (event) => {
+  const nextLimit = normalizePacketLimit(event.target.value);
+  if (nextLimit == null || nextLimit === state.packetLimit) {
+    syncPacketLimitControl();
+    return;
+  }
+  state.packetLimit = nextLimit;
+  writeStoredPacketLimit(nextLimit);
+  void loadPackets().catch(handleLoadError);
 });
 
 nodeFilters.addEventListener("click", (event) => {

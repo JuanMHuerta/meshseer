@@ -489,6 +489,91 @@ def test_repository_filters_packets_and_chat(tmp_path):
     assert [item["mesh_packet_id"] for item in chat] == [1]
 
 
+def test_repository_lists_recent_packets_from_node_on_primary_channel(tmp_path):
+    repo = MeshRepository(tmp_path / "mesh.db")
+
+    repo.upsert_node(
+        NodeRecord(
+            node_num=202,
+            node_id="!000000ca",
+            short_name="BETA",
+            long_name="Beta Node",
+            hardware_model="HELTEC",
+            role="CLIENT",
+            channel_index=0,
+            last_heard_at="2026-03-30T12:02:00Z",
+            last_snr=3.0,
+            latitude=None,
+            longitude=None,
+            altitude=None,
+            battery_level=None,
+            channel_utilization=None,
+            air_util_tx=None,
+            raw_json='{"num":202}',
+            updated_at="2026-03-30T12:02:00Z",
+            hops_away=1,
+            via_mqtt=False,
+        )
+    )
+    repo.insert_packet(
+        PacketRecord(
+            mesh_packet_id=1,
+            received_at="2026-03-30T12:00:00Z",
+            from_node_num=101,
+            to_node_num=BROADCAST_NODE_NUM,
+            portnum="TEXT_MESSAGE_APP",
+            channel_index=0,
+            hop_limit=3,
+            hop_start=3,
+            rx_snr=4.0,
+            text_preview="broadcast",
+            payload_base64=None,
+            raw_json="{}",
+            via_mqtt=False,
+        )
+    )
+    repo.insert_packet(
+        PacketRecord(
+            mesh_packet_id=2,
+            received_at="2026-03-30T12:01:00Z",
+            from_node_num=101,
+            to_node_num=202,
+            portnum="POSITION_APP",
+            channel_index=0,
+            hop_limit=2,
+            hop_start=2,
+            rx_snr=3.2,
+            text_preview=None,
+            payload_base64=None,
+            raw_json="{}",
+            via_mqtt=False,
+        )
+    )
+    repo.insert_packet(
+        PacketRecord(
+            mesh_packet_id=3,
+            received_at="2026-03-30T12:02:00Z",
+            from_node_num=101,
+            to_node_num=202,
+            portnum="NODEINFO_APP",
+            channel_index=2,
+            hop_limit=1,
+            hop_start=1,
+            rx_snr=1.5,
+            text_preview=None,
+            payload_base64=None,
+            raw_json="{}",
+            via_mqtt=False,
+        )
+    )
+
+    recent = repo.list_recent_packets_from_node(101, limit=10, primary_only=True)
+
+    assert [item["mesh_packet_id"] for item in recent] == [2, 1]
+    assert recent[0]["to_short_name"] == "BETA"
+    assert recent[1]["to_node_num"] == BROADCAST_NODE_NUM
+
+
 def test_repository_excludes_admin_packets_from_node_activity(tmp_path):
     repo = MeshRepository(tmp_path / "mesh.db")
 

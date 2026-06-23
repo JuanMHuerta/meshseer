@@ -120,7 +120,7 @@ Use [.env.example](.env.example) as the baseline. The most important settings ar
 - `MESHSEER_DB_PATH`: SQLite database path. Defaults to `./data/meshseer.db` when running locally.
 - `MESHSEER_LOCAL_NODE_NUM`: optional override for the receiver node number shown in the UI and API.
 - `MESHSEER_ENV`: `development` or `production`. Production disables `/docs`, `/redoc`, and `/openapi.json`.
-- `MESHSEER_UI_DEFAULT_STYLE`: UI basemap style default. Allowed values: `classic`, `amber-monochrome`. Defaults to `amber-monochrome`.
+- `MESHSEER_UI_DEFAULT_STYLE`: UI basemap style default. Allowed values: `classic`, `classic-dark`, `amber-monochrome`. Defaults to `amber-monochrome`.
 - `MESHSEER_BIND_HOST`, `MESHSEER_BIND_PORT`: HTTP bind settings.
 - `MESHSEER_ADMIN_BEARER_TOKEN`: enables the local-only admin API.
 

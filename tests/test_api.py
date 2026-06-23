@@ -258,9 +258,15 @@ def test_api_routes_and_filters(tmp_path):
     assert "mesh_packet_id" not in chat.json()[0]
     assert node.json()["node"]["node_num"] == 101
     assert "latitude" not in node.json()["node"]
+    assert len(node.json()["recent_packets"]) == 1
+    assert node.json()["recent_packets"][0]["text_preview"] == "hello mesh"
+    assert node.json()["recent_packets"][0]["destination_label"] == "Broadcast"
+    assert node.json()["recent_packets"][0]["path_label"] == "Direct"
+    assert "raw_json" not in node.json()["recent_packets"][0]
+    assert "mesh_packet_id" not in node.json()["recent_packets"][0]
     assert "longitude" not in node.json()["node"]
     assert "raw_json" not in node.json()["node"]
-    assert "recent_packets" not in node.json()
+    assert "recent_activity_packets" not in node.json()
     assert hidden_node.status_code == 404
     assert admin_packet.json()["mesh_packet_id"] == 11
     assert admin_packet.json()["raw_json"] == '{"id":11}'
@@ -279,6 +285,16 @@ def test_status_reflects_ui_default_style_override(tmp_path):
 
     assert status.status_code == 200
     assert status.json()["ui"]["default_style"] == "classic"
+
+
+def test_status_reflects_classic_dark_ui_default_style_override(tmp_path):
+    app, _collector = build_app(tmp_path, extra_env={"MESHSEER_UI_DEFAULT_STYLE": "classic-dark"})
+
+    with TestClient(app) as client:
+        status = client.get("/api/status")
+
+    assert status.status_code == 200
+    assert status.json()["ui"]["default_style"] == "classic-dark"
 
 
 def test_docs_routes_are_hidden_in_production(tmp_path):
@@ -637,7 +653,103 @@ def test_node_detail_omits_recent_activity_packets(tmp_path):
         node = client.get("/api/nodes/101")
 
     assert node.status_code == 200
-    assert "recent_packets" not in node.json()
+    assert "recent_activity_packets" not in node.json()
+    assert "recent_packets" in node.json()
+
+
+def test_node_detail_exposes_recent_packets_from_selected_node(tmp_path):
+    app, _collector = build_app(tmp_path)
+    repo = app.state.repository
+
+    repo.upsert_node(
+        NodeRecord(
+            node_num=303,
+            node_id="!0000012f",
+            short_name="GAMMA",
+            long_name="Gamma Node",
+            hardware_model="TBEAM",
+            role="CLIENT",
+            channel_index=0,
+            last_heard_at="2026-03-30T12:08:00Z",
+            last_snr=2.5,
+            latitude=10.4,
+            longitude=-84.15,
+            altitude=18.0,
+            battery_level=74.0,
+            channel_utilization=5.2,
+            air_util_tx=1.8,
+            raw_json='{"num":303}',
+            updated_at="2026-03-30T12:08:00Z",
+            hops_away=1,
+            via_mqtt=False,
+        )
+    )
+    repo.insert_packet(
+        PacketRecord(
+            mesh_packet_id=13,
+            received_at="2026-03-30T12:06:00Z",
+            from_node_num=101,
+            to_node_num=303,
+            portnum="POSITION_APP",
+            channel_index=0,
+            hop_limit=2,
+            hop_start=2,
+            rx_snr=4.1,
+            rx_rssi=-90,
+            text_preview=None,
+            payload_base64=None,
+            raw_json='{"id":13}',
+            via_mqtt=False,
+        )
+    )
+    repo.insert_packet(
+        PacketRecord(
+            mesh_packet_id=14,
+            received_at="2026-03-30T12:07:00Z",
+            from_node_num=101,
+            to_node_num=BROADCAST_NODE_NUM,
+            portnum="TEXT_MESSAGE_APP",
+            channel_index=0,
+            hop_limit=2,
+            hop_start=3,
+            rx_snr=3.5,
+            rx_rssi=-94,
+            text_preview="status update",
+            payload_base64=None,
+            raw_json='{"id":14}',
+            via_mqtt=False,
+        )
+    )
+    repo.insert_packet(
+        PacketRecord(
+            mesh_packet_id=15,
+            received_at="2026-03-30T12:08:00Z",
+            from_node_num=101,
+            to_node_num=303,
+            portnum="NODEINFO_APP",
+            channel_index=2,
+            hop_limit=1,
+            hop_start=1,
+            rx_snr=2.0,
+            rx_rssi=-99,
+            text_preview=None,
+            payload_base64=None,
+            raw_json='{"id":15,"channel":2}',
+            via_mqtt=False,
+        )
+    )
+
+    with TestClient(app) as client:
+        node = client.get("/api/nodes/101")
+
+    assert node.status_code == 200
+    recent_packets = node.json()["recent_packets"]
+    assert [item["portnum"] for item in recent_packets] == ["TEXT_MESSAGE_APP", "POSITION_APP", "TEXT_MESSAGE_APP"]
+    assert recent_packets[0]["destination_label"] == "Broadcast"
+    assert recent_packets[0]["text_preview"] == "status update"
+    assert recent_packets[1]["destination_label"] == "GAMMA"
+    assert recent_packets[1]["path_label"] == "Direct"
+    assert recent_packets[2]["path_label"] == "Direct"
 
 
 def test_public_node_payload_obfuscates_roster_coordinates_and_hides_detail_coordinates(tmp_path):

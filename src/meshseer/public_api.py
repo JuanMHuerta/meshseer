@@ -3,6 +3,8 @@ from __future__ import annotations
 import math
 from typing import Any, Mapping
 
+from meshseer.channels import BROADCAST_NODE_NUM
+
 
 PUBLIC_PACKET_FIELDS = (
     "id",
@@ -15,6 +17,14 @@ PUBLIC_PACKET_FIELDS = (
 PUBLIC_CHAT_FIELDS = (
     "id",
     "received_at",
+    "text_preview",
+)
+
+PUBLIC_NODE_RECENT_PACKET_FIELDS = (
+    "id",
+    "received_at",
+    "to_node_num",
+    "portnum",
     "text_preview",
 )
 
@@ -135,6 +145,21 @@ def _sender_label(packet: Mapping[str, Any]) -> str:
     return "Unknown"
 
 
+def _destination_label(packet: Mapping[str, Any]) -> str:
+    to_node_num = _coerce_int(packet.get("to_node_num"))
+    if to_node_num == BROADCAST_NODE_NUM:
+        return "Broadcast"
+    short_name = packet.get("to_short_name")
+    if isinstance(short_name, str) and short_name.strip():
+        return short_name
+    long_name = packet.get("to_long_name")
+    if isinstance(long_name, str) and long_name.strip():
+        return long_name
+    if to_node_num is not None:
+        return f"Node {to_node_num}"
+    return "Unknown"
+
+
 def collector_status_payload(status: Mapping[str, Any]) -> dict[str, Any]:
     return {
         "state": status.get("state"),
@@ -165,6 +190,18 @@ def public_chat_messages_payload(items: list[Mapping[str, Any]]) -> list[dict[st
     return [public_chat_message_payload(item) for item in items]
 
 
+def public_node_recent_packet_payload(packet: Mapping[str, Any]) -> dict[str, Any]:
+    payload = _pick(packet, PUBLIC_NODE_RECENT_PACKET_FIELDS)
+    payload["destination_label"] = _destination_label(packet)
+    payload["path_tone"] = _packet_path_tone(packet)
+    payload["path_label"] = _packet_path_label(packet)
+    return payload
+
+
+def public_node_recent_packets_payload(items: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    return [public_node_recent_packet_payload(item) for item in items]
+
+
 def public_node_payload(node: Mapping[str, Any]) -> dict[str, Any]:
     payload = _pick(node, PUBLIC_NODE_FIELDS)
     payload["latitude"] = _obfuscated_coordinate(payload.get("latitude"))
@@ -184,10 +221,12 @@ def public_node_detail_payload(
     node: Mapping[str, Any],
     *,
     insights: Mapping[str, Any],
+    recent_packets: list[Mapping[str, Any]],
 ) -> dict[str, Any]:
     return {
         "node": public_node_detail_node_payload(node),
         "insights": _pick(insights, PUBLIC_NODE_INSIGHTS_FIELDS),
+        "recent_packets": public_node_recent_packets_payload(recent_packets),
     }
 
 

@@ -200,6 +200,79 @@ def test_escape_keeps_native_search_behavior(page):
     assert traffic_is_open(page) is True
 
 
+def test_node_detail_shows_recent_packets_section(page):
+    open_nodes_rail(page)
+    page.locator("#node-list [data-node-num]").first.click()
+    expect_inspector_open(page)
+    page.wait_for_function(
+        """
+        () => {
+          const root = document.querySelector('#node-detail');
+          return !!root && root.textContent.includes('Recent packets');
+        }
+        """
+    )
+
+    assert page.locator("#node-detail .node-hud-section h4").text_content() == "Recent packets"
+    assert page.locator("#node-detail .node-packet-card, #node-detail .node-packets-empty").count() >= 1
+
+
+def test_route_selection_includes_intermediate_nodes(page):
+    matches = page.evaluate(
+        """
+        () => ({
+          endpoint: routeIncludesNode({ path_node_nums: [101, 202, 303] }, 101),
+          intermediate: routeIncludesNode({ path_node_nums: [101, 202, 303] }, 202),
+          missing: routeIncludesNode({ path_node_nums: [101, 202, 303] }, 404),
+        })
+        """
+    )
+
+    assert matches == {
+        "endpoint": True,
+        "intermediate": True,
+        "missing": False,
+    }
+
+
+def test_csv_export_sanitizes_formula_like_cells(page):
+    sanitized = page.evaluate(
+        r"""
+        () => ({
+          formula: csvSafeCellText("=2+2"),
+          padded: csvSafeCellText("  =2+2"),
+          tabbed: csvSafeCellText("\t=2+2"),
+          number: csvSafeCellText(-12),
+        })
+        """
+    )
+
+    assert sanitized == {
+        "formula": "'=2+2",
+        "padded": "'  =2+2",
+        "tabbed": "'\t=2+2",
+        "number": "-12",
+    }
+
+
+def test_packet_storage_limit_stays_bounded(page):
+    limits = page.evaluate(
+        """
+        () => ({
+          defaultLimit: packetStorageLimit(20),
+          capAtMax: packetStorageLimit(500),
+          ignoreOverflow: packetStorageLimit(650),
+        })
+        """
+    )
+
+    assert limits == {
+        "defaultLimit": 90,
+        "capAtMax": 500,
+        "ignoreOverflow": 500,
+    }
+
+
 def visible_tile_sources(page) -> list[str]:
     return page.locator(".leaflet-tile-pane img.leaflet-tile").evaluate_all(
         "tiles => tiles.map((tile) => tile.getAttribute('src') || '').filter(Boolean)"
@@ -210,26 +283,26 @@ def test_theme_selection_persists_and_invalid_saved_value_falls_back(tmp_path):
     with open_page(tmp_path) as page:
         page.click("#rail-toggle-options")
         expect_rail_open(page)
-        page.select_option("#ui-theme-select", "classic")
+        page.select_option("#ui-theme-select", "classic-dark")
         page.wait_for_function(
             """
             () => (
-              document.querySelector('#ui-theme-select')?.value === 'classic'
-              && document.documentElement.dataset.theme === 'classic'
+              document.querySelector('#ui-theme-select')?.value === 'classic-dark'
+              && document.documentElement.dataset.theme === 'classic-dark'
               && Array.from(document.querySelectorAll('.leaflet-tile-pane img.leaflet-tile'))
-                .some((tile) => (tile.getAttribute('src') || '').includes('rastertiles/voyager'))
+                .some((tile) => (tile.getAttribute('src') || '').includes('dark_nolabels'))
             )
             """
         )
-        assert page.evaluate("() => window.localStorage.getItem('meshseer.ui.theme')") == "classic"
+        assert page.evaluate("() => window.localStorage.getItem('meshseer.ui.theme')") == "classic-dark"
         assert page.evaluate("() => window.localStorage.getItem('meshseer.ui.style')") is None
 
         page.reload(wait_until="domcontentloaded")
         _wait_for_dashboard(page)
         page.click("#rail-toggle-options")
         expect_rail_open(page)
-        assert page.locator("#ui-theme-select").input_value() == "classic"
-        assert any("rastertiles/voyager" in src for src in visible_tile_sources(page))
+        assert page.locator("#ui-theme-select").input_value() == "classic-dark"
+        assert any("dark_nolabels" in src for src in visible_tile_sources(page))
 
     with open_page(
         tmp_path,
@@ -250,3 +323,48 @@ def test_theme_selection_persists_and_invalid_saved_value_falls_back(tmp_path):
             )
             """
         )
+
+
+def test_recent_packets_header_stays_isolated_in_dark_themes(tmp_path):
+    with open_page(tmp_path) as page:
+        page.click("#rail-toggle-traffic")
+        expect_traffic_open(page)
+
+        for theme in ("classic-dark", "amber-monochrome"):
+            if not rail_is_open(page):
+                page.click("#rail-toggle-options")
+                expect_rail_open(page)
+            page.select_option("#ui-theme-select", theme)
+            page.wait_for_timeout(150)
+            page.eval_on_selector("#mesh-traffic .table-wrap", "(element) => { element.scrollTop = 240; }")
+            page.wait_for_timeout(100)
+
+            table_styles = page.evaluate(
+                """
+                () => {
+                  const table = document.querySelector('#mesh-traffic table');
+                  const th = document.querySelector('#mesh-traffic thead th');
+                  if (!table || !th) return null;
+                  const tableStyles = window.getComputedStyle(table);
+                  const headerStyles = window.getComputedStyle(th);
+                  const colorText = headerStyles.backgroundColor;
+                  const colorStart = colorText.indexOf('(');
+                  const colorEnd = colorText.lastIndexOf(')');
+                  const colorParts = colorStart >= 0 && colorEnd > colorStart
+                    ? colorText.slice(colorStart + 1, colorEnd).split(',').map((part) => part.trim())
+                    : [];
+                  return {
+                    borderCollapse: tableStyles.borderCollapse,
+                    borderSpacing: tableStyles.borderSpacing,
+                    headerPosition: headerStyles.position,
+                    headerBackgroundAlpha: colorParts.length >= 4 ? Number(colorParts[3]) : 1,
+                  };
+                }
+                """
+            )
+
+            assert table_styles is not None
+            assert table_styles["borderCollapse"] == "separate"
+            assert table_styles["borderSpacing"] == "0px"
+            assert table_styles["headerPosition"] == "sticky"
+            assert table_styles["headerBackgroundAlpha"] >= 0.9

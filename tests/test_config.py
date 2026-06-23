@@ -132,6 +132,12 @@ def test_settings_blank_ui_default_style_uses_default():
     assert settings.ui_default_style == "amber-monochrome"
 
 
+def test_settings_accepts_classic_dark_ui_default_style():
+    settings = Settings.from_env({"MESHSEER_UI_DEFAULT_STYLE": "classic-dark"})
+
+    assert settings.ui_default_style == "classic-dark"
+
+
 def test_load_env_file_sets_missing_values_without_overriding_existing_env(tmp_path, monkeypatch):
     env_path = tmp_path / ".env"
     env_path.write_text(

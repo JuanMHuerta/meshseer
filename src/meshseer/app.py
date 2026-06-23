@@ -41,6 +41,7 @@ STATIC_DIR = Path(__file__).resolve().parent / "static"
 RECEIVER_UTILIZATION_WINDOW_MINUTES = 10
 ROUTES_MAX_LOOKBACK_DAYS = 7
 PUBLIC_CHAT_LIMIT = 40
+PUBLIC_NODE_RECENT_PACKETS_LIMIT = 8
 PRODUCTION_CSP = "; ".join(
     (
         "default-src 'self'",
@@ -572,6 +573,11 @@ def create_app(
         return public_node_detail_payload(
             node,
             insights=repository.get_node_insights(node_num, primary_only=True),
+            recent_packets=repository.list_recent_packets_from_node(
+                node_num,
+                limit=PUBLIC_NODE_RECENT_PACKETS_LIMIT,
+                primary_only=True,
+            ),
         )
 
     @public_router.websocket("/ws/events")

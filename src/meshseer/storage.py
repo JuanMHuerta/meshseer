@@ -2653,6 +2653,36 @@ class MeshRepository:
             ).fetchall()
         return [self._row_to_dict(row) for row in rows if row is not None]
 
+    def list_recent_packets_from_node(
+        self,
+        node_num: int,
+        *,
+        limit: int = 8,
+        primary_only: bool = False,
+    ) -> list[dict[str, Any]]:
+        clauses = ["p.from_node_num = ?"]
+        params: list[Any] = [node_num]
+        if primary_only:
+            clauses.append(self._primary_channel_clause("p.channel_index"))
+        where = " AND ".join(clauses)
+        with self._connect() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT
+                    p.*,
+                    n.short_name AS to_short_name,
+                    n.long_name AS to_long_name,
+                    n.node_id AS to_node_id
+                FROM packets AS p
+                LEFT JOIN nodes AS n ON n.node_num = p.to_node_num
+                WHERE {where}
+                ORDER BY p.id DESC
+                LIMIT ?
+                """,
+                (*params, limit),
+            ).fetchall()
+        return [self._row_to_dict(row) for row in rows if row is not None]
+
     def list_chat_messages(self, *, limit: int = 50, primary_only: bool = False) -> list[dict[str, Any]]:
         clauses = [
             "p.portnum = ?",

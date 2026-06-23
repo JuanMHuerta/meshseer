@@ -2834,6 +2834,10 @@ function setTrafficDrawerOpen(open) {
   if (trafficPanel) {
     trafficPanel.setAttribute("aria-hidden", open ? "false" : "true");
   }
+  if (railToggleTraffic) {
+    railToggleTraffic.classList.toggle("active", open);
+    railToggleTraffic.setAttribute("aria-expanded", String(open));
+  }
   if (mapViewport) {
     mapViewport.classList.toggle("traffic-open", open);
   }

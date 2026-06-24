@@ -212,9 +212,60 @@ def test_node_detail_shows_recent_packets_section(page):
         }
         """
     )
+    page.wait_for_function(
+        """
+        () => {
+          const root = document.querySelector('#node-detail');
+          return !!root && root.textContent.includes('First ');
+        }
+        """
+    )
 
-    assert page.locator("#node-detail .node-hud-section h4").text_content() == "Recent packets"
+    assert page.locator("#node-detail .node-hud-section h4", has_text="Recent packets").text_content() == "Recent packets"
     assert page.locator("#node-detail .node-packet-card, #node-detail .node-packets-empty").count() >= 1
+    assert page.locator("#node-detail .hud-metric-detail", has_text="First ").count() >= 1
+
+
+def test_packet_snr_is_rendered_in_node_detail_and_traffic_drawer(page):
+    open_nodes_rail(page)
+    node_rows = page.locator("#node-list [data-node-num]")
+    found_recent_packets = False
+    for index in range(min(node_rows.count(), 6)):
+        node_rows.nth(index).click()
+        expect_inspector_open(page)
+        page.wait_for_function(
+            """
+            () => {
+              const root = document.querySelector('#node-detail');
+              return !!root
+                && root.textContent.includes('Min')
+                && root.textContent.includes('Max')
+                && root.textContent.includes('Avg')
+                && root.textContent.includes('SNR');
+            }
+            """
+        )
+        if page.locator("#node-detail .node-packet-card").count() > 0:
+            found_recent_packets = True
+            break
+
+    assert page.locator("#node-detail .snr-card .hud-metric-meta").text_content() is not None
+    assert found_recent_packets is True
+    assert page.locator("#node-detail .node-packet-snr").count() >= 1
+
+    page.click("#rail-toggle-traffic")
+    expect_traffic_open(page)
+    page.wait_for_function(
+        """
+        () => {
+          const table = document.querySelector('#mesh-traffic table');
+          return !!table && table.textContent.includes('SNR');
+        }
+        """
+    )
+
+    assert page.locator("#mesh-traffic thead th").nth(4).text_content() == "SNR"
+    assert page.locator("#packets-body tr").first.locator("td").nth(4).text_content().strip().endswith("dB")
 
 
 def test_route_selection_includes_intermediate_nodes(page):

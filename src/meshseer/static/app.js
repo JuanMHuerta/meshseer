@@ -1240,8 +1240,19 @@ function routeIncludesNode(route, selectedNodeNum = state.selectedNodeNum) {
   return pathNodeNums.some((nodeNum) => Number(nodeNum) === targetNodeNum);
 }
 
+function routeTargetsNode(route, selectedNodeNum = state.selectedNodeNum) {
+  if (selectedNodeNum == null) {
+    return false;
+  }
+  const targetNodeNum = Number(selectedNodeNum);
+  if (!Number.isFinite(targetNodeNum)) {
+    return false;
+  }
+  return Number(route?.source_node_num) === targetNodeNum || Number(route?.destination_node_num) === targetNodeNum;
+}
+
 function routeSelected(route) {
-  return routeIncludesNode(route);
+  return routeTargetsNode(route);
 }
 
 function routeLatLngs(route, nowMs = Date.now()) {
@@ -1282,11 +1293,40 @@ function latestSelectedRoutesByDirection(routes) {
   });
 }
 
+function latestCompleteSelectedRouteGroup(routes) {
+  if (state.selectedNodeNum == null) {
+    return routes;
+  }
+  const endpointRoutes = [...routes]
+    .filter((route) => routeTargetsNode(route))
+    .sort((left, right) => {
+      const leftSeen = left?.received_at || left?.latest_received_at || "";
+      const rightSeen = right?.received_at || right?.latest_received_at || "";
+      return rightSeen.localeCompare(leftSeen);
+    });
+  const grouped = new Map();
+  for (const route of endpointRoutes) {
+    const key = route?.mesh_packet_id ?? routeKey(route);
+    const bucket = grouped.get(key) || { forward: null, return: null };
+    if (route?.direction === "forward" && !bucket.forward) {
+      bucket.forward = route;
+    } else if (route?.direction === "return" && !bucket.return) {
+      bucket.return = route;
+    }
+    grouped.set(key, bucket);
+    if (bucket.forward && bucket.return) {
+      return [bucket.forward, bucket.return];
+    }
+  }
+  return [];
+}
+
 function activeMeshRoutes(nowMs = Date.now()) {
   if (!state.showRoutes) {
     return [];
   }
-  const routes = visibleMeshRoutes(nowMs).filter((route) => {
+  const baseRoutes = state.selectedNodeNum == null ? visibleMeshRoutes(nowMs) : state.meshRoutes.routes.filter((route) => routeLatLngs(route, nowMs));
+  const routes = baseRoutes.filter((route) => {
     if (state.selectedNodeNum != null && !routeSelected(route)) {
       return false;
     }
@@ -1296,6 +1336,9 @@ function activeMeshRoutes(nowMs = Date.now()) {
     }
     return ageMinutes <= (routeSelected(route) ? SELECTED_ROUTE_WINDOW_MINUTES : NETWORK_ROUTE_WINDOW_MINUTES);
   });
+  if (state.selectedNodeNum != null) {
+    return latestCompleteSelectedRouteGroup(routes);
+  }
   return latestSelectedRoutesByDirection(routes);
 }
 
@@ -1844,6 +1887,7 @@ function sparklineGeometry(series, width = 212, height = 54, padding = 4) {
       linePath,
       lastX: (width - padding).toFixed(2),
       lastY: soloY.toFixed(2),
+      minValue,
       maxValue,
     };
   }
@@ -1860,6 +1904,7 @@ function sparklineGeometry(series, width = 212, height = 54, padding = 4) {
     linePath,
     lastX: last.x.toFixed(2),
     lastY: last.y.toFixed(2),
+    minValue,
     maxValue,
   };
 }
@@ -1965,11 +2010,163 @@ function channelUtilizationBlock(receiver) {
   `;
 }
 
-function metric(label, value, tone = "") {
+function metric(label, value, tone = "", detail = "") {
   return `
     <div class="hud-metric${tone ? ` ${tone}` : ""}">
       <span class="hud-metric-label">${escapeHtml(label)}</span>
       <span class="hud-metric-value">${escapeHtml(value)}</span>
+      ${detail ? `<span class="hud-metric-detail">${escapeHtml(detail)}</span>` : ""}
+    </div>
+  `;
+}
+
+function snrHistorySeries(items) {
+  return (Array.isArray(items) ? items : [])
+    .map((item) => ({
+      timestamp: item?.received_at || null,
+      value: Number(item?.rx_snr),
+    }))
+    .filter((sample) => Number.isFinite(sample.value))
+    .sort((left, right) => {
+      const leftMs = Date.parse(left.timestamp || "");
+      const rightMs = Date.parse(right.timestamp || "");
+      if (Number.isNaN(leftMs) && Number.isNaN(rightMs)) {
+        return 0;
+      }
+      if (Number.isNaN(leftMs)) {
+        return 1;
+      }
+      if (Number.isNaN(rightMs)) {
+        return -1;
+      }
+      return leftMs - rightMs;
+    });
+}
+
+function formatSparklineTime(value) {
+  if (!value) {
+    return "n/a";
+  }
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return "n/a";
+  }
+  return new Intl.DateTimeFormat([], {
+    hour12: false,
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(date);
+}
+
+function sparklineTickIndexes(length, maxTicks = 3) {
+  if (length <= 0) {
+    return [];
+  }
+  if (length === 1 || maxTicks <= 1) {
+    return [0];
+  }
+  if (length === 2 || maxTicks === 2) {
+    return [0, length - 1];
+  }
+  const indexes = [0, Math.round((length - 1) / 2), length - 1];
+  return [...new Set(indexes)];
+}
+
+function sparklineYTicks(geometry, height = 54, padding = 4) {
+  if (!geometry) {
+    return [];
+  }
+  const min = Number(geometry.minValue);
+  const max = Number(geometry.maxValue);
+  const innerHeight = height - (padding * 2);
+  if (!Number.isFinite(min) || !Number.isFinite(max)) {
+    return [];
+  }
+  if (min === max) {
+    return [{
+      label: formatNumber(max, 1, ""),
+      y: padding + (innerHeight / 2),
+    }];
+  }
+  const mid = min + ((max - min) / 2);
+  return [
+    { label: formatNumber(max, 1, ""), y: padding },
+    { label: formatNumber(mid, 1, ""), y: padding + (innerHeight / 2) },
+    { label: formatNumber(min, 1, ""), y: height - padding },
+  ];
+}
+
+function nodeSnrSparkline(series) {
+  if (!series.length) {
+    return "";
+  }
+
+  const geometry = sparklineGeometry(series);
+  if (!geometry) {
+    return "";
+  }
+
+  const xTicks = sparklineTickIndexes(series.length, 3).map((index) => ({
+    index,
+    label: formatSparklineTime(series[index]?.timestamp),
+  }));
+  const yTicks = sparklineYTicks(geometry);
+
+  return `
+    <div class="receiver-sparkline-frame channel detailed">
+      <div class="sparkline-chart-grid">
+        <div class="sparkline-y-axis mono-text" aria-hidden="true">
+          ${yTicks.map((tick) => `<span>${escapeHtml(tick.label)}</span>`).join("")}
+        </div>
+        <div class="sparkline-plot">
+          <svg
+            class="receiver-sparkline-graphic"
+            viewBox="0 0 212 54"
+            aria-label="Node SNR history"
+            role="img"
+          >
+            ${yTicks.map((tick) => `
+              <line
+                class="receiver-sparkline-guide"
+                x1="4"
+                x2="208"
+                y1="${Number(tick.y).toFixed(2)}"
+                y2="${Number(tick.y).toFixed(2)}"
+              ></line>
+            `).join("")}
+            <path class="receiver-sparkline-area" d="${geometry.areaPath}"></path>
+            <path class="receiver-sparkline-line" d="${geometry.linePath}"></path>
+            <circle class="receiver-sparkline-dot" cx="${geometry.lastX}" cy="${geometry.lastY}" r="3.5"></circle>
+          </svg>
+        </div>
+      </div>
+      <div class="sparkline-x-axis mono-text" aria-hidden="true">
+        ${xTicks.map((tick) => `
+          <span class="sparkline-x-tick">
+            <span class="sparkline-x-notch"></span>
+            <span>${escapeHtml(tick.label)}</span>
+          </span>
+        `).join("")}
+      </div>
+    </div>
+  `;
+}
+
+function nodeSnrDetail(insights) {
+  const min = formatNumber(insights?.worst_rx_snr, 1, "");
+  const max = formatNumber(insights?.best_rx_snr, 1, "");
+  const avg = formatNumber(insights?.avg_rx_snr, 1, "");
+  return `Min ${min} · Max ${max} · Avg ${avg}`;
+}
+
+function nodeSnrCard(node, insights, recentPackets, freshness) {
+  const sparkline = nodeSnrSparkline(snrHistorySeries(recentPackets));
+  return `
+    <div class="hud-metric snr-card${freshness === "stale" ? " muted" : ""}">
+      <span class="hud-metric-label">SNR</span>
+      <span class="hud-metric-value">${escapeHtml(formatNumber(node?.last_snr, 1, " dB"))}</span>
+      ${sparkline}
+      <span class="hud-metric-meta mono-text">${escapeHtml(nodeSnrDetail(insights))}</span>
     </div>
   `;
 }
@@ -2412,6 +2609,7 @@ function nodeRecentPacketMarkup(packet) {
   const pathLabel = packet?.path_label || packetPathLabel(packet);
   const destinationLabel = packet?.destination_label || toNodeLabel(packet);
   const textPreview = typeof packet?.text_preview === "string" ? packet.text_preview.trim() : "";
+  const snrLabel = formatNumber(packet?.rx_snr, 1, " dB");
   return `
     <article class="node-packet-card ${pathTone}">
       <div class="node-packet-meta">
@@ -2420,7 +2618,10 @@ function nodeRecentPacketMarkup(packet) {
       </div>
       <div class="node-packet-tags">
         <span class="port-badge ${category}">${escapeHtml(portBadgeText(packet?.portnum))}</span>
-        <span class="node-packet-port mono-text">${escapeHtml(packet?.portnum || "Unknown")}</span>
+        <div class="node-packet-tag-group">
+          <span class="node-packet-port mono-text">${escapeHtml(packet?.portnum || "Unknown")}</span>
+          <span class="node-packet-snr mono-text">${escapeHtml(`SNR ${snrLabel}`)}</span>
+        </div>
       </div>
       <p class="node-packet-destination">To ${escapeHtml(destinationLabel)}</p>
       ${textPreview ? `<p class="node-packet-text">${escapeHtml(textPreview)}</p>` : ""}
@@ -2470,6 +2671,190 @@ function renderNodeRecentPackets(node, detailPayload) {
   `;
 }
 
+function tracerouteAttemptStatusLabel(status) {
+  if (typeof status !== "string" || !status.trim()) {
+    return "Unknown";
+  }
+  const normalized = status.trim().toLowerCase();
+  if (normalized === "success") return "Success";
+  if (normalized === "ack_only") return "Ack only";
+  if (normalized === "timeout") return "Timeout";
+  if (normalized === "error") return "Error";
+  return normalized.replaceAll("_", " ").replace(/\b\w/g, (char) => char.toUpperCase());
+}
+
+function tracerouteAttemptTone(attempt) {
+  const status = String(attempt?.status || "").toLowerCase();
+  if (status === "success") {
+    return "success";
+  }
+  if (status === "ack_only") {
+    return "partial";
+  }
+  return "failed";
+}
+
+function tracerouteRouteLabel(route) {
+  const pathNodeNums = Array.isArray(route?.path_node_nums) ? route.path_node_nums : [];
+  if (!pathNodeNums.length) {
+    return "Route unavailable";
+  }
+  return pathNodeNums.map((nodeNum) => {
+    const node = nodeByNum(nodeNum);
+    return nodeLabel(node || { node_num: nodeNum });
+  }).join(" → ");
+}
+
+function tracerouteResultLabel(attempt) {
+  return tracerouteAttemptStatusLabel(attempt?.status).toUpperCase().replaceAll(" ", "_");
+}
+
+function traceroutePathNodes(pathNodeNums) {
+  return (Array.isArray(pathNodeNums) ? pathNodeNums : []).map((nodeNum) => {
+    const node = nodeByNum(nodeNum);
+    return {
+      nodeNum,
+      label: nodeLabel(node || { node_num: nodeNum }),
+      isSelected: Number(nodeNum) === Number(state.selectedNodeNum),
+    };
+  });
+}
+
+function traceroutePathMarkup(pathNodeNums) {
+  const nodes = traceroutePathNodes(pathNodeNums);
+  if (!nodes.length) {
+    return `<p class="traceroute-empty">Route unavailable</p>`;
+  }
+  return `
+    <div class="traceroute-path">
+      ${nodes.map((node, index) => `
+        <span class="traceroute-path-node${node.isSelected ? " selected" : ""}">${escapeHtml(node.label)}</span>
+        ${index < nodes.length - 1 ? '<span class="traceroute-path-arrow" aria-hidden="true">→</span>' : ""}
+      `).join("")}
+    </div>
+  `;
+}
+
+function tracerouteMetaPill(label, value, tone = "") {
+  return `
+    <span class="traceroute-meta-pill${tone ? ` ${tone}` : ""}">
+      <span class="traceroute-meta-pill-label">${escapeHtml(label)}</span>
+      <span class="traceroute-meta-pill-value">${escapeHtml(value)}</span>
+    </span>
+  `;
+}
+
+function renderNodeTracerouteSection(detailPayload) {
+  const lastAttempt = detailPayload?.last_traceroute_attempt || null;
+  const lastSuccessful = detailPayload?.last_successful_traceroute_attempt || null;
+  const latestComplete = detailPayload?.latest_complete_traceroute || null;
+  if (!lastAttempt && !lastSuccessful && !latestComplete) {
+    return `
+      <section class="node-hud-section">
+        <div class="node-hud-section-head">
+          <h4>Traceroute</h4>
+        </div>
+        <div class="node-packets-empty">
+          <p>No traceroute attempts recorded for this node yet.</p>
+        </div>
+      </section>
+    `;
+  }
+
+  const latestCompleteRequestMeshId = latestComplete?.request_mesh_packet_id != null
+    ? Number(latestComplete.request_mesh_packet_id)
+    : null;
+  const latestAttemptRequestId = lastAttempt?.request_mesh_packet_id != null ? Number(lastAttempt.request_mesh_packet_id) : null;
+  const showLastAttempt = lastAttempt && (
+    latestComplete == null
+    || latestAttemptRequestId == null
+    || latestCompleteRequestMeshId == null
+    || latestAttemptRequestId !== latestCompleteRequestMeshId
+    || String(lastAttempt.status || "").toLowerCase() !== "success"
+  );
+
+  const primaryTone = latestComplete ? "success" : (lastAttempt ? tracerouteAttemptTone(lastAttempt) : "failed");
+  const primaryStatusLabel = latestComplete
+    ? "Complete path captured"
+    : tracerouteAttemptStatusLabel(lastAttempt?.status);
+  const completeSeenAt = latestComplete?.received_at || lastSuccessful?.requested_at || lastAttempt?.requested_at || null;
+  const completeFullPath = Array.isArray(latestComplete?.full_path_node_nums)
+    ? latestComplete.full_path_node_nums
+    : [];
+  const completeForwardPath = Array.isArray(latestComplete?.forward_path_node_nums)
+    ? latestComplete.forward_path_node_nums
+    : [];
+  const completeReturnPath = Array.isArray(latestComplete?.return_path_node_nums)
+    ? latestComplete.return_path_node_nums
+    : [];
+  const routeMarkup = latestComplete
+    ? traceroutePathMarkup(completeFullPath)
+    : traceroutePathMarkup((lastSuccessful?.route?.path_node_nums || lastAttempt?.route?.path_node_nums || []));
+  const metaPills = [];
+  if (completeSeenAt) {
+    metaPills.push(tracerouteMetaPill("Seen", formatTime(completeSeenAt)));
+  }
+  if (latestComplete?.hop_count != null) {
+    metaPills.push(tracerouteMetaPill("Hops", String(latestComplete.hop_count)));
+  }
+  if (latestComplete?.request_mesh_packet_id != null) {
+    metaPills.push(tracerouteMetaPill("Request", `#${latestComplete.request_mesh_packet_id}`));
+  } else if (lastSuccessful?.request_mesh_packet_id != null) {
+    metaPills.push(tracerouteMetaPill("Request", `#${lastSuccessful.request_mesh_packet_id}`));
+  } else if (lastAttempt?.request_mesh_packet_id != null) {
+    metaPills.push(tracerouteMetaPill("Request", `#${lastAttempt.request_mesh_packet_id}`));
+  }
+  if (latestComplete?.discovery_request_id != null) {
+    metaPills.push(tracerouteMetaPill("Trace", `#${latestComplete.discovery_request_id}`));
+  }
+  if (completeForwardPath.length && completeReturnPath.length) {
+    metaPills.push(tracerouteMetaPill("Pattern", "Round trip", "success"));
+  } else if (completeForwardPath.length) {
+    metaPills.push(tracerouteMetaPill("Pattern", "Forward only", "partial"));
+  }
+  const debugSummary = showLastAttempt
+    ? `${formatTime(lastAttempt.requested_at)} · ${tracerouteResultLabel(lastAttempt)}`
+    : null;
+  const routeTitle = latestComplete ? "Latest route" : primaryStatusLabel;
+
+  return `
+    <section class="node-hud-section">
+      <div class="node-hud-section-head">
+        <h4>Traceroute</h4>
+      </div>
+      <article class="traceroute-summary-card ${primaryTone}">
+        <div class="traceroute-summary-head">
+          <div>
+            <h5>${escapeHtml(routeTitle)}</h5>
+          </div>
+          <span class="traceroute-inline-status ${primaryTone}">${escapeHtml(latestComplete ? "COMPLETE" : tracerouteResultLabel(lastAttempt))}</span>
+        </div>
+
+        ${metaPills.length ? `
+          <div class="traceroute-meta-row">
+            ${metaPills.join("")}
+          </div>
+        ` : ""}
+
+        <div class="traceroute-route-card">
+          <div class="traceroute-route-head">
+            <span class="traceroute-route-label">Route</span>
+            ${completeSeenAt ? `<span class="traceroute-route-age mono-text">${escapeHtml(formatRelativeTime(completeSeenAt))}</span>` : ""}
+          </div>
+          ${routeMarkup}
+        </div>
+
+        ${debugSummary || (showLastAttempt && lastAttempt?.detail) ? `
+          <div class="traceroute-debug-row ${tracerouteAttemptTone(lastAttempt)}">
+            ${debugSummary ? `<span class="traceroute-debug-value strong">${escapeHtml(debugSummary)}</span>` : ""}
+            ${lastAttempt?.detail ? `<span class="traceroute-debug-value">${escapeHtml(lastAttempt.detail)}</span>` : ""}
+          </div>
+        ` : ""}
+      </article>
+    </section>
+  `;
+}
+
 function renderNodeDetail(node) {
   if (!node) {
     nodeDetail.innerHTML = `
@@ -2482,32 +2867,35 @@ function renderNodeDetail(node) {
   }
 
   const detailPayload = state.nodeDetails.get(node.node_num);
+  const detailNode = detailPayload?.node ? { ...node, ...detailPayload.node } : node;
   const insights = detailPayload?.insights || null;
-  const freshness = nodeFreshness(node);
+  const recentPackets = Array.isArray(detailPayload?.recent_packets) ? detailPayload.recent_packets : [];
+  const freshness = nodeFreshness(detailNode);
   const hudTone = freshness;
-  const pathLabel = nodePathLabel(node);
-  const roleLabel = [node.role, node.hardware_model].filter(Boolean).join(" / ") || "Node";
+  const pathLabel = nodePathLabel(detailNode);
+  const roleLabel = [detailNode.role, detailNode.hardware_model].filter(Boolean).join(" / ") || "Node";
 
   nodeDetail.innerHTML = `
     <div class="node-hud-card ${hudTone}">
       <div class="node-hud-head">
         <div>
-          <h3>${escapeHtml(nodeLabel(node))}</h3>
-          <p class="node-hud-subtitle">${escapeHtml(`${roleLabel} · ${nodePathDescription(node)}`)}</p>
+          <h3>${escapeHtml(nodeLabel(detailNode))}</h3>
+          <p class="node-hud-subtitle">${escapeHtml(`${roleLabel} · ${nodePathDescription(detailNode)}`)}</p>
         </div>
-        <div class="node-hud-state ${hudTone}">${escapeHtml(freshnessLabel(node))}</div>
+        <div class="node-hud-state ${hudTone}">${escapeHtml(freshnessLabel(detailNode))}</div>
       </div>
 
       <div class="node-hud-metrics">
+        ${nodeSnrCard(detailNode, insights, recentPackets, freshness)}
         ${metric("Path", pathLabel)}
-        ${metric("Hops Away", node.hops_away ?? "n/a")}
-        ${metric("Last Heard", formatTime(node.last_heard_at))}
-        ${metric("SNR", formatNumber(node.last_snr, 1, " dB"), freshness === "stale" ? "muted" : "")}
+        ${metric("Hops Away", detailNode.hops_away ?? "n/a")}
+        ${metric("Last Heard", formatTime(detailNode.last_heard_at), "", detailNode.first_heard_at ? `First ${formatTime(detailNode.first_heard_at)}` : "")}
         ${metric("Packets Heard", formatWholeNumber(insights?.heard_packets))}
-        ${metric("Battery", node.battery_level == null ? "n/a" : `${Math.round(node.battery_level)}%`)}
+        ${metric("Battery", detailNode.battery_level == null ? "n/a" : `${Math.round(detailNode.battery_level)}%`)}
       </div>
 
-      ${renderNodeRecentPackets(node, detailPayload)}
+      ${renderNodeTracerouteSection(detailPayload)}
+      ${renderNodeRecentPackets(detailNode, detailPayload)}
     </div>
   `;
 }
@@ -3174,6 +3562,7 @@ function packetRowMarkup(packet) {
           <span class="port-badge ${category}">${escapeHtml(portBadgeText(packet.portnum))}</span>
         </div>
       </td>
+      <td class="mono-text">${escapeHtml(formatNumber(packet.rx_snr, 1, " dB"))}</td>
       <td class="${pathCellClass}">
         <div class="port-cell">${pathContent}</div>
       </td>
@@ -3303,7 +3692,7 @@ function renderPackets(items) {
   if (!filteredItems.length) {
     packetsBody.innerHTML = `
       <tr>
-        <td colspan="5" class="empty-cell">No packets match the current filter.</td>
+        <td colspan="6" class="empty-cell">No packets match the current filter.</td>
       </tr>
     `;
     updateOverviewStats();

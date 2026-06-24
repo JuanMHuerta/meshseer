@@ -41,7 +41,7 @@ STATIC_DIR = Path(__file__).resolve().parent / "static"
 RECEIVER_UTILIZATION_WINDOW_MINUTES = 10
 ROUTES_MAX_LOOKBACK_DAYS = 7
 PUBLIC_CHAT_LIMIT = 40
-PUBLIC_NODE_RECENT_PACKETS_LIMIT = 8
+PUBLIC_NODE_RECENT_PACKETS_LIMIT = 12
 PRODUCTION_CSP = "; ".join(
     (
         "default-src 'self'",
@@ -570,6 +570,28 @@ def create_app(
         node = repository.get_node(node_num, primary_only=True)
         if node is None:
             raise HTTPException(status_code=404, detail="node not found")
+        last_traceroute_attempt = repository.get_last_traceroute_attempt_for_node(node_num)
+        if last_traceroute_attempt is not None:
+            last_traceroute_attempt = {
+                **last_traceroute_attempt,
+                "route": repository.get_traceroute_route_for_attempt(
+                    target_node_num=node_num,
+                    response_mesh_packet_id=last_traceroute_attempt.get("response_mesh_packet_id"),
+                ),
+            }
+        last_successful_traceroute_attempt = repository.get_last_successful_traceroute_attempt_for_node(node_num)
+        if last_successful_traceroute_attempt is not None:
+            last_successful_traceroute_attempt = {
+                **last_successful_traceroute_attempt,
+                "route": repository.get_traceroute_route_for_attempt(
+                    target_node_num=node_num,
+                    response_mesh_packet_id=last_successful_traceroute_attempt.get("response_mesh_packet_id"),
+                ),
+            }
+        latest_complete_traceroute = repository.get_latest_complete_traceroute_for_node(
+            node_num,
+            primary_only=True,
+        )
         return public_node_detail_payload(
             node,
             insights=repository.get_node_insights(node_num, primary_only=True),
@@ -578,6 +600,9 @@ def create_app(
                 limit=PUBLIC_NODE_RECENT_PACKETS_LIMIT,
                 primary_only=True,
             ),
+            last_traceroute_attempt=last_traceroute_attempt,
+            last_successful_traceroute_attempt=last_successful_traceroute_attempt,
+            latest_complete_traceroute=latest_complete_traceroute,
         )
 
     @public_router.websocket("/ws/events")

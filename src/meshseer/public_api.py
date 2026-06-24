@@ -12,6 +12,7 @@ PUBLIC_PACKET_FIELDS = (
     "from_node_num",
     "to_node_num",
     "portnum",
+    "rx_snr",
 )
 
 PUBLIC_CHAT_FIELDS = (
@@ -26,6 +27,7 @@ PUBLIC_NODE_RECENT_PACKET_FIELDS = (
     "to_node_num",
     "portnum",
     "text_preview",
+    "rx_snr",
 )
 
 PUBLIC_NODE_FIELDS = (
@@ -54,7 +56,7 @@ PUBLIC_NODE_FIELDS = (
 )
 
 PUBLIC_NODE_DETAIL_FIELDS = tuple(
-    field for field in PUBLIC_NODE_FIELDS if field not in {"latitude", "longitude"}
+    [field for field in PUBLIC_NODE_FIELDS if field not in {"latitude", "longitude"}] + ["first_heard_at"]
 )
 
 PUBLIC_NODE_INSIGHTS_FIELDS = (
@@ -70,6 +72,39 @@ PUBLIC_NODE_INSIGHTS_FIELDS = (
     "last_hops_taken",
     "last_portnum",
     "last_seen_at",
+)
+
+PUBLIC_TRACEROUTE_ATTEMPT_FIELDS = (
+    "id",
+    "target_node_num",
+    "requested_at",
+    "completed_at",
+    "hop_limit",
+    "status",
+    "request_mesh_packet_id",
+    "response_mesh_packet_id",
+    "detail",
+)
+
+PUBLIC_TRACEROUTE_ROUTE_FIELDS = (
+    "mesh_packet_id",
+    "received_at",
+    "direction",
+    "source_node_num",
+    "destination_node_num",
+    "path_node_nums",
+    "hop_count",
+)
+
+PUBLIC_COMPLETE_TRACEROUTE_FIELDS = (
+    "mesh_packet_id",
+    "received_at",
+    "request_mesh_packet_id",
+    "discovery_request_id",
+    "forward_path_node_nums",
+    "return_path_node_nums",
+    "full_path_node_nums",
+    "hop_count",
 )
 
 
@@ -222,11 +257,33 @@ def public_node_detail_payload(
     *,
     insights: Mapping[str, Any],
     recent_packets: list[Mapping[str, Any]],
+    last_traceroute_attempt: Mapping[str, Any] | None = None,
+    last_successful_traceroute_attempt: Mapping[str, Any] | None = None,
+    latest_complete_traceroute: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
+    last_attempt_payload = (
+        None if last_traceroute_attempt is None else _pick(last_traceroute_attempt, PUBLIC_TRACEROUTE_ATTEMPT_FIELDS)
+    )
+    last_successful_payload = (
+        None
+        if last_successful_traceroute_attempt is None
+        else _pick(last_successful_traceroute_attempt, PUBLIC_TRACEROUTE_ATTEMPT_FIELDS)
+    )
+    if last_attempt_payload is not None:
+        route = last_traceroute_attempt.get("route")
+        last_attempt_payload["route"] = None if route is None else _pick(route, PUBLIC_TRACEROUTE_ROUTE_FIELDS)
+    if last_successful_payload is not None:
+        route = last_successful_traceroute_attempt.get("route")
+        last_successful_payload["route"] = None if route is None else _pick(route, PUBLIC_TRACEROUTE_ROUTE_FIELDS)
     return {
         "node": public_node_detail_node_payload(node),
         "insights": _pick(insights, PUBLIC_NODE_INSIGHTS_FIELDS),
         "recent_packets": public_node_recent_packets_payload(recent_packets),
+        "last_traceroute_attempt": last_attempt_payload,
+        "last_successful_traceroute_attempt": last_successful_payload,
+        "latest_complete_traceroute": (
+            None if latest_complete_traceroute is None else _pick(latest_complete_traceroute, PUBLIC_COMPLETE_TRACEROUTE_FIELDS)
+        ),
     }
 
 

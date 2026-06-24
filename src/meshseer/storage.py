@@ -81,6 +81,13 @@ class MeshRepository:
         connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
     @staticmethod
+    def _earliest_timestamp(*values: Any) -> str | None:
+        candidates = [value for value in values if isinstance(value, str) and value]
+        if not candidates:
+            return None
+        return min(candidates)
+
+    @staticmethod
     def _coerce_optional_int(value: Any) -> int | None:
         if isinstance(value, bool):
             return None
@@ -335,6 +342,7 @@ class MeshRepository:
                     hardware_model,
                     role,
                     channel_index,
+                    first_heard_at,
                     last_heard_at,
                     last_snr,
                     latitude,
@@ -347,12 +355,13 @@ class MeshRepository:
                     via_mqtt,
                     raw_json,
                     updated_at
-                ) VALUES (?, ?, NULL, NULL, NULL, NULL, ?, ?, ?, NULL, NULL, NULL, NULL, NULL, NULL, NULL, ?, ?, ?)
+                ) VALUES (?, ?, NULL, NULL, NULL, NULL, ?, ?, ?, ?, NULL, NULL, NULL, NULL, NULL, NULL, NULL, ?, ?, ?)
                 """,
                 (
                     node_num,
                     packet_node_id,
                     packet_channel_index,
+                    received_at,
                     received_at,
                     packet_rx_snr,
                     None if packet_via_mqtt is None else int(bool(packet_via_mqtt)),
@@ -362,6 +371,7 @@ class MeshRepository:
             )
             current_primary = cls._is_primary_channel_value(packet_channel_index)
         else:
+            new_first_heard_at = cls._earliest_timestamp(existing.get("first_heard_at"), received_at)
             new_last_heard_at = existing.get("last_heard_at")
             new_last_snr = existing.get("last_snr")
             if new_last_heard_at is None or str(new_last_heard_at) <= received_at:
@@ -384,6 +394,7 @@ class MeshRepository:
                 UPDATE nodes
                 SET node_id = ?,
                     channel_index = ?,
+                    first_heard_at = ?,
                     last_heard_at = ?,
                     last_snr = ?,
                     via_mqtt = ?
@@ -392,6 +403,7 @@ class MeshRepository:
                 (
                     new_node_id,
                     new_channel_index,
+                    new_first_heard_at,
                     new_last_heard_at,
                     new_last_snr,
                     None if new_via_mqtt is None else int(bool(new_via_mqtt)),
@@ -433,6 +445,24 @@ class MeshRepository:
                 continue
             cls._observe_packet_node_activity(connection, packet)
             observed_node_nums.add(node_num)
+
+    @classmethod
+    def _backfill_node_first_heard_at(cls, connection: sqlite3.Connection) -> None:
+        connection.execute(
+            """
+            UPDATE nodes
+            SET first_heard_at = COALESCE(
+                (
+                    SELECT MIN(p.received_at)
+                    FROM packets AS p
+                    WHERE p.from_node_num = nodes.node_num
+                ),
+                last_heard_at,
+                updated_at
+            )
+            WHERE first_heard_at IS NULL
+            """
+        )
 
     @staticmethod
     def _append_node_metric_history(connection: sqlite3.Connection, node: NodeRecord) -> None:
@@ -814,6 +844,7 @@ class MeshRepository:
                     hardware_model TEXT,
                     role TEXT,
                     channel_index INTEGER,
+                    first_heard_at TEXT,
                     last_heard_at TEXT,
                     last_snr REAL,
                     latitude REAL,
@@ -909,6 +940,7 @@ class MeshRepository:
             self._ensure_column(connection, "packets", "via_mqtt", "INTEGER")
             self._ensure_column(connection, "packets", "transport_mechanism", "TEXT")
             self._ensure_column(connection, "nodes", "channel_index", "INTEGER")
+            self._ensure_column(connection, "nodes", "first_heard_at", "TEXT")
             self._ensure_column(connection, "nodes", "hops_away", "INTEGER")
             self._ensure_column(connection, "nodes", "via_mqtt", "INTEGER")
             self._ensure_column(connection, "daily_node_totals", "mapped_nodes", "INTEGER")
@@ -932,6 +964,7 @@ class MeshRepository:
             self._backfill_node_channels(connection)
             self._backfill_packet_metadata(connection)
             self._backfill_node_metadata(connection)
+            self._backfill_node_first_heard_at(connection)
             self._backfill_node_activity_from_packets(connection)
             self._backfill_node_metric_history(connection)
             self._backfill_packet_traffic_rollups(connection)
@@ -1854,6 +1887,171 @@ class MeshRepository:
             },
         }
 
+    def get_traceroute_route_for_attempt(
+        self,
+        *,
+        target_node_num: int,
+        response_mesh_packet_id: int | None,
+    ) -> dict[str, Any] | None:
+        if response_mesh_packet_id is None:
+            return None
+
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT
+                    packet_id,
+                    mesh_packet_id,
+                    received_at,
+                    portnum,
+                    variant,
+                    direction,
+                    source_node_num,
+                    destination_node_num,
+                    path_node_nums_json,
+                    edge_snr_db_json,
+                    hop_count
+                FROM route_observations
+                WHERE mesh_packet_id = ?
+                ORDER BY
+                    CASE
+                        WHEN destination_node_num = ? THEN 0
+                        WHEN source_node_num = ? THEN 1
+                        ELSE 2
+                    END,
+                    CASE WHEN direction = 'forward' THEN 0 ELSE 1 END,
+                    hop_count ASC,
+                    packet_id DESC
+                LIMIT 1
+                """,
+                (response_mesh_packet_id, target_node_num, target_node_num),
+            ).fetchall()
+
+        for row in rows:
+            route = self._route_observation_row_to_dict(row)
+            if route is not None:
+                return route
+        return None
+
+    def get_latest_complete_traceroute_for_node(
+        self,
+        target_node_num: int,
+        *,
+        primary_only: bool = False,
+    ) -> dict[str, Any] | None:
+        clauses = [
+            "variant IN ('traceroute', 'route_reply')",
+            "(source_node_num = ? OR destination_node_num = ?)",
+        ]
+        params: list[Any] = [target_node_num, target_node_num]
+        if primary_only:
+            clauses.append(self._primary_channel_clause())
+        where = self._where_clause(clauses)
+
+        with self._connect() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT
+                    packet_id,
+                    mesh_packet_id,
+                    received_at,
+                    portnum,
+                    variant,
+                    direction,
+                    source_node_num,
+                    destination_node_num,
+                    path_node_nums_json,
+                    edge_snr_db_json,
+                    hop_count
+                FROM route_observations
+                {where}
+                ORDER BY received_at DESC, packet_id DESC
+                """,
+                params,
+            ).fetchall()
+
+            grouped: dict[int, dict[str, Any]] = {}
+            latest_complete: dict[str, Any] | None = None
+            for row in rows:
+                route = self._route_observation_row_to_dict(row)
+                if route is None:
+                    continue
+                mesh_packet_id = self._coerce_optional_int(route.get("mesh_packet_id"))
+                if mesh_packet_id is None:
+                    continue
+                bucket = grouped.setdefault(
+                    mesh_packet_id,
+                    {
+                        "mesh_packet_id": mesh_packet_id,
+                        "received_at": route.get("received_at"),
+                        "forward": None,
+                        "return": None,
+                    },
+                )
+                direction = route.get("direction")
+                if direction == "forward" and bucket["forward"] is None:
+                    bucket["forward"] = route
+                elif direction == "return" and bucket["return"] is None:
+                    bucket["return"] = route
+                if bucket["forward"] is not None and bucket["return"] is not None:
+                    latest_complete = bucket
+                    break
+
+            if latest_complete is None:
+                return None
+
+            forward = latest_complete["forward"]
+            reverse = latest_complete["return"]
+            forward_path = self._coerce_optional_int_list(forward.get("path_node_nums")) or []
+            reverse_path = self._coerce_optional_int_list(reverse.get("path_node_nums")) or []
+            full_path = forward_path + reverse_path[1:] if reverse_path else forward_path
+
+            request_mesh_packet_id = None
+            discovery_request_id = None
+            attempt_row = connection.execute(
+                """
+                SELECT request_mesh_packet_id
+                FROM traceroute_attempts
+                WHERE response_mesh_packet_id = ?
+                ORDER BY COALESCE(completed_at, requested_at) DESC, id DESC
+                LIMIT 1
+                """,
+                (latest_complete["mesh_packet_id"],),
+            ).fetchone()
+            if attempt_row is not None:
+                request_mesh_packet_id = self._coerce_optional_int(attempt_row["request_mesh_packet_id"])
+            packet_row = connection.execute(
+                """
+                SELECT raw_json
+                FROM packets
+                WHERE mesh_packet_id = ?
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (latest_complete["mesh_packet_id"],),
+            ).fetchone()
+            try:
+                raw_json = json.loads(None if packet_row is None else packet_row["raw_json"] or "{}")
+            except (TypeError, ValueError):
+                raw_json = {}
+            if isinstance(raw_json, dict):
+                decoded = raw_json.get("decoded")
+                if isinstance(decoded, dict):
+                    discovery_request_id = self._coerce_optional_int(decoded.get("requestId"))
+            if request_mesh_packet_id is None:
+                request_mesh_packet_id = discovery_request_id
+
+        return {
+            "mesh_packet_id": latest_complete["mesh_packet_id"],
+            "received_at": latest_complete["received_at"],
+            "request_mesh_packet_id": request_mesh_packet_id,
+            "discovery_request_id": discovery_request_id,
+            "forward_path_node_nums": forward_path,
+            "return_path_node_nums": reverse_path,
+            "full_path_node_nums": full_path,
+            "hop_count": max(0, len(full_path) - 1),
+        }
+
     def get_mesh_links(self, *, primary_only: bool = False) -> dict[str, Any]:
         clauses = ["portnum = ?"]
         params: list[Any] = ["NEIGHBORINFO_APP"]
@@ -2440,6 +2638,51 @@ class MeshRepository:
             ).fetchall()
         return [self._row_to_dict(row) for row in rows if row is not None]
 
+    def list_recent_traceroute_attempts_for_node(
+        self,
+        target_node_num: int,
+        *,
+        limit: int = 10,
+        status: str | None = None,
+    ) -> list[dict[str, Any]]:
+        query = """
+            SELECT
+                a.*,
+                n.short_name AS target_short_name,
+                n.long_name AS target_long_name,
+                n.node_id AS target_node_id
+            FROM traceroute_attempts AS a
+            LEFT JOIN nodes AS n ON n.node_num = a.target_node_num
+            WHERE a.target_node_num = ?
+        """
+        params: list[Any] = [target_node_num]
+        if status is not None:
+            query += " AND a.status = ?"
+            params.append(status)
+        query += """
+            ORDER BY COALESCE(a.completed_at, a.requested_at) DESC, a.id DESC
+            LIMIT ?
+        """
+        params.append(limit)
+        with self._connect() as connection:
+            rows = connection.execute(query, tuple(params)).fetchall()
+        return [self._row_to_dict(row) for row in rows if row is not None]
+
+    def get_last_traceroute_attempt_for_node(self, target_node_num: int) -> dict[str, Any] | None:
+        attempts = self.list_recent_traceroute_attempts_for_node(target_node_num, limit=1)
+        return attempts[0] if attempts else None
+
+    def get_last_successful_traceroute_attempt_for_node(
+        self,
+        target_node_num: int,
+    ) -> dict[str, Any] | None:
+        attempts = self.list_recent_traceroute_attempts_for_node(
+            target_node_num,
+            limit=1,
+            status="success",
+        )
+        return attempts[0] if attempts else None
+
     def get_last_traceroute_attempt(self) -> dict[str, Any] | None:
         attempts = self.list_recent_traceroute_attempts(limit=1)
         return attempts[0] if attempts else None
@@ -2501,12 +2744,17 @@ class MeshRepository:
     def upsert_node(self, node: NodeRecord) -> None:
         with self._connect() as connection:
             existing_row = connection.execute(
-                "SELECT channel_index, latitude, longitude FROM nodes WHERE node_num = ?",
+                "SELECT channel_index, latitude, longitude, first_heard_at FROM nodes WHERE node_num = ?",
                 (node.node_num,),
             ).fetchone()
             existing = self._row_to_dict(existing_row)
             previous_primary = bool(existing and self._is_primary_channel_value(existing.get("channel_index")))
             previous_mapped = bool(previous_primary and self._node_has_coordinates(existing))
+            first_heard_at = self._earliest_timestamp(
+                None if existing is None else existing.get("first_heard_at"),
+                node.last_heard_at,
+                node.updated_at,
+            )
             connection.execute(
                 """
                 INSERT INTO nodes (
@@ -2517,6 +2765,7 @@ class MeshRepository:
                     hardware_model,
                     role,
                     channel_index,
+                    first_heard_at,
                     last_heard_at,
                     last_snr,
                     latitude,
@@ -2529,7 +2778,7 @@ class MeshRepository:
                     via_mqtt,
                     raw_json,
                     updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(node_num) DO UPDATE SET
                     node_id = excluded.node_id,
                     short_name = excluded.short_name,
@@ -2537,6 +2786,7 @@ class MeshRepository:
                     hardware_model = excluded.hardware_model,
                     role = excluded.role,
                     channel_index = excluded.channel_index,
+                    first_heard_at = excluded.first_heard_at,
                     last_heard_at = excluded.last_heard_at,
                     last_snr = excluded.last_snr,
                     latitude = excluded.latitude,
@@ -2558,6 +2808,7 @@ class MeshRepository:
                     node.hardware_model,
                     node.role,
                     node.channel_index,
+                    first_heard_at,
                     node.last_heard_at,
                     node.last_snr,
                     node.latitude,

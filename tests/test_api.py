@@ -245,7 +245,7 @@ def test_api_routes_and_filters(tmp_path):
     assert "channel_index" not in packets.json()[0]
     assert "hop_limit" not in packets.json()[0]
     assert "hop_start" not in packets.json()[0]
-    assert "rx_snr" not in packets.json()[0]
+    assert packets.json()[0]["rx_snr"] == 6.5
     assert "via_mqtt" not in packets.json()[0]
     assert "from_node_id" not in packets.json()[0]
     assert "payload_base64" not in packets.json()[0]
@@ -262,6 +262,7 @@ def test_api_routes_and_filters(tmp_path):
     assert node.json()["recent_packets"][0]["text_preview"] == "hello mesh"
     assert node.json()["recent_packets"][0]["destination_label"] == "Broadcast"
     assert node.json()["recent_packets"][0]["path_label"] == "Direct"
+    assert node.json()["recent_packets"][0]["rx_snr"] == 6.5
     assert "raw_json" not in node.json()["recent_packets"][0]
     assert "mesh_packet_id" not in node.json()["recent_packets"][0]
     assert "longitude" not in node.json()["node"]
@@ -750,6 +751,214 @@ def test_node_detail_exposes_recent_packets_from_selected_node(tmp_path):
     assert recent_packets[1]["destination_label"] == "GAMMA"
     assert recent_packets[1]["path_label"] == "Direct"
     assert recent_packets[2]["path_label"] == "Direct"
+
+
+def test_node_detail_limits_recent_packets_to_twelve(tmp_path):
+    app, _collector = build_app(tmp_path)
+    repo = app.state.repository
+
+    for packet_id in range(1, 14):
+        repo.insert_packet(
+            PacketRecord(
+                mesh_packet_id=packet_id,
+                received_at=f"2026-03-30T12:{packet_id:02d}:00Z",
+                from_node_num=101,
+                to_node_num=BROADCAST_NODE_NUM,
+                portnum="TEXT_MESSAGE_APP",
+                channel_index=0,
+                hop_limit=1,
+                hop_start=1,
+                rx_snr=1.0,
+                rx_rssi=-90,
+                text_preview=f"packet {packet_id}",
+                payload_base64=None,
+                raw_json=json.dumps({"id": packet_id}),
+                via_mqtt=False,
+            )
+        )
+
+    with TestClient(app) as client:
+        node = client.get("/api/nodes/101")
+
+    assert node.status_code == 200
+    recent_packets = node.json()["recent_packets"]
+    assert len(recent_packets) == 12
+    assert [item["text_preview"] for item in recent_packets] == [f"packet {packet_id}" for packet_id in range(13, 1, -1)]
+
+
+def test_node_detail_exposes_last_traceroute_attempts(tmp_path):
+    app, _collector = build_app(tmp_path)
+    repo = app.state.repository
+
+    success_attempt_id = repo.start_traceroute_attempt(
+        target_node_num=101,
+        requested_at="2026-03-30T12:00:00Z",
+        hop_limit=3,
+    )
+    repo.complete_traceroute_attempt(
+        success_attempt_id,
+        completed_at="2026-03-30T12:00:15Z",
+        status="success",
+        request_mesh_packet_id=81,
+        response_mesh_packet_id=91,
+        detail=None,
+    )
+
+    timeout_attempt_id = repo.start_traceroute_attempt(
+        target_node_num=101,
+        requested_at="2026-03-30T12:05:00Z",
+        hop_limit=3,
+    )
+    repo.complete_traceroute_attempt(
+        timeout_attempt_id,
+        completed_at="2026-03-30T12:05:30Z",
+        status="timeout",
+        request_mesh_packet_id=82,
+        response_mesh_packet_id=None,
+        detail="Timed out waiting for traceroute response",
+    )
+
+    with TestClient(app) as client:
+        node = client.get("/api/nodes/101")
+
+    assert node.status_code == 200
+    payload = node.json()
+    assert payload["last_traceroute_attempt"]["id"] == timeout_attempt_id
+    assert payload["last_traceroute_attempt"]["status"] == "timeout"
+    assert payload["last_traceroute_attempt"]["detail"] == "Timed out waiting for traceroute response"
+    assert payload["last_successful_traceroute_attempt"]["id"] == success_attempt_id
+    assert payload["last_successful_traceroute_attempt"]["status"] == "success"
+    assert payload["last_successful_traceroute_attempt"]["response_mesh_packet_id"] == 91
+
+
+def test_node_detail_exposes_latest_complete_traceroute_path(tmp_path):
+    app, _collector = build_app(tmp_path)
+    repo = app.state.repository
+    repo.upsert_node(
+        NodeRecord(
+            node_num=303,
+            node_id="!0000012f",
+            short_name="INX3",
+            long_name="INX3",
+            hardware_model="TBEAM",
+            role="CLIENT",
+            channel_index=0,
+            last_heard_at="2026-03-30T12:08:00Z",
+            last_snr=2.5,
+            latitude=10.4,
+            longitude=-84.15,
+            altitude=18.0,
+            battery_level=74.0,
+            channel_utilization=5.2,
+            air_util_tx=1.8,
+            raw_json='{"num":303}',
+            updated_at="2026-03-30T12:08:00Z",
+            hops_away=1,
+            via_mqtt=False,
+        )
+    )
+    repo.insert_packet(
+        PacketRecord(
+            mesh_packet_id=9001,
+            received_at="2026-03-30T12:10:00Z",
+            from_node_num=303,
+            to_node_num=101,
+            portnum="TRACEROUTE_APP",
+            channel_index=0,
+            hop_limit=2,
+            hop_start=3,
+            rx_snr=3.5,
+            rx_rssi=-90,
+            text_preview=None,
+            payload_base64=encode_traceroute_payload(
+                route=[202],
+                snr_towards=[20, 10],
+                route_back=[202],
+                snr_back=[15, 5],
+            ),
+            raw_json='{"decoded":{"requestId":7001,"traceroute":{"route":[202],"snrTowards":[20,10],"routeBack":[202],"snrBack":[15,5]}}}',
+            via_mqtt=False,
+        )
+    )
+
+    with TestClient(app) as client:
+        node = client.get("/api/nodes/303")
+
+    assert node.status_code == 200
+    latest_complete = node.json()["latest_complete_traceroute"]
+    assert latest_complete["mesh_packet_id"] == 9001
+    assert latest_complete["request_mesh_packet_id"] == 7001
+    assert latest_complete["discovery_request_id"] == 7001
+    assert latest_complete["full_path_node_nums"] == [101, 202, 303, 202, 101]
+
+
+def test_node_detail_exposes_latest_complete_route_reply_path(tmp_path):
+    app, _collector = build_app(tmp_path)
+    repo = app.state.repository
+    repo.upsert_node(
+        NodeRecord(
+            node_num=303,
+            node_id="!0000012f",
+            short_name="INX3",
+            long_name="INX3",
+            hardware_model="TBEAM",
+            role="CLIENT",
+            channel_index=0,
+            last_heard_at="2026-03-30T12:08:00Z",
+            last_snr=2.5,
+            latitude=10.4,
+            longitude=-84.15,
+            altitude=18.0,
+            battery_level=74.0,
+            channel_utilization=5.2,
+            air_util_tx=1.8,
+            raw_json='{"num":303}',
+            updated_at="2026-03-30T12:08:00Z",
+            hops_away=1,
+            via_mqtt=False,
+        )
+    )
+    attempt_id = repo.start_traceroute_attempt(
+        target_node_num=303,
+        requested_at="2026-03-30T12:09:30Z",
+        hop_limit=2,
+    )
+    repo.complete_traceroute_attempt(
+        attempt_id,
+        completed_at="2026-03-30T12:10:05Z",
+        status="success",
+        request_mesh_packet_id=5001,
+        response_mesh_packet_id=9002,
+        detail=None,
+    )
+    repo.insert_packet(
+        PacketRecord(
+            mesh_packet_id=9002,
+            received_at="2026-03-30T12:10:00Z",
+            from_node_num=303,
+            to_node_num=101,
+            portnum="ROUTING_APP",
+            channel_index=0,
+            hop_limit=2,
+            hop_start=3,
+            rx_snr=3.5,
+            rx_rssi=-90,
+            text_preview=None,
+            payload_base64=None,
+            raw_json='{"decoded":{"requestId":7002,"routing":{"routeReply":{"route":[202],"snrTowards":[20,10],"routeBack":[202],"snrBack":[15,5]}}}}',
+            via_mqtt=False,
+        )
+    )
+
+    with TestClient(app) as client:
+        node = client.get("/api/nodes/303")
+
+    assert node.status_code == 200
+    latest_complete = node.json()["latest_complete_traceroute"]
+    assert latest_complete["mesh_packet_id"] == 9002
+    assert latest_complete["request_mesh_packet_id"] == 5001
+    assert latest_complete["discovery_request_id"] == 7002
+    assert latest_complete["full_path_node_nums"] == [101, 202, 303, 202, 101]
 
 
 def test_public_node_payload_obfuscates_roster_coordinates_and_hides_detail_coordinates(tmp_path):
@@ -1565,8 +1774,68 @@ def test_packet_ingest_updates_node_activity_without_node_update(tmp_path):
 
     assert node.status_code == 200
     assert node.json()["node"]["node_id"] == "!000002c3"
+    assert node.json()["node"]["first_heard_at"] == "2026-03-30T12:15:00Z"
     assert node.json()["node"]["last_heard_at"] == "2026-03-30T12:15:00Z"
     assert node.json()["node"]["last_snr"] == 4.2
+
+
+def test_node_detail_preserves_first_heard_at_after_later_updates(tmp_path):
+    app, _collector = build_app(tmp_path)
+    repo = app.state.repository
+
+    repo.upsert_node(
+        NodeRecord(
+            node_num=101,
+            node_id="!00000065",
+            short_name="ALFA",
+            long_name="Alpha Node",
+            hardware_model="TBEAM",
+            role="CLIENT",
+            channel_index=0,
+            last_heard_at="2026-03-30T11:45:00Z",
+            last_snr=5.8,
+            latitude=10.25,
+            longitude=-84.1,
+            altitude=15.0,
+            battery_level=92.0,
+            channel_utilization=8.0,
+            air_util_tx=1.1,
+            raw_json='{"num":101}',
+            updated_at="2026-03-30T11:45:00Z",
+            hops_away=0,
+            via_mqtt=False,
+        )
+    )
+    repo.upsert_node(
+        NodeRecord(
+            node_num=101,
+            node_id="!00000065",
+            short_name="ALFA",
+            long_name="Alpha Node",
+            hardware_model="TBEAM",
+            role="CLIENT",
+            channel_index=0,
+            last_heard_at="2026-03-30T12:15:00Z",
+            last_snr=7.1,
+            latitude=10.25,
+            longitude=-84.1,
+            altitude=15.0,
+            battery_level=87.0,
+            channel_utilization=16.4,
+            air_util_tx=2.1,
+            raw_json='{"num":101}',
+            updated_at="2026-03-30T12:15:00Z",
+            hops_away=0,
+            via_mqtt=False,
+        )
+    )
+
+    with TestClient(app) as client:
+        node = client.get("/api/nodes/101")
+
+    assert node.status_code == 200
+    assert node.json()["node"]["first_heard_at"] == "2026-03-30T11:45:00Z"
+    assert node.json()["node"]["last_heard_at"] == "2026-03-30T12:15:00Z"
 
 
 def test_mesh_links_exposes_mutual_neighbor_reports(tmp_path):

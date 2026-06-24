@@ -600,6 +600,11 @@ def create_app(
                 limit=PUBLIC_NODE_RECENT_PACKETS_LIMIT,
                 primary_only=True,
             ),
+            metric_history=repository.list_node_metric_history(
+                node_num,
+                primary_only=True,
+                limit=24,
+            ),
             last_traceroute_attempt=last_traceroute_attempt,
             last_successful_traceroute_attempt=last_successful_traceroute_attempt,
             latest_complete_traceroute=latest_complete_traceroute,

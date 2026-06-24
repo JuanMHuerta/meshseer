@@ -2019,6 +2019,21 @@ h3 {
   stroke-dasharray: 2 3;
 }
 .receiver-sparkline-dot { fill: var(--sparkline-color); }
+.receiver-sparkline-line.dual-channel {
+  stroke: var(--amber);
+}
+
+.receiver-sparkline-dot.dual-channel {
+  fill: var(--amber);
+}
+
+.receiver-sparkline-line.dual-air {
+  stroke: #7aabdf;
+}
+
+.receiver-sparkline-dot.dual-air {
+  fill: #7aabdf;
+}
 
 .hud-empty {
   padding: 14px;
@@ -2453,6 +2468,11 @@ h3 {
   grid-column: 1 / -1;
 }
 
+.util-card,
+.breakdown-card {
+  grid-column: 1 / -1;
+}
+
 .node-hud-section {
   display: grid;
   gap: 8px;
@@ -2741,14 +2761,20 @@ h3 {
 }
 
 .node-packet-destination,
+.node-packet-delivery,
 .node-packet-text,
 .node-packets-empty p {
   margin: 0;
 }
 
-.node-packet-destination {
+.node-packet-destination,
+.node-packet-delivery {
   font-size: 0.78rem;
   color: var(--ink-soft);
+}
+
+.node-packet-delivery {
+  color: var(--ink-dim);
 }
 
 .node-packet-text {
@@ -2804,6 +2830,46 @@ h3 {
   color: var(--ink-soft);
   font-size: 0.68rem;
   line-height: 1.45;
+}
+
+.hud-metric-dual-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.hud-metric-inline {
+  color: var(--ink-soft);
+  font-size: 0.68rem;
+}
+
+.node-breakdown-list {
+  display: grid;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.node-breakdown-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.node-breakdown-label {
+  font-size: 0.73rem;
+  font-weight: 600;
+}
+
+.node-breakdown-label.direct { color: var(--amber-text); }
+.node-breakdown-label.relayed { color: var(--text-secondary); }
+.node-breakdown-label.mqtt { color: var(--blue-port-text); }
+
+.node-breakdown-value {
+  color: var(--ink-soft);
+  font-size: 0.68rem;
 }
 
 .hud-metric .receiver-sparkline-frame {
@@ -2924,7 +2990,7 @@ h3 {
 
 table {
   width: 100%;
-  min-width: 940px;
+  min-width: 1080px;
   border-collapse: separate;
   border-spacing: 0;
 }

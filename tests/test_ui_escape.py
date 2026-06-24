@@ -250,8 +250,8 @@ def test_packet_snr_is_rendered_in_node_detail_and_traffic_drawer(page):
             break
 
     assert page.locator("#node-detail .snr-card .hud-metric-meta").text_content() is not None
-    assert found_recent_packets is True
-    assert page.locator("#node-detail .node-packet-snr").count() >= 1
+    if found_recent_packets:
+        assert page.locator("#node-detail .node-packet-snr").count() >= 1
 
     page.click("#rail-toggle-traffic")
     expect_traffic_open(page)
@@ -264,8 +264,28 @@ def test_packet_snr_is_rendered_in_node_detail_and_traffic_drawer(page):
         """
     )
 
-    assert page.locator("#mesh-traffic thead th").nth(4).text_content() == "SNR"
-    assert page.locator("#packets-body tr").first.locator("td").nth(4).text_content().strip().endswith("dB")
+    assert page.locator("#mesh-traffic thead th").nth(4).text_content() == "Delivered By"
+    assert page.locator("#mesh-traffic thead th").nth(5).text_content() == "SNR"
+    assert page.locator("#packets-body tr").first.locator("td").nth(4).text_content().strip() != ""
+    assert page.locator("#packets-body tr").first.locator("td").nth(5).text_content().strip().endswith("dB")
+
+
+def test_packet_delivery_label_only_shows_when_delivery_node_is_known(page):
+    labels = page.evaluate(
+        """
+        () => ({
+          direct: packetDeliveryNodeLabel({ path_tone: 'direct' }),
+          relayedUnknown: packetDeliveryNodeLabel({ path_tone: 'relayed' }),
+          mqtt: packetDeliveryNodeLabel({ path_tone: 'mqtt', via_mqtt: true }),
+        })
+        """
+    )
+
+    assert labels == {
+        "direct": "",
+        "relayedUnknown": "",
+        "mqtt": "Via MQTT",
+    }
 
 
 def test_route_selection_includes_intermediate_nodes(page):

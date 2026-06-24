@@ -2862,14 +2862,19 @@ class MeshRepository:
             clauses.append("portnum = ?")
             params.append(portnum)
         if primary_only:
-            clauses.append(self._primary_channel_clause())
+            clauses.append(self._primary_channel_clause("p.channel_index"))
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         params.append(limit)
         query = f"""
-            SELECT *
-            FROM packets
+            SELECT
+                p.*,
+                d.short_name AS delivery_short_name,
+                d.long_name AS delivery_long_name
+            FROM packets AS p
+            LEFT JOIN nodes AS d
+                ON d.node_num = COALESCE(p.relay_node, p.next_hop)
             {where}
-            ORDER BY id DESC
+            ORDER BY p.id DESC
             LIMIT ?
         """
         with self._connect() as connection:
@@ -2923,9 +2928,12 @@ class MeshRepository:
                     p.*,
                     n.short_name AS to_short_name,
                     n.long_name AS to_long_name,
-                    n.node_id AS to_node_id
+                    n.node_id AS to_node_id,
+                    d.short_name AS delivery_short_name,
+                    d.long_name AS delivery_long_name
                 FROM packets AS p
                 LEFT JOIN nodes AS n ON n.node_num = p.to_node_num
+                LEFT JOIN nodes AS d ON d.node_num = COALESCE(p.relay_node, p.next_hop)
                 WHERE {where}
                 ORDER BY p.id DESC
                 LIMIT ?

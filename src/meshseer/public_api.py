@@ -13,6 +13,8 @@ PUBLIC_PACKET_FIELDS = (
     "to_node_num",
     "portnum",
     "rx_snr",
+    "relay_node",
+    "next_hop",
 )
 
 PUBLIC_CHAT_FIELDS = (
@@ -28,6 +30,8 @@ PUBLIC_NODE_RECENT_PACKET_FIELDS = (
     "portnum",
     "text_preview",
     "rx_snr",
+    "relay_node",
+    "next_hop",
 )
 
 PUBLIC_NODE_FIELDS = (
@@ -94,6 +98,12 @@ PUBLIC_TRACEROUTE_ROUTE_FIELDS = (
     "destination_node_num",
     "path_node_nums",
     "hop_count",
+)
+
+PUBLIC_NODE_METRIC_HISTORY_FIELDS = (
+    "recorded_at",
+    "channel_utilization",
+    "air_util_tx",
 )
 
 PUBLIC_COMPLETE_TRACEROUTE_FIELDS = (
@@ -195,6 +205,20 @@ def _destination_label(packet: Mapping[str, Any]) -> str:
     return "Unknown"
 
 
+def _delivery_node_label(packet: Mapping[str, Any]) -> str | None:
+    relay_node = _coerce_int(packet.get("relay_node"))
+    next_hop = _coerce_int(packet.get("next_hop"))
+    delivered_by = relay_node if relay_node is not None else next_hop
+    if delivered_by is None:
+        return None
+    if delivered_by == 0:
+        return "Local"
+    label = packet.get("delivery_short_name") or packet.get("delivery_long_name")
+    if isinstance(label, str) and label.strip():
+        return label
+    return f"Node {delivered_by}"
+
+
 def collector_status_payload(status: Mapping[str, Any]) -> dict[str, Any]:
     return {
         "state": status.get("state"),
@@ -206,6 +230,7 @@ def public_packet_payload(packet: Mapping[str, Any]) -> dict[str, Any]:
     payload = _pick(packet, PUBLIC_PACKET_FIELDS)
     payload["path_tone"] = _packet_path_tone(packet)
     payload["path_label"] = _packet_path_label(packet)
+    payload["delivery_node_label"] = _delivery_node_label(packet)
     return payload
 
 
@@ -230,6 +255,7 @@ def public_node_recent_packet_payload(packet: Mapping[str, Any]) -> dict[str, An
     payload["destination_label"] = _destination_label(packet)
     payload["path_tone"] = _packet_path_tone(packet)
     payload["path_label"] = _packet_path_label(packet)
+    payload["delivery_node_label"] = _delivery_node_label(packet)
     return payload
 
 
@@ -257,6 +283,7 @@ def public_node_detail_payload(
     *,
     insights: Mapping[str, Any],
     recent_packets: list[Mapping[str, Any]],
+    metric_history: list[Mapping[str, Any]],
     last_traceroute_attempt: Mapping[str, Any] | None = None,
     last_successful_traceroute_attempt: Mapping[str, Any] | None = None,
     latest_complete_traceroute: Mapping[str, Any] | None = None,
@@ -279,6 +306,7 @@ def public_node_detail_payload(
         "node": public_node_detail_node_payload(node),
         "insights": _pick(insights, PUBLIC_NODE_INSIGHTS_FIELDS),
         "recent_packets": public_node_recent_packets_payload(recent_packets),
+        "metric_history": [_pick(item, PUBLIC_NODE_METRIC_HISTORY_FIELDS) for item in metric_history],
         "last_traceroute_attempt": last_attempt_payload,
         "last_successful_traceroute_attempt": last_successful_payload,
         "latest_complete_traceroute": (

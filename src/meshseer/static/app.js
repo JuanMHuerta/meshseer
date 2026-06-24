@@ -2096,6 +2096,37 @@ function sparklineYTicks(geometry, height = 54, padding = 4) {
   ];
 }
 
+function sparklinePaths(geometry, values) {
+  if (!geometry || !Array.isArray(values) || !values.length) {
+    return null;
+  }
+  const min = Number(geometry.minValue);
+  const max = Number(geometry.maxValue);
+  const innerWidth = 212 - 8;
+  const innerHeight = 54 - 8;
+  const denominator = Math.max(values.length - 1, 1);
+  const range = max - min;
+  const points = values.map((value, index) => {
+    const x = 4 + ((innerWidth * index) / denominator);
+    const y = range === 0
+      ? 4 + (innerHeight / 2)
+      : 4 + (((max - value) / range) * innerHeight);
+    return { x, y };
+  });
+  if (!points.length) {
+    return null;
+  }
+  const path = points
+    .map((point, index) => `${index === 0 ? "M" : "L"} ${point.x.toFixed(2)} ${point.y.toFixed(2)}`)
+    .join(" ");
+  const last = points[points.length - 1];
+  return {
+    path,
+    lastX: last.x.toFixed(2),
+    lastY: last.y.toFixed(2),
+  };
+}
+
 function nodeSnrSparkline(series) {
   if (!series.length) {
     return "";
@@ -2157,6 +2188,171 @@ function nodeSnrDetail(insights) {
   const max = formatNumber(insights?.best_rx_snr, 1, "");
   const avg = formatNumber(insights?.avg_rx_snr, 1, "");
   return `Min ${min} · Max ${max} · Avg ${avg}`;
+}
+
+function nodeMetricHistorySeries(items, key) {
+  return (Array.isArray(items) ? items : [])
+    .map((item) => ({
+      timestamp: item?.recorded_at || null,
+      value: Number(item?.[key]),
+    }))
+    .filter((sample) => Number.isFinite(sample.value))
+    .sort((left, right) => {
+      const leftMs = Date.parse(left.timestamp || "");
+      const rightMs = Date.parse(right.timestamp || "");
+      if (Number.isNaN(leftMs) && Number.isNaN(rightMs)) {
+        return 0;
+      }
+      if (Number.isNaN(leftMs)) {
+        return 1;
+      }
+      if (Number.isNaN(rightMs)) {
+        return -1;
+      }
+      return leftMs - rightMs;
+    });
+}
+
+function nodeMetricHistorySamples(node, metricHistory) {
+  if (Array.isArray(metricHistory) && metricHistory.length) {
+    return metricHistory;
+  }
+  if (node?.updated_at && (Number.isFinite(Number(node?.channel_utilization)) || Number.isFinite(Number(node?.air_util_tx)))) {
+    return [{
+      recorded_at: node.updated_at,
+      channel_utilization: node.channel_utilization,
+      air_util_tx: node.air_util_tx,
+    }];
+  }
+  return [];
+}
+
+function nodeUtilizationSparkline(metricHistory) {
+  const channelSeries = nodeMetricHistorySeries(metricHistory, "channel_utilization");
+  const airSeries = nodeMetricHistorySeries(metricHistory, "air_util_tx");
+  const indexTimestampMap = new Map();
+  channelSeries.forEach((sample) => {
+    if (sample.timestamp) {
+      indexTimestampMap.set(sample.timestamp, { timestamp: sample.timestamp });
+    }
+  });
+  airSeries.forEach((sample) => {
+    if (sample.timestamp) {
+      indexTimestampMap.set(sample.timestamp, { timestamp: sample.timestamp });
+    }
+  });
+  const mergedSeries = [...indexTimestampMap.values()]
+    .sort((left, right) => Date.parse(left.timestamp || "") - Date.parse(right.timestamp || ""))
+    .map((sample) => ({
+      timestamp: sample.timestamp,
+      channel: channelSeries.find((item) => item.timestamp === sample.timestamp)?.value,
+      air: airSeries.find((item) => item.timestamp === sample.timestamp)?.value,
+    }))
+    .filter((sample) => Number.isFinite(sample.channel) || Number.isFinite(sample.air));
+  if (!mergedSeries.length) {
+    return "";
+  }
+
+  const allValues = mergedSeries.flatMap((sample) => [sample.channel, sample.air]).filter(Number.isFinite);
+  const indexedValues = allValues.map((value, index) => ({ value, index }));
+  const geometry = sparklineGeometry(indexedValues);
+  if (!geometry) {
+    return "";
+  }
+
+  const xTicks = sparklineTickIndexes(mergedSeries.length, 2).map((index) => ({
+    index,
+    label: formatSparklineTime(mergedSeries[index]?.timestamp),
+  }));
+  const yTicks = sparklineYTicks(geometry);
+  const channelValues = mergedSeries.map((sample) => Number.isFinite(sample.channel) ? sample.channel : 0);
+  const airValues = mergedSeries.map((sample) => Number.isFinite(sample.air) ? sample.air : 0);
+  const channelPaths = sparklinePaths(geometry, channelValues);
+  const airPaths = sparklinePaths(geometry, airValues);
+
+  return `
+    <div class="receiver-sparkline-frame detailed dual">
+      <div class="sparkline-chart-grid">
+        <div class="sparkline-y-axis mono-text" aria-hidden="true">
+          ${yTicks.map((tick) => `<span>${escapeHtml(`${tick.label}%`)}</span>`).join("")}
+        </div>
+        <div class="sparkline-plot">
+          <svg
+            class="receiver-sparkline-graphic"
+            viewBox="0 0 212 54"
+            aria-label="Node channel utilization and air utilization history"
+            role="img"
+          >
+            ${yTicks.map((tick) => `
+              <line
+                class="receiver-sparkline-guide"
+                x1="4"
+                x2="208"
+                y1="${Number(tick.y).toFixed(2)}"
+                y2="${Number(tick.y).toFixed(2)}"
+              ></line>
+            `).join("")}
+            ${channelPaths ? `<path class="receiver-sparkline-line dual-channel" d="${channelPaths.path}"></path>` : ""}
+            ${airPaths ? `<path class="receiver-sparkline-line dual-air" d="${airPaths.path}"></path>` : ""}
+            ${channelPaths ? `<circle class="receiver-sparkline-dot dual-channel" cx="${channelPaths.lastX}" cy="${channelPaths.lastY}" r="3.2"></circle>` : ""}
+            ${airPaths ? `<circle class="receiver-sparkline-dot dual-air" cx="${airPaths.lastX}" cy="${airPaths.lastY}" r="3.2"></circle>` : ""}
+          </svg>
+        </div>
+      </div>
+      <div class="sparkline-x-axis mono-text" aria-hidden="true">
+        ${xTicks.map((tick) => `
+          <span class="sparkline-x-tick">
+            <span class="sparkline-x-notch"></span>
+            <span>${escapeHtml(tick.label)}</span>
+          </span>
+        `).join("")}
+      </div>
+    </div>
+  `;
+}
+
+function nodeUtilizationCard(node, metricHistory, freshness) {
+  const samples = nodeMetricHistorySamples(node, metricHistory);
+  const sparkline = nodeUtilizationSparkline(samples);
+  const chUtil = formatNumber(node?.channel_utilization, 1, "%");
+  const airUtil = formatNumber(node?.air_util_tx, 1, "%");
+  return `
+    <div class="hud-metric util-card${freshness === "stale" ? " muted" : ""}">
+      <div class="hud-metric-dual-head">
+        <span class="hud-metric-label">CH util / Air util TX</span>
+        <span class="hud-metric-inline mono-text">CH ${escapeHtml(chUtil)} · TX ${escapeHtml(airUtil)}</span>
+      </div>
+      ${sparkline}
+      <span class="hud-metric-meta mono-text">Samples ${escapeHtml(formatWholeNumber(samples.length))}</span>
+    </div>
+  `;
+}
+
+function nodePacketBreakdownCard(insights) {
+  const heardPackets = Math.max(0, intValue(insights?.heard_packets));
+  const breakdown = [
+    { label: "Direct", value: intValue(insights?.direct_packets), tone: "direct" },
+    { label: "Relayed", value: intValue(insights?.relayed_packets), tone: "relayed" },
+    { label: "MQTT", value: intValue(insights?.mqtt_packets), tone: "mqtt" },
+  ];
+  const broadcastPackets = intValue(insights?.broadcast_packets);
+  return `
+    <div class="hud-metric breakdown-card">
+      <span class="hud-metric-label">Packet breakdown</span>
+      <div class="node-breakdown-list">
+        ${breakdown.map((item) => {
+          const pct = heardPackets > 0 ? Math.round((item.value / heardPackets) * 100) : 0;
+          return `
+            <div class="node-breakdown-row">
+              <span class="node-breakdown-label ${item.tone}">${escapeHtml(item.label)}</span>
+              <span class="node-breakdown-value mono-text">${escapeHtml(`${formatWholeNumber(item.value)} · ${pct}%`)}</span>
+            </div>
+          `;
+        }).join("")}
+      </div>
+      <span class="hud-metric-meta mono-text">Broadcast ${escapeHtml(formatWholeNumber(broadcastPackets))}</span>
+    </div>
+  `;
 }
 
 function nodeSnrCard(node, insights, recentPackets, freshness) {
@@ -2608,6 +2804,7 @@ function nodeRecentPacketMarkup(packet) {
   const pathTone = packet?.path_tone || packetPathTone(packet);
   const pathLabel = packet?.path_label || packetPathLabel(packet);
   const destinationLabel = packet?.destination_label || toNodeLabel(packet);
+  const deliveryNodeLabel = packetDeliveryNodeLabel(packet);
   const textPreview = typeof packet?.text_preview === "string" ? packet.text_preview.trim() : "";
   const snrLabel = formatNumber(packet?.rx_snr, 1, " dB");
   return `
@@ -2624,6 +2821,7 @@ function nodeRecentPacketMarkup(packet) {
         </div>
       </div>
       <p class="node-packet-destination">To ${escapeHtml(destinationLabel)}</p>
+      ${deliveryNodeLabel ? `<p class="node-packet-delivery">${escapeHtml(deliveryNodeLabel)}</p>` : ""}
       ${textPreview ? `<p class="node-packet-text">${escapeHtml(textPreview)}</p>` : ""}
     </article>
   `;
@@ -2870,6 +3068,7 @@ function renderNodeDetail(node) {
   const detailNode = detailPayload?.node ? { ...node, ...detailPayload.node } : node;
   const insights = detailPayload?.insights || null;
   const recentPackets = Array.isArray(detailPayload?.recent_packets) ? detailPayload.recent_packets : [];
+  const metricHistory = Array.isArray(detailPayload?.metric_history) ? detailPayload.metric_history : [];
   const freshness = nodeFreshness(detailNode);
   const hudTone = freshness;
   const pathLabel = nodePathLabel(detailNode);
@@ -2886,12 +3085,14 @@ function renderNodeDetail(node) {
       </div>
 
       <div class="node-hud-metrics">
-        ${nodeSnrCard(detailNode, insights, recentPackets, freshness)}
         ${metric("Path", pathLabel)}
         ${metric("Hops Away", detailNode.hops_away ?? "n/a")}
         ${metric("Last Heard", formatTime(detailNode.last_heard_at), "", detailNode.first_heard_at ? `First ${formatTime(detailNode.first_heard_at)}` : "")}
         ${metric("Packets Heard", formatWholeNumber(insights?.heard_packets))}
         ${metric("Battery", detailNode.battery_level == null ? "n/a" : `${Math.round(detailNode.battery_level)}%`)}
+        ${nodeSnrCard(detailNode, insights, recentPackets, freshness)}
+        ${nodeUtilizationCard(detailNode, metricHistory, freshness)}
+        ${nodePacketBreakdownCard(insights)}
       </div>
 
       ${renderNodeTracerouteSection(detailPayload)}
@@ -3539,6 +3740,7 @@ function packetRowMarkup(packet) {
 
   const fromName = fromNodeLabel(packet);
   const fromId = packet.from_node_num != null ? `#${packet.from_node_num}` : "";
+  const deliveryLabel = packetDeliveryNodeLabel(packet);
 
   const pathContent = `<span class="path-badge ${pathTone}">${escapeHtml(isUnknown ? "Unknown" : packetPathLabel(packet))}</span>`;
 
@@ -3562,12 +3764,30 @@ function packetRowMarkup(packet) {
           <span class="port-badge ${category}">${escapeHtml(portBadgeText(packet.portnum))}</span>
         </div>
       </td>
+      <td>
+        <div class="table-node">
+          <span class="table-node-main">${escapeHtml(deliveryLabel || "—")}</span>
+        </div>
+      </td>
       <td class="mono-text">${escapeHtml(formatNumber(packet.rx_snr, 1, " dB"))}</td>
       <td class="${pathCellClass}">
         <div class="port-cell">${pathContent}</div>
       </td>
     </tr>
   `;
+}
+
+function packetDeliveryNodeLabel(packet) {
+  if (packet?.via_mqtt || packet?.path_tone === "mqtt" || packetPathTone(packet) === "mqtt") {
+    return "Via MQTT";
+  }
+  const deliveredNodeNum = packet?.relay_node ?? packet?.next_hop;
+  if (deliveredNodeNum == null) {
+    return "";
+  }
+  const node = nodeByNum(deliveredNodeNum);
+  const label = packet?.delivery_node_label || (node ? nodeLabel(node) : `Node ${deliveredNodeNum}`);
+  return `Via ${label}`;
 }
 
 function visiblePackets(items = state.packets) {

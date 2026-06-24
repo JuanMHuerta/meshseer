@@ -259,8 +259,10 @@ def test_api_routes_and_filters(tmp_path):
     assert node.json()["node"]["node_num"] == 101
     assert "latitude" not in node.json()["node"]
     assert len(node.json()["recent_packets"]) == 1
+    assert node.json()["metric_history"] == []
     assert node.json()["recent_packets"][0]["text_preview"] == "hello mesh"
     assert node.json()["recent_packets"][0]["destination_label"] == "Broadcast"
+    assert node.json()["recent_packets"][0]["delivery_node_label"] is None
     assert node.json()["recent_packets"][0]["path_label"] == "Direct"
     assert node.json()["recent_packets"][0]["rx_snr"] == 6.5
     assert "raw_json" not in node.json()["recent_packets"][0]
@@ -718,6 +720,7 @@ def test_node_detail_exposes_recent_packets_from_selected_node(tmp_path):
             text_preview="status update",
             payload_base64=None,
             raw_json='{"id":14}',
+            relay_node=303,
             via_mqtt=False,
         )
     )
@@ -748,9 +751,52 @@ def test_node_detail_exposes_recent_packets_from_selected_node(tmp_path):
     assert [item["portnum"] for item in recent_packets] == ["TEXT_MESSAGE_APP", "POSITION_APP", "TEXT_MESSAGE_APP"]
     assert recent_packets[0]["destination_label"] == "Broadcast"
     assert recent_packets[0]["text_preview"] == "status update"
+    assert recent_packets[0]["delivery_node_label"] == "GAMMA"
     assert recent_packets[1]["destination_label"] == "GAMMA"
     assert recent_packets[1]["path_label"] == "Direct"
     assert recent_packets[2]["path_label"] == "Direct"
+    assert node.json()["metric_history"] == []
+
+
+def test_node_detail_metric_history_can_fall_back_to_current_snapshot(tmp_path):
+    app, _collector = build_app(tmp_path)
+    repo = app.state.repository
+
+    repo.upsert_node(
+        NodeRecord(
+            node_num=303,
+            node_id="!0000012f",
+            short_name="GAMMA",
+            long_name="Gamma Node",
+            hardware_model="TBEAM",
+            role="CLIENT",
+            channel_index=0,
+            last_heard_at="2026-03-30T12:08:00Z",
+            last_snr=2.5,
+            latitude=10.4,
+            longitude=-84.15,
+            altitude=18.0,
+            battery_level=74.0,
+            channel_utilization=5.2,
+            air_util_tx=1.8,
+            raw_json='{"num":303}',
+            updated_at="2026-03-30T12:08:00Z",
+            hops_away=1,
+            via_mqtt=False,
+        )
+    )
+
+    with TestClient(app) as client:
+        node = client.get("/api/nodes/303")
+
+    assert node.status_code == 200
+    assert node.json()["metric_history"] == [
+        {
+            "recorded_at": "2026-03-30T12:08:00Z",
+            "channel_utilization": 5.2,
+            "air_util_tx": 1.8,
+        }
+    ]
 
 
 def test_node_detail_limits_recent_packets_to_twelve(tmp_path):

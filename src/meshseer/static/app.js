@@ -41,6 +41,7 @@ const railToggleOptions = document.getElementById("rail-toggle-options");
 const rosterToolbar = document.getElementById("roster-toolbar");
 const appVersionLabel = document.getElementById("app-version");
 const uiThemeSelect = document.getElementById("ui-theme-select");
+const uiLanguageSelect = document.getElementById("ui-language-select");
 const statusBarDotForward = document.getElementById("status-bar-dot-forward");
 const statusBarLabelForward = document.getElementById("status-bar-label-forward");
 const statusBarDotReturn = document.getElementById("status-bar-dot-return");
@@ -48,15 +49,17 @@ const statusBarLabelReturn = document.getElementById("status-bar-label-return");
 const statusBarDotTertiary = document.getElementById("status-bar-dot-tertiary");
 const statusBarLabelTertiary = document.getElementById("status-bar-label-tertiary");
 
-const timeFormatter = new Intl.DateTimeFormat(undefined, {
+const i18n = window.MeshseerI18n;
+const t = (key, params) => i18n.t(key, params);
+const currentIntlLocale = () => i18n.intlLocale();
+
+const TIME_FORMAT_OPTIONS = Object.freeze({
   month: "short",
   day: "numeric",
   hour: "2-digit",
   minute: "2-digit",
   hour12: false,
 });
-
-const wholeNumberFormatter = new Intl.NumberFormat(undefined);
 
 const NODE_DECAY_WINDOW_MINUTES = 24 * 60;
 const DECAY_REPAINT_INTERVAL_MS = 60_000;
@@ -137,9 +140,9 @@ const THEME_REGISTRY = Object.freeze({
       routeArrowStrokeColor: "none",
       preserveRouteColorOnSelect: false,
       routeLegend: {
-        forward: { label: "Forward", color: "#e8a94d" },
-        return: { label: "Return", color: "#d59b47" },
-        tertiary: { label: "Older", color: "rgba(255, 255, 255, 0.2)" },
+        forward: { labelKey: "routes.forward", color: "#e8a94d" },
+        return: { labelKey: "routes.return", color: "#d59b47" },
+        tertiary: { labelKey: "routes.older", color: "rgba(255, 255, 255, 0.2)" },
       },
       markerPalette: {
         direct: {
@@ -181,8 +184,8 @@ const THEME_REGISTRY = Object.freeze({
       routeSelectedColor: "#2f7c91",
       preserveRouteColorOnSelect: true,
       routeLegend: {
-        forward: { label: "Forward", color: "#4f86c6" },
-        return: { label: "Return", color: "#68a95f" },
+        forward: { labelKey: "routes.forward", color: "#4f86c6" },
+        return: { labelKey: "routes.return", color: "#68a95f" },
         tertiary: { label: "", color: "transparent" },
       },
       markerPalette: {
@@ -229,8 +232,8 @@ const THEME_REGISTRY = Object.freeze({
       routeSelectedColor: "#d9edf4",
       preserveRouteColorOnSelect: true,
       routeLegend: {
-        forward: { label: "Forward", color: "#6ea8de" },
-        return: { label: "Return", color: "#78c06d" },
+        forward: { labelKey: "routes.forward", color: "#6ea8de" },
+        return: { labelKey: "routes.return", color: "#78c06d" },
         tertiary: { label: "", color: "transparent" },
       },
       markerPalette: {
@@ -349,29 +352,31 @@ function currentThemeOverlay() {
 function renderStatusBarLegend() {
   const overlay = currentThemeOverlay();
   const legend = overlay.routeLegend || {
-    forward: { label: "Forward", color: overlay.routeColor },
-    return: { label: "Return", color: overlay.routeReturnColor },
-    tertiary: { label: "Selected", color: overlay.routeSelectedColor },
+    forward: { labelKey: "routes.forward", color: overlay.routeColor },
+    return: { labelKey: "routes.return", color: overlay.routeReturnColor },
+    tertiary: { labelKey: "common.selected", color: overlay.routeSelectedColor },
   };
+  const legendLabel = (item) => (item.labelKey ? t(item.labelKey) : (item.label || ""));
   if (statusBarDotForward) {
     statusBarDotForward.style.background = legend.forward.color;
   }
   if (statusBarLabelForward) {
-    statusBarLabelForward.textContent = legend.forward.label;
+    statusBarLabelForward.textContent = legendLabel(legend.forward);
   }
   if (statusBarDotReturn) {
     statusBarDotReturn.style.background = legend.return.color;
   }
   if (statusBarLabelReturn) {
-    statusBarLabelReturn.textContent = legend.return.label;
+    statusBarLabelReturn.textContent = legendLabel(legend.return);
   }
+  const tertiaryLabel = legendLabel(legend.tertiary);
   if (statusBarDotTertiary) {
     statusBarDotTertiary.style.background = legend.tertiary.color;
-    statusBarDotTertiary.hidden = !legend.tertiary.label;
+    statusBarDotTertiary.hidden = !tertiaryLabel;
   }
   if (statusBarLabelTertiary) {
-    statusBarLabelTertiary.textContent = legend.tertiary.label;
-    statusBarLabelTertiary.hidden = !legend.tertiary.label;
+    statusBarLabelTertiary.textContent = tertiaryLabel;
+    statusBarLabelTertiary.hidden = !tertiaryLabel;
   }
 }
 
@@ -450,6 +455,12 @@ function syncThemeControls() {
   }
 }
 
+function syncLanguageControls() {
+  if (uiLanguageSelect) {
+    uiLanguageSelect.value = i18n.locale();
+  }
+}
+
 function syncPacketLimitControl() {
   if (packetLimitSelect) {
     packetLimitSelect.value = String(state.packetLimit);
@@ -514,54 +525,54 @@ function resolveStartupTheme(serverDefaultStyle) {
 
 function formatTime(value) {
   if (!value) {
-    return "n/a";
+    return t("common.na");
   }
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) {
     return String(value);
   }
-  return timeFormatter.format(date);
+  return new Intl.DateTimeFormat(currentIntlLocale(), TIME_FORMAT_OPTIONS).format(date);
 }
 
 function formatRelativeTime(value, nowMs = Date.now()) {
   const ageMinutes = ageMinutesSince(value, nowMs);
   if (ageMinutes == null) {
-    return "n/a";
+    return t("common.na");
   }
   if (ageMinutes < 1) {
-    return "Just now";
+    return t("relative.justNow");
   }
   if (ageMinutes < 60) {
-    return `${Math.floor(ageMinutes)}m ago`;
+    return t("relative.minutesAgo", { count: Math.floor(ageMinutes) });
   }
   if (ageMinutes < 24 * 60) {
-    return `${Math.floor(ageMinutes / 60)}h ago`;
+    return t("relative.hoursAgo", { count: Math.floor(ageMinutes / 60) });
   }
   if (ageMinutes < 7 * 24 * 60) {
-    return `${Math.floor(ageMinutes / (24 * 60))}d ago`;
+    return t("relative.daysAgo", { count: Math.floor(ageMinutes / (24 * 60)) });
   }
   return formatTime(value);
 }
 
 function formatLastUpdated(value) {
   if (!value) {
-    return "Waiting";
+    return t("common.waiting");
   }
   return formatTime(value);
 }
 
 function formatNumber(value, digits = 1, suffix = "") {
   if (value == null || Number.isNaN(Number(value))) {
-    return "n/a";
+    return t("common.na");
   }
   return `${Number(value).toFixed(digits)}${suffix}`;
 }
 
 function formatWholeNumber(value) {
   if (value == null || Number.isNaN(Number(value))) {
-    return "n/a";
+    return t("common.na");
   }
-  return wholeNumberFormatter.format(Math.round(Number(value)));
+  return new Intl.NumberFormat(currentIntlLocale()).format(Math.round(Number(value)));
 }
 
 function csvEscape(value) {
@@ -598,7 +609,7 @@ function fileTimestampPart(date = new Date()) {
 
 function formatCompactChange(value, digits = 0, suffix = "") {
   if (value == null || Number.isNaN(Number(value))) {
-    return "n/a";
+    return t("common.na");
   }
   return `${Math.abs(Number(value)).toFixed(digits)}${suffix}`;
 }
@@ -722,7 +733,7 @@ function toUtcIso(date) {
 }
 
 function nodeLabel(node) {
-  return node?.short_name || node?.long_name || node?.node_id || `Node ${node?.node_num ?? "?"}`;
+  return node?.short_name || node?.long_name || node?.node_id || t("common.nodeWithNum", { num: node?.node_num ?? "?" });
 }
 
 function nodeSecondaryLabel(node) {
@@ -735,7 +746,7 @@ function nodeSecondaryLabel(node) {
   if (node.node_id) {
     return node.node_id;
   }
-  return `Node ${node.node_num}`;
+  return t("common.nodeWithNum", { num: node.node_num });
 }
 
 function nodeByNum(nodeNum) {
@@ -1107,7 +1118,26 @@ function packetPathTone(packet) {
 }
 
 function packetPathLabel(packet) {
-  return packet?.path_label || "Unknown";
+  const rawLabel = packet?.path_label;
+  if (typeof rawLabel === "string" && rawLabel.trim()) {
+    const normalized = rawLabel.trim().toLowerCase();
+    const hopMatch = normalized.match(/^(\d+)\s+hops?$/);
+    if (normalized === "mqtt") {
+      return t("path.mqtt");
+    }
+    if (normalized === "unknown") {
+      return t("common.unknown");
+    }
+    if (normalized === "direct") {
+      return t("path.direct");
+    }
+    if (hopMatch) {
+      const hopCount = Number(hopMatch[1]);
+      return hopCount === 1 ? t("path.oneHop") : t("path.hops", { count: hopCount });
+    }
+    return rawLabel;
+  }
+  return t("common.unknown");
 }
 
 function nodePathTone(node) {
@@ -1127,38 +1157,38 @@ function nodePathTone(node) {
 function nodePathLabel(node) {
   const status = nodeStatus(node);
   if (status === "local") {
-    return "Receiver";
+    return t("path.receiver");
   }
   if (status === "mqtt") {
-    return "MQTT";
+    return t("path.mqtt");
   }
   if (node?.hops_away == null) {
-    return "Path Unknown";
+    return t("path.pathUnknown");
   }
   if (Number(node.hops_away) <= 1) {
-    return "Direct";
+    return t("path.direct");
   }
   if (Number(node.hops_away) === 2) {
-    return "2 Hops";
+    return t("path.hops", { count: 2 });
   }
-  return `${Number(node.hops_away)} Hops`;
+  return t("path.hops", { count: Number(node.hops_away) });
 }
 
 function nodePathDescription(node) {
   const status = nodeStatus(node);
   if (status === "local") {
-    return "Receiver-local node";
+    return t("path.receiverLocal");
   }
   if (status === "mqtt") {
-    return "Observed through an MQTT bridge";
+    return t("path.throughMqtt");
   }
   if (node?.hops_away == null) {
-    return "No passive path estimate yet";
+    return t("path.noEstimate");
   }
   if (Number(node.hops_away) <= 1) {
-    return "Direct RF path from this receiver";
+    return t("path.directFromReceiver");
   }
-  return `${Number(node.hops_away)} hops away from this receiver`;
+  return t("path.hopsFromReceiver", { count: Number(node.hops_away) });
 }
 
 function nodeSignalOpacity(node, nowMs = Date.now()) {
@@ -1481,15 +1511,15 @@ function freshnessRank(node) {
 function freshnessLabel(node) {
   const freshness = nodeFreshness(node);
   if (freshness === "live") {
-    return "LIVE";
+    return t("nodes.freshness.live");
   }
   if (freshness === "warm") {
-    return "RECENT";
+    return t("nodes.freshness.recent");
   }
   if (freshness === "stale") {
-    return "STALE";
+    return t("nodes.freshness.stale");
   }
-  return "SEEN";
+  return t("nodes.freshness.seen");
 }
 
 function sortNodes(items) {
@@ -1559,10 +1589,10 @@ function fromNodeLabel(packet) {
 
 function toNodeLabel(packet) {
   if (packet.to_node_num === BROADCAST_NODE_NUM) {
-    return "Broadcast";
+    return t("common.broadcast");
   }
   const node = nodeByNum(packet.to_node_num);
-  return node ? nodeLabel(node) : `Node ${packet.to_node_num}`;
+  return node ? nodeLabel(node) : t("common.nodeWithNum", { num: packet.to_node_num });
 }
 
 function intValue(value) {
@@ -1608,11 +1638,11 @@ function trendMeta(current, previous, digits = 0, suffix = "") {
   const currentValue = Number(current);
   const previousValue = Number(previous);
   if (!Number.isFinite(currentValue) || !Number.isFinite(previousValue)) {
-    return { tone: "none", symbol: "—", detail: "No baseline" };
+    return { tone: "none", symbol: "—", detail: t("common.noBaseline") };
   }
   const delta = currentValue - previousValue;
   if (Math.abs(delta) < 0.0001) {
-    return { tone: "flat", symbol: "→", detail: "Flat" };
+    return { tone: "flat", symbol: "→", detail: t("common.flat") };
   }
   return {
     tone: delta > 0 ? "up" : "down",
@@ -1626,12 +1656,12 @@ function trendContextCopy(trend, context = "") {
     return "";
   }
   if (trend.tone === "none") {
-    return "No baseline";
+    return t("common.noBaseline");
   }
   if (trend.tone === "flat") {
-    return context ? `Flat vs prior ${context}` : "Flat";
+    return context ? t("trend.flatVsPrior", { context }) : t("common.flat");
   }
-  return context ? `${trend.detail} vs prior ${context}` : trend.detail;
+  return context ? t("trend.valueVsPrior", { detail: trend.detail, context }) : trend.detail;
 }
 
 function freshestObservationAgeMinutes(summary, nowMs = Date.now()) {
@@ -1647,18 +1677,18 @@ function freshestObservationAgeMinutes(summary, nowMs = Date.now()) {
 
 function pathHeadline({ packetCount, directShare, relayShare, mqttShare }) {
   if (!packetCount) {
-    return "No fresh path read";
+    return t("signals.path.noFreshRead");
   }
   if (mqttShare != null && mqttShare >= 30) {
-    return "MQTT-heavy";
+    return t("signals.path.mqttHeavy");
   }
   if (relayShare != null && relayShare >= 40) {
-    return "Relay heavy";
+    return t("signals.path.relayHeavy");
   }
   if (directShare != null && relayShare != null && directShare >= 55 && directShare >= (relayShare + 10)) {
-    return "Mostly direct";
+    return t("signals.path.mostlyDirect");
   }
-  return "Mixed paths";
+  return t("signals.path.mixed");
 }
 
 function refreshKpiTicker() {
@@ -1711,7 +1741,7 @@ function intelStat(label, value, detail, tone = "") {
   `;
 }
 
-function intelMeter(title, headline, segments, emptyLabel = "No passive traffic yet.") {
+function intelMeter(title, headline, segments, emptyLabel = t("signals.noPassiveTraffic")) {
   const normalized = segments
     .map((segment) => ({ ...segment, value: intValue(segment.value) }))
     .filter((segment) => segment.value > 0);
@@ -1724,7 +1754,7 @@ function intelMeter(title, headline, segments, emptyLabel = "No passive traffic 
           <p class="intel-story-kicker">${escapeHtml(title)}</p>
           <h3>${escapeHtml(headline)}</h3>
         </div>
-        <span class="mono-text">${escapeHtml(total ? `${formatWholeNumber(total)} total` : "Waiting")}</span>
+        <span class="mono-text">${escapeHtml(total ? t("common.total", { count: formatWholeNumber(total) }) : t("common.waiting"))}</span>
       </div>
       ${total ? `
         <div class="intel-meter">
@@ -1767,12 +1797,12 @@ function routingHealthRow(label, value) {
 
 function receiverMetricDetail(receiver) {
   if (!receiver || receiver.node_num == null) {
-    return "Waiting for receiver identity";
+    return t("signals.receiverIdentityWaiting");
   }
   if (receiver.updated_at) {
-    return `${receiver.label || `Node ${receiver.node_num}`} · ${formatTime(receiver.updated_at)}`;
+    return `${receiver.label || t("common.nodeWithNum", { num: receiver.node_num })} · ${formatTime(receiver.updated_at)}`;
   }
-  return `${receiver.label || `Node ${receiver.node_num}`} · Telemetry pending`;
+  return `${receiver.label || t("common.nodeWithNum", { num: receiver.node_num })} · ${t("signals.telemetryPending")}`;
 }
 
 function receiverHistorySeries(receiver, key) {
@@ -1918,13 +1948,16 @@ function receiverSparkline(label, tone, series) {
   if (!geometry) {
     return "";
   }
+  const ariaLabel = tone === "channel"
+    ? t("signals.heardNodesHistory")
+    : (tone === "coverage" ? t("signals.coverageHistory") : t("common.historyFor", { label }));
 
   return `
     <div class="receiver-sparkline-frame ${tone}">
       <svg
         class="receiver-sparkline-graphic"
         viewBox="0 0 212 54"
-        aria-label="${escapeHtml(`${label} history`)}"
+        aria-label="${escapeHtml(ariaLabel)}"
         role="img"
       >
         <path class="receiver-sparkline-area" d="${geometry.areaPath}"></path>
@@ -1939,9 +1972,11 @@ function receiverTelemetryPanel(label, currentValue, key, tone, receiver) {
   const series = receiverHistorySeries(receiver, key);
   const geometry = sparklineGeometry(series);
   const peakValue = geometry ? formatNumber(geometry.maxValue, 1, "%") : null;
+  const sampleLabel = series.length === 1 ? t("common.sample") : t("common.samples");
   const meta = peakValue
-    ? `Peak ${peakValue} · ${formatWholeNumber(series.length)} ${series.length === 1 ? "sample" : "samples"}`
+    ? t("signals.peakSamples", { peak: peakValue, count: formatWholeNumber(series.length), sampleLabel })
     : "";
+  const ariaLabel = t("common.historyFor", { label });
 
   return `
     <section class="receiver-metric ${tone}">
@@ -1950,7 +1985,7 @@ function receiverTelemetryPanel(label, currentValue, key, tone, receiver) {
       ${meta ? `<span class="receiver-metric-meta mono-text">${escapeHtml(meta)}</span>` : ""}
       ${series.length && geometry ? `
         <div class="receiver-sparkline-frame ${tone}">
-          <svg class="receiver-sparkline-graphic" viewBox="0 0 212 54" aria-label="${escapeHtml(`${label} history`)}" role="img">
+          <svg class="receiver-sparkline-graphic" viewBox="0 0 212 54" aria-label="${escapeHtml(ariaLabel)}" role="img">
             <path class="receiver-sparkline-area" d="${geometry.areaPath}"></path>
             <path class="receiver-sparkline-line" d="${geometry.linePath}"></path>
             <circle class="receiver-sparkline-dot" cx="${geometry.lastX}" cy="${geometry.lastY}" r="3.5"></circle>
@@ -1963,11 +1998,11 @@ function receiverTelemetryPanel(label, currentValue, key, tone, receiver) {
 
 function heardNodesPanel(totalNodes, summary) {
   const series = heardNodesHistorySeries(summary);
-  const sparkline = receiverSparkline("Heard nodes", "channel", series);
+  const sparkline = receiverSparkline(t("signals.heardNodes"), "channel", series);
 
   return `
     <section class="receiver-metric heard-nodes-card channel">
-      <span class="receiver-metric-label">Heard nodes</span>
+      <span class="receiver-metric-label">${escapeHtml(t("signals.heardNodes"))}</span>
       <strong class="receiver-metric-value">${escapeHtml(formatWholeNumber(totalNodes))}</strong>
       ${sparkline}
     </section>
@@ -1977,14 +2012,14 @@ function heardNodesPanel(totalNodes, summary) {
 function coveragePanel(mappedNodes, totalNodes, summary) {
   const coverageValue = sharePercentage(mappedNodes, totalNodes);
   const series = coverageHistorySeries(summary);
-  const sparkline = receiverSparkline("Coverage", "coverage", series);
+  const sparkline = receiverSparkline(t("signals.coverage"), "coverage", series);
   const detail = totalNodes
-    ? `${formatWholeNumber(mappedNodes)} of ${formatWholeNumber(totalNodes)}`
-    : "No node roster yet";
+    ? t("signals.coverageDetail", { mapped: formatWholeNumber(mappedNodes), total: formatWholeNumber(totalNodes) })
+    : t("signals.noNodeRoster");
 
   return `
     <section class="receiver-metric coverage-card coverage">
-      <span class="receiver-metric-label">Coverage</span>
+      <span class="receiver-metric-label">${escapeHtml(t("signals.coverage"))}</span>
       <strong class="receiver-metric-value">${escapeHtml(coverageValue == null ? "—" : `${coverageValue}%`)}</strong>
       <span class="receiver-metric-meta mono-text">${escapeHtml(detail)}</span>
       ${sparkline}
@@ -1993,9 +2028,9 @@ function coveragePanel(mappedNodes, totalNodes, summary) {
 }
 
 function channelUtilizationBlock(receiver) {
-  const recLabel = receiver?.label || (receiver?.node_num != null ? `Node ${receiver.node_num}` : null);
+  const recLabel = receiver?.label || (receiver?.node_num != null ? t("common.nodeWithNum", { num: receiver.node_num }) : null);
   const recTime = receiver?.updated_at ? formatTime(receiver.updated_at) : null;
-  const sectionParts = ["Channel utilization"];
+  const sectionParts = [t("signals.channelUtilization")];
   if (recLabel) sectionParts.push(recLabel);
   if (recTime) sectionParts.push(recTime);
 
@@ -2003,8 +2038,8 @@ function channelUtilizationBlock(receiver) {
     <div class="signals-section">
       <span class="signals-section-label">${escapeHtml(sectionParts.join(" · "))}</span>
       <div class="receiver-metric-grid">
-        ${receiverTelemetryPanel("Ch. util", receiver?.channel_utilization, "channel_utilization", "channel", receiver)}
-        ${receiverTelemetryPanel("Air util TX", receiver?.air_util_tx, "air_util_tx", "air", receiver)}
+        ${receiverTelemetryPanel(t("signals.chUtil"), receiver?.channel_utilization, "channel_utilization", "channel", receiver)}
+        ${receiverTelemetryPanel(t("signals.airUtilTx"), receiver?.air_util_tx, "air_util_tx", "air", receiver)}
       </div>
     </div>
   `;
@@ -2045,13 +2080,13 @@ function snrHistorySeries(items) {
 
 function formatSparklineTime(value) {
   if (!value) {
-    return "n/a";
+    return t("common.na");
   }
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) {
-    return "n/a";
+    return t("common.na");
   }
-  return new Intl.DateTimeFormat([], {
+  return new Intl.DateTimeFormat(currentIntlLocale(), {
     hour12: false,
     hour: "2-digit",
     minute: "2-digit",
@@ -2153,7 +2188,7 @@ function nodeSnrSparkline(series) {
           <svg
             class="receiver-sparkline-graphic"
             viewBox="0 0 212 54"
-            aria-label="Node SNR history"
+            aria-label="${escapeHtml(t("nodes.snrHistory"))}"
             role="img"
           >
             ${yTicks.map((tick) => `
@@ -2187,7 +2222,7 @@ function nodeSnrDetail(insights) {
   const min = formatNumber(insights?.worst_rx_snr, 1, "");
   const max = formatNumber(insights?.best_rx_snr, 1, "");
   const avg = formatNumber(insights?.avg_rx_snr, 1, "");
-  return `Min ${min} · Max ${max} · Avg ${avg}`;
+  return t("nodes.snrDetail", { min, max, avg });
 }
 
 function nodeMetricHistorySeries(items, key) {
@@ -2280,7 +2315,7 @@ function nodeUtilizationSparkline(metricHistory) {
           <svg
             class="receiver-sparkline-graphic"
             viewBox="0 0 212 54"
-            aria-label="Node channel utilization and air utilization history"
+            aria-label="${escapeHtml(t("nodes.utilHistory"))}"
             role="img"
           >
             ${yTicks.map((tick) => `
@@ -2319,11 +2354,11 @@ function nodeUtilizationCard(node, metricHistory, freshness) {
   return `
     <div class="hud-metric util-card${freshness === "stale" ? " muted" : ""}">
       <div class="hud-metric-dual-head">
-        <span class="hud-metric-label">CH util / Air util TX</span>
-        <span class="hud-metric-inline mono-text">CH ${escapeHtml(chUtil)} · TX ${escapeHtml(airUtil)}</span>
+        <span class="hud-metric-label">${escapeHtml(t("nodes.utilLabel"))}</span>
+        <span class="hud-metric-inline mono-text">${escapeHtml(t("nodes.utilValues", { ch: chUtil, tx: airUtil }))}</span>
       </div>
       ${sparkline}
-      <span class="hud-metric-meta mono-text">Samples ${escapeHtml(formatWholeNumber(samples.length))}</span>
+      <span class="hud-metric-meta mono-text">${escapeHtml(t("nodes.samples", { count: formatWholeNumber(samples.length) }))}</span>
     </div>
   `;
 }
@@ -2331,14 +2366,14 @@ function nodeUtilizationCard(node, metricHistory, freshness) {
 function nodePacketBreakdownCard(insights) {
   const heardPackets = Math.max(0, intValue(insights?.heard_packets));
   const breakdown = [
-    { label: "Direct", value: intValue(insights?.direct_packets), tone: "direct" },
-    { label: "Relayed", value: intValue(insights?.relayed_packets), tone: "relayed" },
-    { label: "MQTT", value: intValue(insights?.mqtt_packets), tone: "mqtt" },
+    { label: t("path.direct"), value: intValue(insights?.direct_packets), tone: "direct" },
+    { label: t("path.relayed"), value: intValue(insights?.relayed_packets), tone: "relayed" },
+    { label: t("path.mqtt"), value: intValue(insights?.mqtt_packets), tone: "mqtt" },
   ];
   const broadcastPackets = intValue(insights?.broadcast_packets);
   return `
     <div class="hud-metric breakdown-card">
-      <span class="hud-metric-label">Packet breakdown</span>
+      <span class="hud-metric-label">${escapeHtml(t("nodes.packetBreakdown"))}</span>
       <div class="node-breakdown-list">
         ${breakdown.map((item) => {
           const pct = heardPackets > 0 ? Math.round((item.value / heardPackets) * 100) : 0;
@@ -2350,7 +2385,7 @@ function nodePacketBreakdownCard(insights) {
           `;
         }).join("")}
       </div>
-      <span class="hud-metric-meta mono-text">Broadcast ${escapeHtml(formatWholeNumber(broadcastPackets))}</span>
+      <span class="hud-metric-meta mono-text">${escapeHtml(t("nodes.broadcastCount", { count: formatWholeNumber(broadcastPackets) }))}</span>
     </div>
   `;
 }
@@ -2432,66 +2467,83 @@ function connectionVisualState() {
 
 function connectionStateTitle() {
   if (receiverLinkActive()) {
-    return meshIsStale() ? "Stale" : "Live";
+    return meshIsStale() ? t("status.stale") : t("status.live");
   }
   if (state.socketState === "connecting") {
-    return "Connecting";
+    return t("status.connecting");
   }
   if (state.socketState === "reconnecting") {
-    return "Reconnecting";
+    return t("status.reconnecting");
   }
   if (state.socketState === "blocked") {
-    return "Blocked";
+    return t("status.blocked");
   }
   if (state.collectorStatus && !state.collectorStatus.connected) {
-    return "Offline";
+    return t("status.offline");
   }
   if (state.socketState === "error") {
-    return "Degraded";
+    return t("status.degraded");
   }
-  return "Offline";
+  return t("status.offline");
+}
+
+function localizedCollectorStatusDetail(detail) {
+  if (typeof detail !== "string" || !detail.trim()) {
+    return "";
+  }
+  const normalized = detail.trim().toLowerCase();
+  if (normalized === "connection lost") {
+    return t("status.detail.connectionLost");
+  }
+  if (normalized === "demo dataset loaded for headless preview") {
+    return t("status.detail.demoLoaded");
+  }
+  if (normalized === "missing radio") {
+    return t("status.detail.missingRadio");
+  }
+  return detail;
 }
 
 function connectionStateDetail() {
   const updatedText = state.lastUpdatedAt
-    ? `Last update ${formatLastUpdated(state.lastUpdatedAt)}`
-    : "No live updates yet";
+    ? t("status.lastUpdate", { time: formatLastUpdated(state.lastUpdatedAt) })
+    : t("status.noLiveUpdates");
   const packetText = state.lastPacketReceivedAt
-    ? `Last packet ${formatTime(state.lastPacketReceivedAt)}`
-    : "No packets heard yet";
+    ? t("status.lastPacket", { time: formatTime(state.lastPacketReceivedAt) })
+    : t("status.noPacketsHeard");
 
   if (receiverLinkActive()) {
     if (meshIsStale()) {
-      return `Link active but no fresh observations. ${packetText}. ${updatedText}.`;
+      return t("status.linkActiveStale", { packet: packetText, updated: updatedText });
     }
-    return `Receiver link active. ${packetText}. ${updatedText}.`;
+    return t("status.linkActive", { packet: packetText, updated: updatedText });
   }
 
   if (state.collectorStatus?.detail) {
-    return `${state.collectorStatus.detail}. ${packetText}. ${updatedText}.`;
+    return `${localizedCollectorStatusDetail(state.collectorStatus.detail)}. ${packetText}. ${updatedText}.`;
   }
 
   if (state.collectorStatus && !state.collectorStatus.connected) {
-    return `Receiver link unavailable. ${packetText}. ${updatedText}.`;
+    return t("status.linkUnavailable", { packet: packetText, updated: updatedText });
   }
 
   if (state.socketState === "reconnecting") {
-    return `Event stream reconnecting. ${packetText}. ${updatedText}.`;
+    return t("status.streamReconnecting", { packet: packetText, updated: updatedText });
   }
 
   if (state.socketState === "connecting") {
-    return `Opening event stream. ${packetText}. ${updatedText}.`;
+    return t("status.streamOpening", { packet: packetText, updated: updatedText });
   }
 
   if (state.socketState === "blocked") {
-    return `Event stream blocked by server policy. ${packetText}. ${updatedText}.`;
+    return t("status.streamBlocked", { packet: packetText, updated: updatedText });
   }
 
   if (state.socketState === "error") {
-    return `Stream error. ${packetText}. ${updatedText}.`;
+    return t("status.streamError", { packet: packetText, updated: updatedText });
   }
 
-  return `Waiting for receiver status. ${packetText}. ${updatedText}.`;
+  return t("status.waitingForReceiver", { packet: packetText, updated: updatedText });
 }
 
 function renderPerspectiveLabel() {
@@ -2499,10 +2551,10 @@ function renderPerspectiveLabel() {
     return;
   }
   if (!state.perspective) {
-    perspectiveLabel.textContent = "Receiver pending";
+    perspectiveLabel.textContent = t("status.receiverPending");
     return;
   }
-  const label = state.perspective.label || "Receiver";
+  const label = state.perspective.label || t("status.receiver");
   const localNodeNum = state.perspective.local_node_num;
   perspectiveLabel.textContent = localNodeNum == null
     ? label
@@ -2604,18 +2656,18 @@ function portCategory(portnum) {
 function portBadgeText(portnum) {
   const category = portCategory(portnum);
   if (category === "text") {
-    return "Text";
+    return t("traffic.port.text");
   }
   if (category === "position") {
-    return "Pos";
+    return t("traffic.port.positionShort");
   }
   if (category === "telemetry") {
-    return "Telem";
+    return t("traffic.port.telemetryShort");
   }
   if (category === "admin") {
-    return "Admin";
+    return t("traffic.port.admin");
   }
-  return "Other";
+  return t("traffic.port.other");
 }
 
 function packetCountsForRecentActivity(packet) {
@@ -2776,12 +2828,12 @@ function selectedNeighborhood(routes) {
 function renderMapNotes() {
   if (!state.showRoutes) {
     mapNote.hidden = false;
-    mapNote.textContent = "Route overlays are hidden.";
+    mapNote.textContent = t("map.routesHidden");
     return;
   }
   if (!activeMeshRoutes().length) {
     mapNote.hidden = false;
-    mapNote.textContent = "No route overlays available for the current node set.";
+    mapNote.textContent = t("map.noRouteOverlays");
     return;
   }
   mapNote.hidden = true;
@@ -2794,7 +2846,10 @@ function updateOverviewStats() {
   const activeCount = state.nodes.filter((n) => nodeIsActive(n)).length;
 
   if (nodesPanelCount) {
-    nodesPanelCount.textContent = `${formatWholeNumber(nodeTotal)} heard · ${formatWholeNumber(activeCount)} active`;
+    nodesPanelCount.textContent = t("nodes.panelCount", {
+      heard: formatWholeNumber(nodeTotal),
+      active: formatWholeNumber(activeCount),
+    });
   }
   renderMapHud();
 }
@@ -2816,11 +2871,11 @@ function nodeRecentPacketMarkup(packet) {
       <div class="node-packet-tags">
         <span class="port-badge ${category}">${escapeHtml(portBadgeText(packet?.portnum))}</span>
         <div class="node-packet-tag-group">
-          <span class="node-packet-port mono-text">${escapeHtml(packet?.portnum || "Unknown")}</span>
-          <span class="node-packet-snr mono-text">${escapeHtml(`SNR ${snrLabel}`)}</span>
+          <span class="node-packet-port mono-text">${escapeHtml(packet?.portnum || t("common.unknown"))}</span>
+          <span class="node-packet-snr mono-text">${escapeHtml(`${t("traffic.snr")} ${snrLabel}`)}</span>
         </div>
       </div>
-      <p class="node-packet-destination">To ${escapeHtml(destinationLabel)}</p>
+      <p class="node-packet-destination">${escapeHtml(t("nodes.toDestination", { destination: destinationLabel }))}</p>
       ${deliveryNodeLabel ? `<p class="node-packet-delivery">${escapeHtml(deliveryNodeLabel)}</p>` : ""}
       ${textPreview ? `<p class="node-packet-text">${escapeHtml(textPreview)}</p>` : ""}
     </article>
@@ -2836,19 +2891,19 @@ function renderNodeRecentPackets(node, detailPayload) {
   if (hasError) {
     bodyMarkup = `
       <div class="node-packets-empty">
-        <p>Recent packets are unavailable right now.</p>
+        <p>${escapeHtml(t("nodes.recentPacketsUnavailable"))}</p>
       </div>
     `;
   } else if (isLoading) {
     bodyMarkup = `
       <div class="node-packets-empty">
-        <p>Loading recent packets…</p>
+        <p>${escapeHtml(t("nodes.loadingRecentPackets"))}</p>
       </div>
     `;
   } else if (!recentPackets.length) {
     bodyMarkup = `
       <div class="node-packets-empty">
-        <p>No recent packets from this node yet.</p>
+        <p>${escapeHtml(t("nodes.noRecentPackets"))}</p>
       </div>
     `;
   } else {
@@ -2862,7 +2917,7 @@ function renderNodeRecentPackets(node, detailPayload) {
   return `
     <section class="node-hud-section">
       <div class="node-hud-section-head">
-        <h4>Recent packets</h4>
+        <h4>${escapeHtml(t("nodes.recentPackets"))}</h4>
       </div>
       ${bodyMarkup}
     </section>
@@ -2871,13 +2926,13 @@ function renderNodeRecentPackets(node, detailPayload) {
 
 function tracerouteAttemptStatusLabel(status) {
   if (typeof status !== "string" || !status.trim()) {
-    return "Unknown";
+    return t("common.unknown");
   }
   const normalized = status.trim().toLowerCase();
-  if (normalized === "success") return "Success";
-  if (normalized === "ack_only") return "Ack only";
-  if (normalized === "timeout") return "Timeout";
-  if (normalized === "error") return "Error";
+  if (normalized === "success") return t("traceroute.success");
+  if (normalized === "ack_only") return t("traceroute.ackOnly");
+  if (normalized === "timeout") return t("traceroute.timeout");
+  if (normalized === "error") return t("traceroute.error");
   return normalized.replaceAll("_", " ").replace(/\b\w/g, (char) => char.toUpperCase());
 }
 
@@ -2895,7 +2950,7 @@ function tracerouteAttemptTone(attempt) {
 function tracerouteRouteLabel(route) {
   const pathNodeNums = Array.isArray(route?.path_node_nums) ? route.path_node_nums : [];
   if (!pathNodeNums.length) {
-    return "Route unavailable";
+    return t("routes.unavailable");
   }
   return pathNodeNums.map((nodeNum) => {
     const node = nodeByNum(nodeNum);
@@ -2921,7 +2976,7 @@ function traceroutePathNodes(pathNodeNums) {
 function traceroutePathMarkup(pathNodeNums) {
   const nodes = traceroutePathNodes(pathNodeNums);
   if (!nodes.length) {
-    return `<p class="traceroute-empty">Route unavailable</p>`;
+    return `<p class="traceroute-empty">${escapeHtml(t("routes.unavailable"))}</p>`;
   }
   return `
     <div class="traceroute-path">
@@ -2950,10 +3005,10 @@ function renderNodeTracerouteSection(detailPayload) {
     return `
       <section class="node-hud-section">
         <div class="node-hud-section-head">
-          <h4>Traceroute</h4>
+          <h4>${escapeHtml(t("traceroute.title"))}</h4>
         </div>
         <div class="node-packets-empty">
-          <p>No traceroute attempts recorded for this node yet.</p>
+          <p>${escapeHtml(t("traceroute.noAttempts"))}</p>
         </div>
       </section>
     `;
@@ -2973,7 +3028,7 @@ function renderNodeTracerouteSection(detailPayload) {
 
   const primaryTone = latestComplete ? "success" : (lastAttempt ? tracerouteAttemptTone(lastAttempt) : "failed");
   const primaryStatusLabel = latestComplete
-    ? "Complete path captured"
+    ? t("traceroute.completePath")
     : tracerouteAttemptStatusLabel(lastAttempt?.status);
   const completeSeenAt = latestComplete?.received_at || lastSuccessful?.requested_at || lastAttempt?.requested_at || null;
   const completeFullPath = Array.isArray(latestComplete?.full_path_node_nums)
@@ -2990,42 +3045,42 @@ function renderNodeTracerouteSection(detailPayload) {
     : traceroutePathMarkup((lastSuccessful?.route?.path_node_nums || lastAttempt?.route?.path_node_nums || []));
   const metaPills = [];
   if (completeSeenAt) {
-    metaPills.push(tracerouteMetaPill("Seen", formatTime(completeSeenAt)));
+    metaPills.push(tracerouteMetaPill(t("traceroute.seen"), formatTime(completeSeenAt)));
   }
   if (latestComplete?.hop_count != null) {
-    metaPills.push(tracerouteMetaPill("Hops", String(latestComplete.hop_count)));
+    metaPills.push(tracerouteMetaPill(t("traceroute.hops"), String(latestComplete.hop_count)));
   }
   if (latestComplete?.request_mesh_packet_id != null) {
-    metaPills.push(tracerouteMetaPill("Request", `#${latestComplete.request_mesh_packet_id}`));
+    metaPills.push(tracerouteMetaPill(t("traceroute.request"), `#${latestComplete.request_mesh_packet_id}`));
   } else if (lastSuccessful?.request_mesh_packet_id != null) {
-    metaPills.push(tracerouteMetaPill("Request", `#${lastSuccessful.request_mesh_packet_id}`));
+    metaPills.push(tracerouteMetaPill(t("traceroute.request"), `#${lastSuccessful.request_mesh_packet_id}`));
   } else if (lastAttempt?.request_mesh_packet_id != null) {
-    metaPills.push(tracerouteMetaPill("Request", `#${lastAttempt.request_mesh_packet_id}`));
+    metaPills.push(tracerouteMetaPill(t("traceroute.request"), `#${lastAttempt.request_mesh_packet_id}`));
   }
   if (latestComplete?.discovery_request_id != null) {
-    metaPills.push(tracerouteMetaPill("Trace", `#${latestComplete.discovery_request_id}`));
+    metaPills.push(tracerouteMetaPill(t("traceroute.trace"), `#${latestComplete.discovery_request_id}`));
   }
   if (completeForwardPath.length && completeReturnPath.length) {
-    metaPills.push(tracerouteMetaPill("Pattern", "Round trip", "success"));
+    metaPills.push(tracerouteMetaPill(t("path.pattern"), t("path.roundTrip"), "success"));
   } else if (completeForwardPath.length) {
-    metaPills.push(tracerouteMetaPill("Pattern", "Forward only", "partial"));
+    metaPills.push(tracerouteMetaPill(t("path.pattern"), t("path.forwardOnly"), "partial"));
   }
   const debugSummary = showLastAttempt
     ? `${formatTime(lastAttempt.requested_at)} · ${tracerouteResultLabel(lastAttempt)}`
     : null;
-  const routeTitle = latestComplete ? "Latest route" : primaryStatusLabel;
+  const routeTitle = latestComplete ? t("routes.latestRoute") : primaryStatusLabel;
 
   return `
     <section class="node-hud-section">
       <div class="node-hud-section-head">
-        <h4>Traceroute</h4>
+        <h4>${escapeHtml(t("traceroute.title"))}</h4>
       </div>
       <article class="traceroute-summary-card ${primaryTone}">
         <div class="traceroute-summary-head">
           <div>
             <h5>${escapeHtml(routeTitle)}</h5>
           </div>
-          <span class="traceroute-inline-status ${primaryTone}">${escapeHtml(latestComplete ? "COMPLETE" : tracerouteResultLabel(lastAttempt))}</span>
+          <span class="traceroute-inline-status ${primaryTone}">${escapeHtml(latestComplete ? t("common.complete") : tracerouteResultLabel(lastAttempt))}</span>
         </div>
 
         ${metaPills.length ? `
@@ -3036,7 +3091,7 @@ function renderNodeTracerouteSection(detailPayload) {
 
         <div class="traceroute-route-card">
           <div class="traceroute-route-head">
-            <span class="traceroute-route-label">Route</span>
+            <span class="traceroute-route-label">${escapeHtml(t("routes.route"))}</span>
             ${completeSeenAt ? `<span class="traceroute-route-age mono-text">${escapeHtml(formatRelativeTime(completeSeenAt))}</span>` : ""}
           </div>
           ${routeMarkup}
@@ -3057,8 +3112,8 @@ function renderNodeDetail(node) {
   if (!node) {
     nodeDetail.innerHTML = `
       <div class="hud-empty">
-        <h3>No Node Selected</h3>
-        <p>Select a node from the map or roster when positions arrive.</p>
+        <h3>${escapeHtml(t("nodes.noNodeSelectedTitle"))}</h3>
+        <p>${escapeHtml(t("nodes.noNodeSelectedBody"))}</p>
       </div>
     `;
     return;
@@ -3072,7 +3127,7 @@ function renderNodeDetail(node) {
   const freshness = nodeFreshness(detailNode);
   const hudTone = freshness;
   const pathLabel = nodePathLabel(detailNode);
-  const roleLabel = [detailNode.role, detailNode.hardware_model].filter(Boolean).join(" / ") || "Node";
+  const roleLabel = [detailNode.role, detailNode.hardware_model].filter(Boolean).join(" / ") || t("common.node");
 
   nodeDetail.innerHTML = `
     <div class="node-hud-card ${hudTone}">
@@ -3085,11 +3140,11 @@ function renderNodeDetail(node) {
       </div>
 
       <div class="node-hud-metrics">
-        ${metric("Path", pathLabel)}
-        ${metric("Hops Away", detailNode.hops_away ?? "n/a")}
-        ${metric("Last Heard", formatTime(detailNode.last_heard_at), "", detailNode.first_heard_at ? `First ${formatTime(detailNode.first_heard_at)}` : "")}
-        ${metric("Packets Heard", formatWholeNumber(insights?.heard_packets))}
-        ${metric("Battery", detailNode.battery_level == null ? "n/a" : `${Math.round(detailNode.battery_level)}%`)}
+        ${metric(t("nodes.metric.path"), pathLabel)}
+        ${metric(t("nodes.metric.hopsAway"), detailNode.hops_away ?? t("common.na"))}
+        ${metric(t("nodes.metric.lastHeard"), formatTime(detailNode.last_heard_at), "", detailNode.first_heard_at ? t("nodes.metric.first", { time: formatTime(detailNode.first_heard_at) }) : "")}
+        ${metric(t("nodes.metric.packetsHeard"), formatWholeNumber(insights?.heard_packets))}
+        ${metric(t("nodes.metric.battery"), detailNode.battery_level == null ? t("common.na") : `${Math.round(detailNode.battery_level)}%`)}
         ${nodeSnrCard(detailNode, insights, recentPackets, freshness)}
         ${nodeUtilizationCard(detailNode, metricHistory, freshness)}
         ${nodePacketBreakdownCard(insights)}
@@ -3117,8 +3172,8 @@ function renderNodeList() {
     const hasFilters = state.nodeFilters.size > 0 || Boolean(state.nodeQuery.trim());
     nodeList.innerHTML = `
       <div class="node-list-empty">
-        <h3>${hasFilters ? "No Matching Nodes" : "No Nodes Yet"}</h3>
-        <p>${hasFilters ? "Adjust the roster filters or search query to widen the view." : "LongFast nodes appear here as the receiver hears them."}</p>
+        <h3>${escapeHtml(hasFilters ? t("nodes.noMatchingTitle") : t("nodes.noNodesTitle"))}</h3>
+        <p>${escapeHtml(hasFilters ? t("nodes.noMatchingBody") : t("nodes.noNodesBody"))}</p>
       </div>
     `;
     return;
@@ -3136,7 +3191,7 @@ function renderNodeList() {
           ? ""
           : (status === "mqtt"
             ? `<span class="node-row-hop">MQTT</span>`
-            : `<span class="node-row-hop">Relayed</span>`);
+            : `<span class="node-row-hop">${escapeHtml(t("path.relayed"))}</span>`);
         const nodeId = node.node_id ? `!${escapeHtml(node.node_id)}` : (node.node_num ? `#${node.node_num}` : "");
         return `
           <button
@@ -3313,14 +3368,14 @@ function markerIcon(node, ctx) {
 }
 
 function popupMarkup(node) {
-  const roleHardware = [node.role, node.hardware_model].filter(Boolean).join(" / ") || "Node telemetry";
+  const roleHardware = [node.role, node.hardware_model].filter(Boolean).join(" / ") || t("common.nodeTelemetry");
   return `
     <div class="mesh-node-tooltip-card">
       <div class="mesh-node-tooltip-title">${escapeHtml(nodeLabel(node))}</div>
       <div class="mesh-node-tooltip-line">${escapeHtml(roleHardware)}</div>
       <div class="mesh-node-tooltip-line">${escapeHtml(nodePathDescription(node))}</div>
-      <div class="mesh-node-tooltip-line">Last heard ${escapeHtml(formatTime(node.last_heard_at))}</div>
-      <div class="mesh-node-tooltip-line">SNR ${escapeHtml(formatNumber(node.last_snr, 1, " dB"))}</div>
+      <div class="mesh-node-tooltip-line">${escapeHtml(t("map.lastHeard", { time: formatTime(node.last_heard_at) }))}</div>
+      <div class="mesh-node-tooltip-line">${escapeHtml(`${t("traffic.snr")} ${formatNumber(node.last_snr, 1, " dB")}`)}</div>
     </div>
   `;
 }
@@ -3479,7 +3534,7 @@ function renderRouteToggle() {
   if (!routeToggle) {
     return;
   }
-  routeToggle.textContent = state.showRoutes ? 'Hide Routes' : 'Show Routes';
+  routeToggle.textContent = state.showRoutes ? t("routes.hide") : t("routes.show");
   routeToggle.setAttribute('aria-pressed', String(state.showRoutes));
 }
 
@@ -3494,8 +3549,8 @@ function renderMap(items) {
   if (!mappedNodes.length) {
     state.remoteNodeNums = new Set();
     mapEmpty.textContent = state.nodes.some(nodeHasCoordinates)
-      ? "No mapped nodes heard in the last 24 hours."
-      : "Waiting for LongFast node locations.";
+      ? t("map.noMappedNodes24h")
+      : t("map.waitingForNodeLocations");
     mapEmpty.hidden = false;
     mapNote.hidden = true;
     mapNote.textContent = "";
@@ -3520,7 +3575,7 @@ function renderMap(items) {
   const ctx = { nowMs, neighborhood, degreeMap, zoom };
 
   state.remoteNodeNums = new Set();
-  mapEmpty.textContent = "Waiting for LongFast node locations.";
+  mapEmpty.textContent = t("map.waitingForNodeLocations");
   mapEmpty.hidden = true;
   mapState.routeLayer.clearLayers();
   mapState.routeArrowLayer.clearLayers();
@@ -3630,10 +3685,10 @@ function renderMeshSummary(data) {
   const directShare = sharePercentage(directPackets, totalPackets);
 
   const pathSegments = [
-    { label: "Direct RF", value: directPackets, tone: "direct" },
-    { label: "Relayed", value: relayedPackets, tone: "relayed" },
-    { label: "MQTT", value: mqttPackets, tone: "mqtt" },
-    { label: "Unknown", value: unknownPackets, tone: "unknown" },
+    { label: t("path.directRf"), value: directPackets, tone: "direct" },
+    { label: t("path.relayed"), value: relayedPackets, tone: "relayed" },
+    { label: t("path.mqtt"), value: mqttPackets, tone: "mqtt" },
+    { label: t("common.unknown"), value: unknownPackets, tone: "unknown" },
   ];
   const dominantPath = dominantSegment(pathSegments);
 
@@ -3647,7 +3702,7 @@ function renderMeshSummary(data) {
     intelStory.innerHTML = `
       ${channelUtilizationBlock(receiver)}
       <div class="hud-empty compact">
-        <p>Waiting for passive mesh traffic to build an intel view.</p>
+        <p>${escapeHtml(t("signals.waitingIntel"))}</p>
       </div>
     `;
     updateOverviewStats();
@@ -3656,14 +3711,14 @@ function renderMeshSummary(data) {
 
   // Block 2 — Routing health: 3 KV rows
   const dominantLabel = dominantPath
-    ? `${sharePercentage(dominantPath.value, totalPackets)}% ${dominantPath.label.toLowerCase()}`
-    : "Waiting";
-  const dominantHelp = "Which routing mode — Direct RF, Relayed, MQTT, or Unknown — carries the largest share of recent packets.";
+    ? `${sharePercentage(dominantPath.value, totalPackets)}% ${dominantPath.label.toLocaleLowerCase(currentIntlLocale())}`
+    : t("common.waiting");
+  const dominantHelp = t("signals.dominantPathHelp");
   const dominantPathRow = `
     <div class="routing-health-row">
       <span class="routing-health-label">
-        Dominant path
-        <span class="signals-help" tabindex="0" role="button" aria-label="What is dominant path?">
+        ${escapeHtml(t("signals.dominantPath"))}
+        <span class="signals-help" tabindex="0" role="button" aria-label="${escapeHtml(t("signals.dominantPathAria"))}">
           <span class="signals-help-icon" aria-hidden="true">?</span>
           <span class="signals-help-tooltip" role="tooltip">${escapeHtml(dominantHelp)}</span>
         </span>
@@ -3673,26 +3728,26 @@ function renderMeshSummary(data) {
   `;
   const routingHealthHtml = `
     <div class="signals-section">
-      <span class="signals-section-label">Routing health</span>
+      <span class="signals-section-label">${escapeHtml(t("signals.routingHealth"))}</span>
       <div class="routing-health">
         ${dominantPathRow}
-        ${routingHealthRow("Direct RF", directPackets ? `${directShare}% · ${formatWholeNumber(directPackets)} pkts` : "No direct traffic")}
-        ${routingHealthRow("Total packets", formatWholeNumber(totalPackets))}
+        ${routingHealthRow(t("path.directRf"), directPackets ? t("signals.directRfPackets", { percent: directShare, count: formatWholeNumber(directPackets) }) : t("signals.noDirectTraffic"))}
+        ${routingHealthRow(t("signals.totalPackets"), formatWholeNumber(totalPackets))}
       </div>
     </div>
   `;
 
   // Block 3 — Packet breakdown: proportional bars (share of total traffic)
   const breakdownTypes = [
-    { label: "Text", value: textPackets, tone: "text" },
-    { label: "Telemetry", value: telemetryPackets, tone: "telemetry" },
-    { label: "Position", value: positionPackets, tone: "position" },
-    { label: "Other", value: otherPackets, tone: "other" },
+    { label: t("signals.packetType.text"), value: textPackets, tone: "text" },
+    { label: t("signals.packetType.telemetry"), value: telemetryPackets, tone: "telemetry" },
+    { label: t("signals.packetType.position"), value: positionPackets, tone: "position" },
+    { label: t("signals.packetType.other"), value: otherPackets, tone: "other" },
   ];
 
   const breakdownHtml = `
     <div class="signals-section">
-      <span class="signals-section-label">Packet breakdown</span>
+      <span class="signals-section-label">${escapeHtml(t("signals.packetBreakdown"))}</span>
       <div class="packet-breakdown">
         ${breakdownTypes.map((t) => {
           const pct = totalPackets > 0 ? Math.round((t.value / totalPackets) * 100) : 0;
@@ -3742,7 +3797,7 @@ function packetRowMarkup(packet) {
   const fromId = packet.from_node_num != null ? `#${packet.from_node_num}` : "";
   const deliveryLabel = packetDeliveryNodeLabel(packet);
 
-  const pathContent = `<span class="path-badge ${pathTone}">${escapeHtml(isUnknown ? "Unknown" : packetPathLabel(packet))}</span>`;
+  const pathContent = `<span class="path-badge ${pathTone}">${escapeHtml(isUnknown ? t("common.unknown") : packetPathLabel(packet))}</span>`;
 
   return `
     <tr class="packet-row ${category}">
@@ -3756,7 +3811,7 @@ function packetRowMarkup(packet) {
       <td>
         <div class="table-node">
           <span class="table-node-main">${escapeHtml(toNodeLabel(packet))}</span>
-          <span class="table-node-sub mono-text">${escapeHtml(packet.to_node_num === BROADCAST_NODE_NUM ? "BROADCAST" : `#${packet.to_node_num ?? "n/a"}`)}</span>
+          <span class="table-node-sub mono-text">${escapeHtml(packet.to_node_num === BROADCAST_NODE_NUM ? t("common.broadcast").toLocaleUpperCase(currentIntlLocale()) : `#${packet.to_node_num ?? t("common.na")}`)}</span>
         </div>
       </td>
       <td>
@@ -3779,15 +3834,15 @@ function packetRowMarkup(packet) {
 
 function packetDeliveryNodeLabel(packet) {
   if (packet?.via_mqtt || packet?.path_tone === "mqtt" || packetPathTone(packet) === "mqtt") {
-    return "Via MQTT";
+    return t("path.viaMqtt");
   }
   const deliveredNodeNum = packet?.relay_node ?? packet?.next_hop;
   if (deliveredNodeNum == null) {
     return "";
   }
   const node = nodeByNum(deliveredNodeNum);
-  const label = packet?.delivery_node_label || (node ? nodeLabel(node) : `Node ${deliveredNodeNum}`);
-  return `Via ${label}`;
+  const label = packet?.delivery_node_label || (node ? nodeLabel(node) : t("common.nodeWithNum", { num: deliveredNodeNum }));
+  return t("path.via", { label });
 }
 
 function visiblePackets(items = state.packets) {
@@ -3836,8 +3891,8 @@ function updatePacketExportButton(items = visiblePackets()) {
   const visibleCount = items.length;
   exportPacketsButton.disabled = visibleCount === 0;
   const actionLabel = visibleCount
-    ? `Export ${formatWholeNumber(visibleCount)} visible packets as CSV`
-    : "No visible packets to export";
+    ? t("traffic.exportVisibleCountCsv", { count: formatWholeNumber(visibleCount) })
+    : t("traffic.noVisiblePacketsToExport");
   exportPacketsButton.title = actionLabel;
   exportPacketsButton.setAttribute("aria-label", actionLabel);
 }
@@ -3912,7 +3967,7 @@ function renderPackets(items) {
   if (!filteredItems.length) {
     packetsBody.innerHTML = `
       <tr>
-        <td colspan="6" class="empty-cell">No packets match the current filter.</td>
+        <td colspan="7" class="empty-cell">${escapeHtml(t("traffic.noPacketsMatch"))}</td>
       </tr>
     `;
     updateOverviewStats();
@@ -3972,8 +4027,8 @@ function renderChat(items) {
   if (!items.length) {
     chatFeed.innerHTML = `
       <div class="chat-empty">
-        <h3>No Chat Yet</h3>
-        <p>Broadcast LongFast messages will stream here when heard by this receiver.</p>
+        <h3>${escapeHtml(t("chat.emptyTitle"))}</h3>
+        <p>${escapeHtml(t("chat.emptyBody"))}</p>
       </div>
     `;
     chatLastMessageKey = null;
@@ -4011,7 +4066,7 @@ function renderChat(items) {
 async function fetchJson(url) {
   const response = await fetch(url);
   if (!response.ok) {
-    throw new Error(`Request failed: ${response.status}`);
+    throw new Error(t("status.requestFailed", { status: response.status }));
   }
   return response.json();
 }
@@ -4164,7 +4219,7 @@ function startDecayRefreshLoop() {
 function handleLoadError(error) {
   state.collectorStatus = {
     connected: false,
-    detail: error instanceof Error ? error.message : "Unable to load dashboard",
+    detail: error instanceof Error ? error.message : t("status.unableToLoad"),
     state: "error",
   };
   setSocketState("error");
@@ -4325,8 +4380,41 @@ function selectNodeFromTarget(target) {
   selectNode(nodeNum, { flyTo: true, openTooltip: true });
 }
 
+function renderLocalizedUi() {
+  i18n.applyStaticTranslations();
+  syncLanguageControls();
+  syncThemeControls();
+  syncPacketLimitControl();
+  renderPerspectiveLabel();
+  renderConnectionIndicator();
+  renderStatusBarLegend();
+  renderRouteToggle();
+  updatePacketFilterButtons();
+  updateNodeFilterButtons();
+  refreshKpiTicker();
+
+  if (state.meshSummary) {
+    renderMeshSummary(state.meshSummary);
+  } else {
+    updateOverviewStats();
+  }
+  if (mapState.map || state.nodes.length) {
+    renderNodesView();
+  } else {
+    renderNodeDetail(null);
+    renderNodeList();
+  }
+  if (Array.isArray(state.packets)) {
+    renderPackets(state.packets);
+  }
+  if (Array.isArray(state.chat)) {
+    renderChat(state.chat);
+  }
+}
+
 function initializeStaticUI() {
   state.packetLimit = readStoredPacketLimit() || PACKETS_LIMIT;
+  i18n.applyStaticTranslations();
   applyThemeSelection(DEFAULT_UI_THEME);
   renderPerspectiveLabel();
   renderConnectionIndicator();
@@ -4336,6 +4424,7 @@ function initializeStaticUI() {
   updatePacketFilterButtons();
   updateNodeFilterButtons();
   syncThemeControls();
+  syncLanguageControls();
   syncPacketLimitControl();
   setDrawerView("nodes");
   setNodeRailOpen(false);
@@ -4475,6 +4564,16 @@ uiThemeSelect?.addEventListener("change", (event) => {
     return;
   }
   applyThemeSelection(nextTheme, { persist: true });
+});
+
+uiLanguageSelect?.addEventListener("change", (event) => {
+  const nextLocale = i18n.normalizeLocale(event.target.value);
+  if (!nextLocale || nextLocale === i18n.locale()) {
+    syncLanguageControls();
+    return;
+  }
+  i18n.setLocale(nextLocale, { persist: true });
+  renderLocalizedUi();
 });
 
 document.addEventListener("keydown", (event) => {

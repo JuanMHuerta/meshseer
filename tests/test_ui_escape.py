@@ -25,6 +25,7 @@ def open_page(
     tmp_path,
     *,
     initial_storage: dict[str, str] | None = None,
+    locale: str | None = None,
     status_ui_default_style: str | None = None,
 ):
     host = "127.0.0.1"
@@ -41,7 +42,10 @@ def open_page(
                 pytest.skip(f"Playwright browser unavailable: {exc}")
 
             try:
-                browser_page = browser.new_page(viewport={"width": 1600, "height": 1200})
+                page_options = {"viewport": {"width": 1600, "height": 1200}}
+                if locale is not None:
+                    page_options["locale"] = locale
+                browser_page = browser.new_page(**page_options)
                 if initial_storage:
                     browser_page.add_init_script(
                         f"""
@@ -439,3 +443,56 @@ def test_recent_packets_header_stays_isolated_in_dark_themes(tmp_path):
             assert table_styles["borderSpacing"] == "0px"
             assert table_styles["headerPosition"] == "sticky"
             assert table_styles["headerBackgroundAlpha"] >= 0.9
+
+
+def test_spanish_browser_locale_is_used_and_manual_language_choice_persists(tmp_path):
+    with open_page(tmp_path, locale="es-AR") as page:
+        page.click("#rail-toggle-options")
+        expect_rail_open(page)
+
+        page.wait_for_function(
+            """
+            () => (
+              document.documentElement.lang === 'es'
+              && document.querySelector('#ui-language-select')?.value === 'es'
+              && document.querySelector('#mesh-options h2')?.textContent === 'Opciones'
+            )
+            """
+        )
+        assert page.locator("#rail-toggle-nodes .rail-icon-label").text_content() == "Nodos"
+
+        page.click("#rail-toggle-traffic")
+        expect_traffic_open(page)
+        assert page.locator("#mesh-traffic thead th").nth(4).text_content() == "Entregado por"
+
+        page.select_option("#ui-language-select", "en")
+        page.wait_for_function(
+            """
+            () => (
+              document.documentElement.lang === 'en'
+              && document.querySelector('#ui-language-select')?.value === 'en'
+              && document.querySelector('#mesh-options h2')?.textContent === 'Options'
+            )
+            """
+        )
+        assert page.evaluate("() => window.localStorage.getItem('meshseer.ui.language')") == "en"
+        assert page.locator("#mesh-traffic thead th").nth(4).text_content() == "Delivered By"
+
+        page.reload(wait_until="domcontentloaded")
+        _wait_for_dashboard(page)
+        page.click("#rail-toggle-options")
+        expect_rail_open(page)
+
+        assert page.evaluate("() => document.documentElement.lang") == "en"
+        assert page.locator("#ui-language-select").input_value() == "en"
+        assert page.locator("#mesh-options h2").text_content() == "Options"
+
+
+def test_unsupported_browser_locale_falls_back_to_english(tmp_path):
+    with open_page(tmp_path, locale="fr-FR") as page:
+        page.click("#rail-toggle-options")
+        expect_rail_open(page)
+
+        assert page.evaluate("() => document.documentElement.lang") == "en"
+        assert page.locator("#ui-language-select").input_value() == "en"
+        assert page.locator("#mesh-options h2").text_content() == "Options"

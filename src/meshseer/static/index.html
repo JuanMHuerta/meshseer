@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Meshseer | LongFast Mesh Console</title>
+    <title data-i18n="document.title">Meshseer | LongFast Mesh Console</title>
     <meta name="theme-color" content="#ffffff">
     <link rel="icon" type="image/svg+xml" href="/static/favicon/favicon.svg">
     <link rel="apple-touch-icon" sizes="180x180" href="/static/favicon/apple-touch-icon.png">
@@ -26,6 +26,7 @@
             class="status-badge"
             id="collector-card"
             aria-label="Offline. Waiting for status."
+            data-i18n-aria-label="status.initialAria"
             aria-live="polite"
             data-state="offline"
             role="status"
@@ -33,44 +34,44 @@
           >
             <span class="live-pip" aria-hidden="true"></span>
             <span class="status-badge-tooltip" role="tooltip">
-              <span class="status-badge-tooltip-title">Receiver link</span>
-              <span class="status-badge-tooltip-copy" id="collector-detail">Waiting for status.</span>
+              <span class="status-badge-tooltip-title" data-i18n="status.receiverLink">Receiver link</span>
+              <span class="status-badge-tooltip-copy" id="collector-detail" data-i18n="status.waitingForStatus">Waiting for status.</span>
               <span class="status-badge-tooltip-copy" id="perspective-label"></span>
             </span>
           </div>
           <span class="command-strip-divider" aria-hidden="true"></span>
-          <div class="stats-row" id="stats-row" aria-label="Mesh stats" aria-live="polite">
+          <div class="stats-row" id="stats-row" aria-label="Mesh stats" data-i18n-aria-label="stats.meshStats" aria-live="polite">
             <div class="stat-item" id="stat-nodes">
               <span class="stat-value stat-value--amber mono-text">--</span>
-              <span class="stat-label">Nodes</span>
+              <span class="stat-label" data-i18n="stats.nodes">Nodes</span>
             </div>
             <div class="stat-item" id="stat-active">
               <span class="stat-value mono-text">--</span>
-              <span class="stat-label">Active</span>
+              <span class="stat-label" data-i18n="stats.active">Active</span>
             </div>
             <div class="stat-item" id="stat-traffic">
               <span class="stat-value mono-text">--</span>
-              <span class="stat-label">Pkt/m</span>
+              <span class="stat-label" data-i18n="stats.pktPerMinute">Pkt/m</span>
             </div>
             <div class="stat-item" id="stat-paths">
               <span class="stat-value mono-text">--</span>
-              <span class="stat-label">Paths</span>
+              <span class="stat-label" data-i18n="stats.paths">Paths</span>
             </div>
           </div>
         </div>
         <div class="command-strip-actions">
-          <button type="button" class="command-icon-btn" id="reset-map" aria-label="Zoom to fit">
+          <button type="button" class="command-icon-btn" id="reset-map" aria-label="Zoom to fit" data-i18n-aria-label="actions.zoomToFit">
             <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
               <path d="M1 5V1h4M9 1h4v4M13 9v4H9M5 13H1V9" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
             </svg>
           </button>
-          <button type="button" class="command-icon-btn" id="refresh-dashboard" aria-label="Refresh">
+          <button type="button" class="command-icon-btn" id="refresh-dashboard" aria-label="Refresh" data-i18n-aria-label="actions.refresh">
             <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
               <path d="M1.5 7a5.5 5.5 0 019.37-3.9M12.5 7a5.5 5.5 0 01-9.37 3.9" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
               <path d="M11 0v3.5H7.5M3 14v-3.5h3.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
             </svg>
           </button>
-          <button type="button" id="route-toggle" aria-pressed="true" hidden>Hide Routes</button>
+          <button type="button" id="route-toggle" aria-pressed="true" data-i18n="routes.hide" hidden>Hide Routes</button>
         </div>
       </header>
 
@@ -79,8 +80,8 @@
 
         <!-- FULL-SCREEN MAP -->
         <div class="map-shell" id="mesh-map">
-          <div id="leaflet-map" aria-label="LongFast node map"></div>
-          <div class="map-empty" id="map-empty">Waiting for LongFast node locations.</div>
+          <div id="leaflet-map" aria-label="LongFast node map" data-i18n-aria-label="map.longFastNodeMap"></div>
+          <div class="map-empty" id="map-empty" data-i18n="map.waitingForNodeLocations">Waiting for LongFast node locations.</div>
           <div class="map-note" id="map-note" hidden></div>
         </div>
 
@@ -90,11 +91,11 @@
             <span class="status-bar-legend-label" id="app-version">v?</span>
             <span class="status-bar-legend-label" style="margin-right:0">·</span>
             <span class="status-bar-dot status-bar-dot--forward" id="status-bar-dot-forward"></span>
-            <span class="status-bar-legend-label" id="status-bar-label-forward">Forward</span>
+            <span class="status-bar-legend-label" id="status-bar-label-forward" data-i18n="routes.forward">Forward</span>
             <span class="status-bar-dot status-bar-dot--return" id="status-bar-dot-return"></span>
-            <span class="status-bar-legend-label" id="status-bar-label-return">Return</span>
+            <span class="status-bar-legend-label" id="status-bar-label-return" data-i18n="routes.return">Return</span>
             <span class="status-bar-dot status-bar-dot--older" id="status-bar-dot-tertiary"></span>
-            <span class="status-bar-legend-label" id="status-bar-label-tertiary">Older</span>
+            <span class="status-bar-legend-label" id="status-bar-label-tertiary" data-i18n="routes.older">Older</span>
           </div>
         </div>
 
@@ -102,39 +103,39 @@
         <nav class="node-rail" id="node-rail" data-state="collapsed">
           <!-- Collapsed strip -->
           <div class="rail-strip">
-            <button type="button" class="rail-icon" id="rail-toggle-nodes" aria-label="Toggle node roster" aria-expanded="false">
+            <button type="button" class="rail-icon" id="rail-toggle-nodes" aria-label="Toggle node roster" data-i18n-aria-label="nav.toggleNodeRoster" aria-expanded="false">
               <svg width="18" height="18" viewBox="0 0 18 18" fill="none" aria-hidden="true">
                 <circle cx="9" cy="5" r="3" stroke="currentColor" stroke-width="1.5" fill="none"/>
                 <path d="M3 16c0-3.3 2.7-6 6-6s6 2.7 6 6" stroke="currentColor" stroke-width="1.5" fill="none"/>
               </svg>
-              <span class="rail-icon-label">Nodes</span>
+              <span class="rail-icon-label" data-i18n="nav.nodes">Nodes</span>
             </button>
-            <button type="button" class="rail-icon" id="rail-toggle-chat" aria-label="Toggle chat panel" aria-expanded="false">
+            <button type="button" class="rail-icon" id="rail-toggle-chat" aria-label="Toggle chat panel" data-i18n-aria-label="nav.toggleChatPanel" aria-expanded="false">
               <svg width="18" height="18" viewBox="0 0 18 18" fill="none" aria-hidden="true">
                 <path d="M4 4.5h10a1.5 1.5 0 0 1 1.5 1.5v5A1.5 1.5 0 0 1 14 12.5H8.2L5 15v-2.5H4A1.5 1.5 0 0 1 2.5 11V6A1.5 1.5 0 0 1 4 4.5Z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" fill="none"/>
                 <path d="M5.5 7.5h7M5.5 9.75h4.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
               </svg>
-              <span class="rail-icon-label">Chat</span>
+              <span class="rail-icon-label" data-i18n="nav.chat">Chat</span>
             </button>
-            <button type="button" class="rail-icon" id="rail-toggle-signals" aria-label="Toggle signals panel">
+            <button type="button" class="rail-icon" id="rail-toggle-signals" aria-label="Toggle signals panel" data-i18n-aria-label="nav.toggleSignalsPanel">
               <svg width="18" height="18" viewBox="0 0 18 18" fill="none" aria-hidden="true">
                 <path d="M3 14l4-5 3 3 5-7" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
               </svg>
-              <span class="rail-icon-label">Signals</span>
+              <span class="rail-icon-label" data-i18n="nav.signals">Signals</span>
             </button>
-            <button type="button" class="rail-icon" id="rail-toggle-traffic" aria-label="Toggle traffic panel">
+            <button type="button" class="rail-icon" id="rail-toggle-traffic" aria-label="Toggle traffic panel" data-i18n-aria-label="nav.toggleTrafficPanel">
               <svg width="18" height="18" viewBox="0 0 18 18" fill="none" aria-hidden="true">
                 <rect x="2" y="3" width="14" height="12" rx="2" stroke="currentColor" stroke-width="1.5" fill="none"/>
                 <line x1="2" y1="7" x2="16" y2="7" stroke="currentColor" stroke-width="1.5"/>
               </svg>
-              <span class="rail-icon-label">Traffic</span>
+              <span class="rail-icon-label" data-i18n="nav.traffic">Traffic</span>
             </button>
-            <button type="button" class="rail-icon" id="rail-toggle-options" aria-label="Toggle options panel" aria-expanded="false">
+            <button type="button" class="rail-icon" id="rail-toggle-options" aria-label="Toggle options panel" data-i18n-aria-label="nav.toggleOptionsPanel" aria-expanded="false">
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
                 <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
                 <circle cx="12" cy="12" r="3" stroke="currentColor" stroke-width="2"/>
               </svg>
-              <span class="rail-icon-label">Options</span>
+              <span class="rail-icon-label" data-i18n="nav.options">Options</span>
             </button>
             <div class="rail-spacer"></div>
           </div>
@@ -142,9 +143,9 @@
           <!-- Expanded panel: Nodes view -->
           <section class="rail-panel nodes-panel" id="mesh-nodes">
             <div class="rail-panel-head">
-              <h2>Nodes</h2>
+              <h2 data-i18n="nav.nodes">Nodes</h2>
               <span class="rail-panel-subtitle mono-text" id="nodes-panel-count">0 heard · 0 active</span>
-              <button type="button" class="drawer-close" data-drawer="rail" aria-label="Close panel">&#x2715;</button>
+              <button type="button" class="drawer-close" data-drawer="rail" aria-label="Close panel" data-i18n-aria-label="actions.closePanel">&#x2715;</button>
             </div>
 
             <div class="node-search-bar">
@@ -153,23 +154,23 @@
                   <circle cx="6" cy="6" r="4.5" stroke="currentColor" stroke-width="1.5" fill="none"/>
                   <line x1="9.5" y1="9.5" x2="13" y2="13" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
                 </svg>
-                <input id="node-search" type="search" placeholder="Filter by name or ID…">
+                <input id="node-search" type="search" placeholder="Filter by name or ID…" data-i18n-placeholder="nodes.searchPlaceholder">
               </label>
             </div>
 
             <div class="proximity-legend">
-              <span class="proximity-legend-item"><span class="proximity-dot proximity-dot--direct"></span> Direct</span>
-              <span class="proximity-legend-item"><span class="proximity-dot proximity-dot--relayed"></span> Relayed</span>
+              <span class="proximity-legend-item"><span class="proximity-dot proximity-dot--direct"></span> <span data-i18n="path.direct">Direct</span></span>
+              <span class="proximity-legend-item"><span class="proximity-dot proximity-dot--relayed"></span> <span data-i18n="path.relayed">Relayed</span></span>
               <span class="proximity-legend-item"><span class="proximity-dot proximity-dot--mqtt"></span> MQTT</span>
             </div>
 
             <div class="roster-toolbar" id="roster-toolbar">
-              <div class="filter-strip compact" id="node-filters" aria-label="Node filters">
-                <button type="button" class="filter-chip" data-node-filter="active">Active</button>
-                <button type="button" class="filter-chip" data-node-filter="direct-rf">Direct RF</button>
-                <button type="button" class="filter-chip" data-node-filter="mapped">Mapped</button>
-                <button type="button" class="filter-chip" data-node-filter="mqtt">MQTT</button>
-                <button type="button" class="filter-chip" data-node-filter="stale">Stale</button>
+              <div class="filter-strip compact" id="node-filters" aria-label="Node filters" data-i18n-aria-label="nodes.filtersLabel">
+                <button type="button" class="filter-chip" data-node-filter="active" data-i18n="nodes.filter.active">Active</button>
+                <button type="button" class="filter-chip" data-node-filter="direct-rf" data-i18n="nodes.filter.directRf">Direct RF</button>
+                <button type="button" class="filter-chip" data-node-filter="mapped" data-i18n="nodes.filter.mapped">Mapped</button>
+                <button type="button" class="filter-chip" data-node-filter="mqtt" data-i18n="nodes.filter.mqtt">MQTT</button>
+                <button type="button" class="filter-chip" data-node-filter="stale" data-i18n="nodes.filter.stale">Stale</button>
               </div>
             </div>
 
@@ -179,8 +180,8 @@
           <!-- Expanded panel: Signals/Intel view -->
           <section class="rail-panel ops-panel" id="mesh-intel" hidden>
             <div class="rail-panel-head">
-              <h2>Signals</h2>
-              <button type="button" class="drawer-close" data-drawer="rail" aria-label="Close panel">&#x2715;</button>
+              <h2 data-i18n="nav.signals">Signals</h2>
+              <button type="button" class="drawer-close" data-drawer="rail" aria-label="Close panel" data-i18n-aria-label="actions.closePanel">&#x2715;</button>
             </div>
             <div class="intel-grid" id="intel-grid"></div>
             <div class="intel-story" id="intel-story"></div>
@@ -188,25 +189,32 @@
 
           <section class="rail-panel chat-panel" id="mesh-chat" hidden>
             <div class="rail-panel-head">
-              <h2>Chat</h2>
-              <span class="rail-panel-subtitle mono-text">Broadcast</span>
-              <button type="button" class="drawer-close" data-drawer="rail" aria-label="Close panel">&#x2715;</button>
+              <h2 data-i18n="nav.chat">Chat</h2>
+              <span class="rail-panel-subtitle mono-text" data-i18n="common.broadcast">Broadcast</span>
+              <button type="button" class="drawer-close" data-drawer="rail" aria-label="Close panel" data-i18n-aria-label="actions.closePanel">&#x2715;</button>
             </div>
             <div class="chat-feed" id="chat-feed"></div>
           </section>
 
           <section class="rail-panel options-panel" id="mesh-options" hidden>
             <div class="rail-panel-head">
-              <h2>Options</h2>
-              <button type="button" class="drawer-close" data-drawer="rail" aria-label="Close panel">&#x2715;</button>
+              <h2 data-i18n="nav.options">Options</h2>
+              <button type="button" class="drawer-close" data-drawer="rail" aria-label="Close panel" data-i18n-aria-label="actions.closePanel">&#x2715;</button>
             </div>
             <div class="options-form">
+              <label class="options-field" for="ui-language-select">
+                <span class="options-label" data-i18n="options.language">Language</span>
+                <select id="ui-language-select" class="options-select">
+                  <option value="en" data-i18n="options.language.english">English</option>
+                  <option value="es" data-i18n="options.language.spanish">Español</option>
+                </select>
+              </label>
               <label class="options-field" for="ui-theme-select">
-                <span class="options-label">Theme</span>
+                <span class="options-label" data-i18n="options.theme">Theme</span>
                 <select id="ui-theme-select" class="options-select">
-                  <option value="classic">Classic (light)</option>
-                  <option value="classic-dark">Classic (dark)</option>
-                  <option value="amber-monochrome">Amber Monochrome</option>
+                  <option value="classic" data-i18n="options.theme.classic">Classic (light)</option>
+                  <option value="classic-dark" data-i18n="options.theme.classicDark">Classic (dark)</option>
+                  <option value="amber-monochrome" data-i18n="options.theme.amberMonochrome">Amber Monochrome</option>
                 </select>
               </label>
             </div>
@@ -215,13 +223,13 @@
 
         <!-- INSPECTOR: right-side panel, shown when a node is selected -->
         <aside class="inspector-shell" id="inspector-panel">
-          <button type="button" class="drawer-close" data-drawer="inspector" aria-label="Close panel">&#x2715;</button>
+          <button type="button" class="drawer-close" data-drawer="inspector" aria-label="Close panel" data-i18n-aria-label="actions.closePanel">&#x2715;</button>
           <div class="inspector-head">
             <div>
-              <p class="panel-kicker">Node Detail</p>
-              <h3>Selected Node</h3>
+              <p class="panel-kicker" data-i18n="nodes.nodeDetail">Node Detail</p>
+              <h3 data-i18n="nodes.selectedNode">Selected Node</h3>
             </div>
-            <button type="button" class="inspector-close" id="close-inspector" aria-label="Close inspector">&#x2715;</button>
+            <button type="button" class="inspector-close" id="close-inspector" aria-label="Close inspector" data-i18n-aria-label="actions.closeInspector">&#x2715;</button>
           </div>
           <section class="node-hud" id="node-detail" aria-live="polite"></section>
         </aside>
@@ -230,31 +238,31 @@
         <section class="panel traffic-panel bottom-drawer" id="mesh-traffic" aria-hidden="true">
           <div class="panel-head">
             <div>
-              <h2>Recent Packets</h2>
+              <h2 data-i18n="traffic.recentPackets">Recent Packets</h2>
             </div>
             <div class="traffic-tools">
               <label class="traffic-limit-field" for="packet-limit-select">
-                <span class="traffic-limit-label">Show</span>
-                <select id="packet-limit-select" class="options-select traffic-limit-select" aria-label="Recent packet count">
+                <span class="traffic-limit-label" data-i18n="traffic.show">Show</span>
+                <select id="packet-limit-select" class="options-select traffic-limit-select" aria-label="Recent packet count" data-i18n-aria-label="traffic.recentPacketCount">
                   <option value="40">40</option>
                   <option value="100">100</option>
                   <option value="200">200</option>
                 </select>
               </label>
-              <div class="filter-strip" id="packet-filters" aria-label="Packet filters">
-                <button type="button" class="filter-chip active" data-filter="all">All</button>
-                <button type="button" class="filter-chip" data-filter="text">Text</button>
-                <button type="button" class="filter-chip" data-filter="position">Position</button>
-                <button type="button" class="filter-chip" data-filter="telemetry">Telemetry</button>
-                <button type="button" class="filter-chip" data-filter="other">Other</button>
+              <div class="filter-strip" id="packet-filters" aria-label="Packet filters" data-i18n-aria-label="traffic.packetFilters">
+                <button type="button" class="filter-chip active" data-filter="all" data-i18n="traffic.filter.all">All</button>
+                <button type="button" class="filter-chip" data-filter="text" data-i18n="traffic.filter.text">Text</button>
+                <button type="button" class="filter-chip" data-filter="position" data-i18n="traffic.filter.position">Position</button>
+                <button type="button" class="filter-chip" data-filter="telemetry" data-i18n="traffic.filter.telemetry">Telemetry</button>
+                <button type="button" class="filter-chip" data-filter="other" data-i18n="traffic.filter.other">Other</button>
               </div>
-              <button type="button" class="command-icon-btn traffic-action-btn" id="export-packets" aria-label="Export visible packets as CSV" title="Export visible packets as CSV">
+              <button type="button" class="command-icon-btn traffic-action-btn" id="export-packets" aria-label="Export visible packets as CSV" title="Export visible packets as CSV" data-i18n-aria-label="traffic.exportVisibleCsv" data-i18n-title="traffic.exportVisibleCsv">
                 <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
                   <path d="M7 1.5v6.5M4.5 5.5L7 8l2.5-2.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
                   <path d="M2 9.5v2h10v-2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
                 </svg>
               </button>
-              <button type="button" class="drawer-close" data-drawer="traffic" aria-label="Close panel">&#x2715;</button>
+              <button type="button" class="drawer-close" data-drawer="traffic" aria-label="Close panel" data-i18n-aria-label="actions.closePanel">&#x2715;</button>
             </div>
           </div>
 
@@ -262,13 +270,13 @@
             <table>
               <thead>
                 <tr>
-                  <th>When</th>
-                  <th>From</th>
-                  <th>To</th>
-                  <th>Port</th>
-                  <th>Delivered By</th>
-                  <th>SNR</th>
-                  <th>Path</th>
+                  <th data-i18n="traffic.when">When</th>
+                  <th data-i18n="traffic.from">From</th>
+                  <th data-i18n="traffic.to">To</th>
+                  <th data-i18n="traffic.port">Port</th>
+                  <th data-i18n="traffic.deliveredBy">Delivered By</th>
+                  <th data-i18n="traffic.snr">SNR</th>
+                  <th data-i18n="traffic.path">Path</th>
                 </tr>
               </thead>
               <tbody id="packets-body"></tbody>
@@ -282,6 +290,7 @@
     </main>
 
     <script src="/static/vendor/leaflet/leaflet.js"></script>
+    <script src="/static/i18n.js"></script>
     <script src="/static/app.js"></script>
   </body>
 </html>

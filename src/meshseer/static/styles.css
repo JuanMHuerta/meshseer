@@ -635,6 +635,50 @@ h3 {
   background-repeat: no-repeat;
 }
 
+.options-footer {
+  display: flex;
+  margin-top: auto;
+  padding-top: 16px;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.options-repo-card {
+  display: flex;
+  place-items: center;
+  align-items: center;
+  justify-content: center;
+  width: 48px;
+  aspect-ratio: 1;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--card-bg);
+  transition:
+    border-color 160ms ease,
+    background 160ms ease;
+}
+
+.options-repo-card:hover {
+  border-color: var(--line-strong);
+  background: var(--card-bg-hover);
+}
+
+.options-repo-card-logo {
+  width: 22px;
+  height: 22px;
+}
+
+.options-repo-card-logo-light {
+  display: none;
+}
+
+:root[data-theme="classic"] .options-repo-card-logo-dark {
+  display: none;
+}
+
+:root[data-theme="classic"] .options-repo-card-logo-light {
+  display: block;
+}
+
 /* Status Badge */
 .status-badge {
   position: relative;

@@ -65,10 +65,14 @@ PUBLIC_NODE_DETAIL_FIELDS = tuple(
 
 PUBLIC_NODE_INSIGHTS_FIELDS = (
     "heard_packets",
+    "sent_packets",
     "broadcast_packets",
     "mqtt_packets",
     "direct_packets",
     "relayed_packets",
+    "text_packets",
+    "position_packets",
+    "telemetry_packets",
     "avg_rx_snr",
     "best_rx_snr",
     "worst_rx_snr",

@@ -3330,17 +3330,38 @@ class MeshRepository:
                 f"""
                 SELECT
                     COUNT(*) AS heard_packets,
+                    SUM(CASE WHEN from_node_num = ? THEN 1 ELSE 0 END) AS sent_packets,
                     SUM(CASE WHEN to_node_num = ? THEN 1 ELSE 0 END) AS broadcast_packets,
-                    SUM(CASE WHEN COALESCE(via_mqtt, 0) = 1 THEN 1 ELSE 0 END) AS mqtt_packets,
-                    SUM(CASE WHEN COALESCE(via_mqtt, 0) = 0 AND {hops_taken_expr} = 0 THEN 1 ELSE 0 END) AS direct_packets,
-                    SUM(CASE WHEN COALESCE(via_mqtt, 0) = 0 AND {hops_taken_expr} > 0 THEN 1 ELSE 0 END) AS relayed_packets,
+                    SUM(CASE WHEN from_node_num = ? AND portnum = 'TEXT_MESSAGE_APP' THEN 1 ELSE 0 END) AS text_packets,
+                    SUM(CASE WHEN from_node_num = ? AND portnum LIKE '%POSITION%' THEN 1 ELSE 0 END) AS position_packets,
+                    SUM(CASE WHEN from_node_num = ? AND (
+                        portnum LIKE '%TELEMETRY%'
+                        OR portnum LIKE '%NODEINFO%'
+                        OR portnum LIKE '%NEIGHBORINFO%'
+                        OR portnum LIKE '%STORE_FORWARD%'
+                        OR portnum LIKE '%PAXCOUNTER%'
+                        OR portnum LIKE '%AIRQUALITY%'
+                    ) THEN 1 ELSE 0 END) AS telemetry_packets,
+                    SUM(CASE WHEN from_node_num = ? AND COALESCE(via_mqtt, 0) = 1 THEN 1 ELSE 0 END) AS mqtt_packets,
+                    SUM(CASE WHEN from_node_num = ? AND COALESCE(via_mqtt, 0) = 0 AND {hops_taken_expr} = 0 THEN 1 ELSE 0 END) AS direct_packets,
+                    SUM(CASE WHEN from_node_num = ? AND COALESCE(via_mqtt, 0) = 0 AND {hops_taken_expr} > 0 THEN 1 ELSE 0 END) AS relayed_packets,
                     AVG(rx_snr) AS avg_rx_snr,
                     MAX(rx_snr) AS best_rx_snr,
                     MIN(rx_snr) AS worst_rx_snr
                 FROM packets
                 {where}
                 """,
-                [BROADCAST_NODE_NUM, *params],
+                [
+                    node_num,
+                    BROADCAST_NODE_NUM,
+                    node_num,
+                    node_num,
+                    node_num,
+                    node_num,
+                    node_num,
+                    node_num,
+                    *params,
+                ],
             ).fetchone()
             latest_packet = connection.execute(
                 f"""
@@ -3355,10 +3376,14 @@ class MeshRepository:
         latest_payload = self._row_to_dict(latest_packet)
         return {
             "heard_packets": int(aggregate["heard_packets"] or 0) if aggregate is not None else 0,
+            "sent_packets": int(aggregate["sent_packets"] or 0) if aggregate is not None else 0,
             "broadcast_packets": int(aggregate["broadcast_packets"] or 0) if aggregate is not None else 0,
             "mqtt_packets": int(aggregate["mqtt_packets"] or 0) if aggregate is not None else 0,
             "direct_packets": int(aggregate["direct_packets"] or 0) if aggregate is not None else 0,
             "relayed_packets": int(aggregate["relayed_packets"] or 0) if aggregate is not None else 0,
+            "text_packets": int(aggregate["text_packets"] or 0) if aggregate is not None else 0,
+            "position_packets": int(aggregate["position_packets"] or 0) if aggregate is not None else 0,
+            "telemetry_packets": int(aggregate["telemetry_packets"] or 0) if aggregate is not None else 0,
             "avg_rx_snr": aggregate["avg_rx_snr"] if aggregate is not None else None,
             "best_rx_snr": aggregate["best_rx_snr"] if aggregate is not None else None,
             "worst_rx_snr": aggregate["worst_rx_snr"] if aggregate is not None else None,

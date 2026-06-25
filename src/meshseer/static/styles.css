@@ -102,6 +102,8 @@
   --badge-other-bg: rgba(255, 255, 255, 0.05);
   --danger-bg: rgba(180, 60, 60, 0.15);
   --danger-text: #c47a7a;
+  --util-channel-color: var(--amber);
+  --util-air-color: var(--blue);
 
   /* Legacy aliases (mapped to new tokens for compatibility) */
   --bg: var(--bg-app);
@@ -252,6 +254,8 @@
   --badge-other-bg: rgba(228, 236, 241, 0.82);
   --danger-bg: rgba(215, 124, 99, 0.16);
   --danger-text: #9c5847;
+  --util-channel-color: var(--amber);
+  --util-air-color: var(--green-port-text);
 }
 
 :root[data-theme="classic-dark"] {
@@ -359,6 +363,8 @@
   --badge-other-bg: rgba(255, 255, 255, 0.06);
   --danger-bg: rgba(209, 139, 121, 0.14);
   --danger-text: #d9a191;
+  --util-channel-color: var(--amber);
+  --util-air-color: var(--green-port-text);
 }
 
 * {
@@ -2071,19 +2077,19 @@ h3 {
 }
 .receiver-sparkline-dot { fill: var(--sparkline-color); }
 .receiver-sparkline-line.dual-channel {
-  stroke: var(--amber);
+  stroke: var(--util-channel-color);
 }
 
 .receiver-sparkline-dot.dual-channel {
-  fill: var(--amber);
+  fill: var(--util-channel-color);
 }
 
 .receiver-sparkline-line.dual-air {
-  stroke: #7aabdf;
+  stroke: var(--util-air-color);
 }
 
 .receiver-sparkline-dot.dual-air {
-  fill: #7aabdf;
+  fill: var(--util-air-color);
 }
 
 .hud-empty {
@@ -2519,7 +2525,86 @@ h3 {
   grid-column: 1 / -1;
 }
 
+.util-card {
+  grid-column: 1 / -1;
+}
+
 .util-card,
+.breakdown-card {
+  display: grid;
+  gap: 8px;
+}
+
+.breakdown-card .hud-metric-label + .routing-health-stacked,
+.breakdown-card .routing-health-row + .hud-metric-label {
+  margin-top: 2px;
+}
+
+.routing-health-stacked {
+  display: flex;
+  width: 100%;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--meter-bg);
+  overflow: hidden;
+}
+
+.routing-health-stacked-empty {
+  width: 100%;
+  height: 100%;
+}
+
+.routing-health-stacked-segment {
+  display: block;
+  height: 100%;
+  opacity: 0.95;
+}
+
+.routing-health-stacked-segment.direct { background: var(--amber); }
+.routing-health-stacked-segment.relayed { background: var(--text-secondary); }
+.routing-health-stacked-segment.mqtt { background: #7aabdf; }
+
+.routing-health-stacked-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+}
+
+.routing-health-stacked-key {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 10px;
+  color: var(--ink-soft);
+}
+
+.routing-health-stacked-key .breakdown-bar-fill {
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  flex-shrink: 0;
+}
+
+.routing-health-stacked-key .mono-text {
+  color: var(--text-secondary);
+}
+
+.breakdown-card .routing-health-row {
+  padding: 0;
+}
+
+.breakdown-card .routing-health-row + .routing-health-row {
+  border-top: none;
+}
+
+.breakdown-card .packet-breakdown {
+  margin-top: -2px;
+}
+
+.breakdown-card .hud-metric-meta {
+  margin-top: 0;
+}
+
 .breakdown-card {
   grid-column: 1 / -1;
 }
@@ -2896,31 +2981,42 @@ h3 {
   font-size: 0.68rem;
 }
 
-.node-breakdown-list {
-  display: grid;
-  gap: 6px;
-  margin-top: 8px;
-}
-
-.node-breakdown-row {
-  display: flex;
+.hud-metric-inline-legend {
+  display: inline-flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 8px;
+  justify-content: flex-end;
+  gap: 10px;
+  flex-wrap: wrap;
 }
 
-.node-breakdown-label {
-  font-size: 0.73rem;
-  font-weight: 600;
-}
-
-.node-breakdown-label.direct { color: var(--amber-text); }
-.node-breakdown-label.relayed { color: var(--text-secondary); }
-.node-breakdown-label.mqtt { color: var(--blue-port-text); }
-
-.node-breakdown-value {
+.hud-inline-series {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
   color: var(--ink-soft);
-  font-size: 0.68rem;
+}
+
+.hud-inline-series-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  flex: 0 0 auto;
+}
+
+.hud-inline-series--channel .hud-inline-series-dot {
+  background: var(--util-channel-color);
+}
+
+.hud-inline-series--air .hud-inline-series-dot {
+  background: var(--util-air-color);
+}
+
+.hud-inline-series-label {
+  color: var(--ink-dim);
+}
+
+.hud-inline-series-value {
+  color: var(--ink);
 }
 
 .hud-metric .receiver-sparkline-frame {

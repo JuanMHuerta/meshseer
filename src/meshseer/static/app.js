@@ -1838,6 +1838,42 @@ function routingHealthRow(label, value) {
   `;
 }
 
+function packetBreakdownRow(item, totalPackets) {
+  const value = intValue(item?.value);
+  const pct = totalPackets > 0 ? Math.round((value / totalPackets) * 100) : 0;
+  const barPct = totalPackets > 0 ? (value / totalPackets) * 100 : 0;
+  const title = `${item.label}: ${formatWholeNumber(value)} (${pct}%)`;
+  return `
+    <div class="breakdown-row" title="${escapeHtml(title)}">
+      <span class="breakdown-label">${escapeHtml(item.label)}</span>
+      <span class="breakdown-bar"><span class="breakdown-bar-fill ${item.tone}" style="width:${barPct}%"></span></span>
+      <span class="breakdown-count mono-text">${formatWholeNumber(value)}</span>
+      <span class="breakdown-pct mono-text">${pct}%</span>
+    </div>
+  `;
+}
+
+function stackedBarSegmentsMarkup(items, totalPackets) {
+  if (!(totalPackets > 0)) {
+    return `<span class="routing-health-stacked-empty"></span>`;
+  }
+  return items.map((item) => {
+    const value = intValue(item?.value);
+    if (value <= 0) {
+      return "";
+    }
+    const pct = Math.round((value / totalPackets) * 100);
+    const title = `${item.label}: ${formatWholeNumber(value)} (${pct}%)`;
+    return `
+      <span
+        class="routing-health-stacked-segment ${item.tone}"
+        style="width:${(value / totalPackets) * 100}%"
+        title="${escapeHtml(title)}"
+      ></span>
+    `;
+  }).join("");
+}
+
 function receiverMetricDetail(receiver) {
   if (!receiver || receiver.node_num == null) {
     return t("signals.receiverIdentityWaiting");
@@ -2469,7 +2505,18 @@ function nodeUtilizationCard(node, metricHistory, freshness) {
     <div class="hud-metric util-card${freshness === "stale" ? " muted" : ""}">
       <div class="hud-metric-dual-head">
         <span class="hud-metric-label">${escapeHtml(t("nodes.utilLabel"))}</span>
-        <span class="hud-metric-inline mono-text">${escapeHtml(t("nodes.utilValues", { ch: chUtil, tx: airUtil }))}</span>
+        <span class="hud-metric-inline hud-metric-inline-legend mono-text">
+          <span class="hud-inline-series hud-inline-series--channel">
+            <span class="hud-inline-series-dot" aria-hidden="true"></span>
+            <span class="hud-inline-series-label">${escapeHtml(t("signals.chUtil"))}</span>
+            <span class="hud-inline-series-value">${escapeHtml(chUtil)}</span>
+          </span>
+          <span class="hud-inline-series hud-inline-series--air">
+            <span class="hud-inline-series-dot" aria-hidden="true"></span>
+            <span class="hud-inline-series-label">${escapeHtml(t("signals.airUtilTx"))}</span>
+            <span class="hud-inline-series-value">${escapeHtml(airUtil)}</span>
+          </span>
+        </span>
       </div>
       ${sparkline}
       <span class="hud-metric-meta mono-text">${escapeHtml(t("nodes.samples", { count: formatWholeNumber(samples.length) }))}</span>
@@ -2478,28 +2525,45 @@ function nodeUtilizationCard(node, metricHistory, freshness) {
 }
 
 function nodePacketBreakdownCard(insights) {
-  const heardPackets = Math.max(0, intValue(insights?.heard_packets));
-  const breakdown = [
+  const sentPackets = Math.max(0, intValue(insights?.sent_packets ?? insights?.heard_packets));
+  const routingTypes = [
     { label: t("path.direct"), value: intValue(insights?.direct_packets), tone: "direct" },
     { label: t("path.relayed"), value: intValue(insights?.relayed_packets), tone: "relayed" },
     { label: t("path.mqtt"), value: intValue(insights?.mqtt_packets), tone: "mqtt" },
   ];
-  const broadcastPackets = intValue(insights?.broadcast_packets);
+  const textPackets = intValue(insights?.text_packets);
+  const positionPackets = intValue(insights?.position_packets);
+  const telemetryPackets = intValue(insights?.telemetry_packets);
+  const breakdown = [
+    { label: t("signals.packetType.text"), value: textPackets, tone: "text" },
+    { label: t("signals.packetType.telemetry"), value: telemetryPackets, tone: "telemetry" },
+    { label: t("signals.packetType.position"), value: positionPackets, tone: "position" },
+    {
+      label: t("signals.packetType.other"),
+      value: Math.max(0, sentPackets - textPackets - telemetryPackets - positionPackets),
+      tone: "other",
+    },
+  ];
   return `
     <div class="hud-metric breakdown-card">
-      <span class="hud-metric-label">${escapeHtml(t("nodes.packetBreakdown"))}</span>
-      <div class="node-breakdown-list">
-        ${breakdown.map((item) => {
-          const pct = heardPackets > 0 ? Math.round((item.value / heardPackets) * 100) : 0;
-          return `
-            <div class="node-breakdown-row">
-              <span class="node-breakdown-label ${item.tone}">${escapeHtml(item.label)}</span>
-              <span class="node-breakdown-value mono-text">${escapeHtml(`${formatWholeNumber(item.value)} · ${pct}%`)}</span>
-            </div>
-          `;
-        }).join("")}
+      <span class="hud-metric-label">${escapeHtml(t("signals.routingHealth"))}</span>
+      <div class="routing-health-stacked" title="${escapeHtml(t("signals.routingHealth"))}">
+        ${stackedBarSegmentsMarkup(routingTypes, sentPackets)}
       </div>
-      <span class="hud-metric-meta mono-text">${escapeHtml(t("nodes.broadcastCount", { count: formatWholeNumber(broadcastPackets) }))}</span>
+      <div class="routing-health-stacked-legend">
+        ${routingTypes.map((item) => `
+          <span class="routing-health-stacked-key">
+            <span class="breakdown-bar-fill ${item.tone}" aria-hidden="true"></span>
+            <span>${escapeHtml(item.label)}</span>
+            <span class="mono-text">${escapeHtml(`${sentPackets > 0 ? Math.round((item.value / sentPackets) * 100) : 0}%`)}</span>
+          </span>
+        `).join("")}
+      </div>
+      ${routingHealthRow(t("signals.totalPackets"), formatWholeNumber(sentPackets))}
+      <span class="hud-metric-label">${escapeHtml(t("nodes.packetBreakdown"))}</span>
+      <div class="packet-breakdown">
+        ${breakdown.map((item) => packetBreakdownRow(item, sentPackets)).join("")}
+      </div>
     </div>
   `;
 }
@@ -3866,19 +3930,7 @@ function renderMeshSummary(data) {
       <span class="signals-section-label">${escapeHtml(t("signals.routingHealth"))}</span>
       <div class="routing-health">
         <div class="packet-breakdown">
-          ${routingTypes.map((type) => {
-            const pct = totalPackets > 0 ? Math.round((type.value / totalPackets) * 100) : 0;
-            const barPct = totalPackets > 0 ? (type.value / totalPackets) * 100 : 0;
-            const title = `${type.label}: ${formatWholeNumber(type.value)} (${pct}%)`;
-            return `
-              <div class="breakdown-row" title="${escapeHtml(title)}">
-                <span class="breakdown-label">${escapeHtml(type.label)}</span>
-                <span class="breakdown-bar"><span class="breakdown-bar-fill ${type.tone}" style="width:${barPct}%"></span></span>
-                <span class="breakdown-count mono-text">${formatWholeNumber(type.value)}</span>
-                <span class="breakdown-pct mono-text">${pct}%</span>
-              </div>
-            `;
-          }).join("")}
+          ${routingTypes.map((type) => packetBreakdownRow(type, totalPackets)).join("")}
         </div>
         ${routingHealthRow(t("signals.totalPackets"), formatWholeNumber(totalPackets))}
       </div>
@@ -3897,19 +3949,7 @@ function renderMeshSummary(data) {
     <div class="signals-section">
       <span class="signals-section-label">${escapeHtml(t("signals.packetBreakdown"))}</span>
       <div class="packet-breakdown">
-        ${breakdownTypes.map((t) => {
-          const pct = totalPackets > 0 ? Math.round((t.value / totalPackets) * 100) : 0;
-          const barPct = totalPackets > 0 ? (t.value / totalPackets) * 100 : 0;
-          const title = `${t.label}: ${formatWholeNumber(t.value)} (${pct}%)`;
-          return `
-            <div class="breakdown-row" title="${escapeHtml(title)}">
-              <span class="breakdown-label">${escapeHtml(t.label)}</span>
-              <span class="breakdown-bar"><span class="breakdown-bar-fill ${t.tone}" style="width:${barPct}%"></span></span>
-              <span class="breakdown-count mono-text">${formatWholeNumber(t.value)}</span>
-              <span class="breakdown-pct mono-text">${pct}%</span>
-            </div>
-          `;
-        }).join("")}
+        ${breakdownTypes.map((t) => packetBreakdownRow(t, totalPackets)).join("")}
       </div>
     </div>
   `;

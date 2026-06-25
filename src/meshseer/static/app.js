@@ -3013,7 +3013,6 @@ function nodeRecentPacketMarkup(packet) {
   const pathTone = packet?.path_tone || packetPathTone(packet);
   const pathLabel = packet?.path_label || packetPathLabel(packet);
   const destinationLabel = packet?.destination_label || toNodeLabel(packet);
-  const deliveryNodeLabel = packetDeliveryNodeLabel(packet);
   const textPreview = typeof packet?.text_preview === "string" ? packet.text_preview.trim() : "";
   const snrLabel = formatNumber(packet?.rx_snr, 1, " dB");
   return `
@@ -3030,7 +3029,6 @@ function nodeRecentPacketMarkup(packet) {
         </div>
       </div>
       <p class="node-packet-destination">${escapeHtml(t("nodes.toDestination", { destination: destinationLabel }))}</p>
-      ${deliveryNodeLabel ? `<p class="node-packet-delivery">${escapeHtml(deliveryNodeLabel)}</p>` : ""}
       ${textPreview ? `<p class="node-packet-text">${escapeHtml(textPreview)}</p>` : ""}
     </article>
   `;
@@ -3946,7 +3944,6 @@ function packetRowMarkup(packet) {
 
   const fromName = fromNodeLabel(packet);
   const fromId = packet.from_node_num != null ? `#${packet.from_node_num}` : "";
-  const deliveryLabel = packetDeliveryNodeLabel(packet);
 
   const pathContent = `<span class="path-badge ${pathTone}">${escapeHtml(isUnknown ? t("common.unknown") : packetPathLabel(packet))}</span>`;
 
@@ -3970,30 +3967,12 @@ function packetRowMarkup(packet) {
           <span class="port-badge ${category}">${escapeHtml(portBadgeText(packet.portnum))}</span>
         </div>
       </td>
-      <td>
-        <div class="table-node">
-          <span class="table-node-main">${escapeHtml(deliveryLabel || "—")}</span>
-        </div>
-      </td>
       <td class="mono-text">${escapeHtml(formatNumber(packet.rx_snr, 1, " dB"))}</td>
       <td class="${pathCellClass}">
         <div class="port-cell">${pathContent}</div>
       </td>
     </tr>
   `;
-}
-
-function packetDeliveryNodeLabel(packet) {
-  if (packet?.via_mqtt || packet?.path_tone === "mqtt" || packetPathTone(packet) === "mqtt") {
-    return t("path.viaMqtt");
-  }
-  const deliveredNodeNum = packet?.relay_node ?? packet?.next_hop;
-  if (deliveredNodeNum == null) {
-    return "";
-  }
-  const node = nodeByNum(deliveredNodeNum);
-  const label = packet?.delivery_node_label || (node ? nodeLabel(node) : t("common.nodeWithNum", { num: deliveredNodeNum }));
-  return t("path.via", { label });
 }
 
 function visiblePackets(items = state.packets) {

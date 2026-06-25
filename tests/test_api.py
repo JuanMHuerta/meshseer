@@ -796,8 +796,8 @@ def test_node_detail_exposes_recent_packets_from_selected_node(tmp_path):
     assert recent_packets[0]["text_preview"] == "status update"
     assert recent_packets[0]["delivery_node_label"] == "GAMMA"
     assert recent_packets[1]["destination_label"] == "GAMMA"
-    assert recent_packets[1]["path_label"] == "Direct"
-    assert recent_packets[2]["path_label"] == "Direct"
+    assert recent_packets[1]["path_label"] == "Local"
+    assert recent_packets[2]["path_label"] == "Local"
     assert node.json()["metric_history"] == []
 
 

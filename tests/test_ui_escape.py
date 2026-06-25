@@ -269,28 +269,8 @@ def test_packet_snr_is_rendered_in_node_detail_and_traffic_drawer(page):
         """
     )
 
-    assert page.locator("#mesh-traffic thead th").nth(4).text_content() == "Delivered By"
-    assert page.locator("#mesh-traffic thead th").nth(5).text_content() == "SNR"
-    assert page.locator("#packets-body tr").first.locator("td").nth(4).text_content().strip() != ""
-    assert page.locator("#packets-body tr").first.locator("td").nth(5).text_content().strip().endswith("dB")
-
-
-def test_packet_delivery_label_only_shows_when_delivery_node_is_known(page):
-    labels = page.evaluate(
-        """
-        () => ({
-          direct: packetDeliveryNodeLabel({ path_tone: 'direct' }),
-          relayedUnknown: packetDeliveryNodeLabel({ path_tone: 'relayed' }),
-          mqtt: packetDeliveryNodeLabel({ path_tone: 'mqtt', via_mqtt: true }),
-        })
-        """
-    )
-
-    assert labels == {
-        "direct": "",
-        "relayedUnknown": "",
-        "mqtt": "Via MQTT",
-    }
+    assert page.locator("#mesh-traffic thead th").nth(4).text_content() == "SNR"
+    assert page.locator("#packets-body tr").first.locator("td").nth(4).text_content().strip().endswith("dB")
 
 
 def test_node_detail_path_metric_shows_hop_count_not_direct_label(page):
@@ -714,7 +694,7 @@ def test_spanish_browser_locale_is_used_and_manual_language_choice_persists(tmp_
 
         page.click("#rail-toggle-traffic")
         expect_traffic_open(page)
-        assert page.locator("#mesh-traffic thead th").nth(4).text_content() == "Entregado por"
+        assert page.locator("#mesh-traffic thead th").nth(4).text_content() == "SNR"
 
         page.select_option("#ui-language-select", "en")
         page.wait_for_function(
@@ -727,7 +707,7 @@ def test_spanish_browser_locale_is_used_and_manual_language_choice_persists(tmp_
             """
         )
         assert page.evaluate("() => window.localStorage.getItem('meshseer.ui.language')") == "en"
-        assert page.locator("#mesh-traffic thead th").nth(4).text_content() == "Delivered By"
+        assert page.locator("#mesh-traffic thead th").nth(4).text_content() == "SNR"
 
         page.reload(wait_until="domcontentloaded")
         _wait_for_dashboard(page)

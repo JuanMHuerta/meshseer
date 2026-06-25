@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import threading
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any, Callable, Protocol
 
@@ -36,6 +37,18 @@ class PubSubLike(Protocol):
 
 
 class MeshtasticReceiver:
+    @staticmethod
+    def _first_item(items: Any) -> Any | None:
+        if items is None:
+            return None
+        if isinstance(items, Sequence):
+            return items[0] if items else None
+        try:
+            iterator = iter(items)
+        except TypeError:
+            return None
+        return next(iterator, None)
+
     def __init__(
         self,
         *,
@@ -115,9 +128,8 @@ class MeshtasticReceiver:
         if local_node is None:
             return None
 
-        channels = getattr(local_node, "channels", None)
-        if isinstance(channels, list) and channels:
-            primary_channel = channels[0]
+        primary_channel = self._first_item(getattr(local_node, "channels", None))
+        if primary_channel is not None:
             settings = getattr(primary_channel, "settings", None)
             name = getattr(settings, "name", None)
             if isinstance(name, str) and name.strip():

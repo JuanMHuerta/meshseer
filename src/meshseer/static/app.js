@@ -69,6 +69,7 @@ const DEFAULT_NODE_ACTIVE_WINDOW_MINUTES = 180;
 const DAILY_HEARD_NODES_WINDOW_DAYS = 30;
 const NETWORK_ROUTE_WINDOW_MINUTES = 7 * 24 * 60;
 const SELECTED_ROUTE_WINDOW_MINUTES = 7 * 24 * 60;
+const ROUTES_API_LIMIT = 250;
 const PACKETS_LIMIT = 40;
 const PACKET_LIMIT_OPTIONS = Object.freeze([40, 100, 200]);
 const PACKETS_API_MAX_LIMIT = 500;
@@ -290,7 +291,7 @@ const state = {
   nodeQuery: "",
   showRoutes: true,
   meshSummary: null,
-  meshRoutes: { routes: [], stats: { total: 0, forward: 0, return: 0 } },
+  meshRoutes: emptyMeshRoutesState(),
   drawnRouteCount: null,
   nodeDetails: new Map(),
   nodeDetailLoadingNodeNum: null,
@@ -672,6 +673,15 @@ function recentPacketWindowMinutes() {
 
 function meshRouteWindowMinutes() {
   return Math.max(NETWORK_ROUTE_WINDOW_MINUTES, SELECTED_ROUTE_WINDOW_MINUTES);
+}
+
+function emptyMeshRoutesState() {
+  return { routes: [], stats: { total: 0, forward: 0, return: 0 } };
+}
+
+function meshRoutesRequestUrl() {
+  const since = encodeURIComponent(isoMinutesAgo(meshRouteWindowMinutes()));
+  return `/api/mesh/routes?since=${since}&limit=${ROUTES_API_LIMIT}`;
 }
 
 function nodeActiveWindowMinutes() {
@@ -3964,7 +3974,7 @@ function renderMeshSummary(data) {
 }
 
 function renderMeshRoutes(data) {
-  state.meshRoutes = data || { routes: [], stats: { total: 0, forward: 0, return: 0 } };
+  state.meshRoutes = data || emptyMeshRoutesState();
   if (state.nodes.length) {
     renderMap(state.nodes);
     return;
@@ -4342,8 +4352,7 @@ async function loadMeshSummary() {
 
 async function loadMeshRoutes() {
   return runSingleFlight("meshRoutes", async () => {
-    const since = encodeURIComponent(isoMinutesAgo(meshRouteWindowMinutes()));
-    const payload = await fetchJson(`/api/mesh/routes?since=${since}`);
+    const payload = await fetchJson(meshRoutesRequestUrl());
     renderMeshRoutes(payload);
   });
 }

@@ -9,7 +9,7 @@ from meshtastic.protobuf import mesh_pb2
 from starlette import status
 from starlette.websockets import WebSocketDisconnect
 
-from meshseer.app import create_app
+from meshseer.app import _autotrace_position_tracking_enabled, create_app
 from meshseer import __version__
 from meshseer.channels import BROADCAST_NODE_NUM
 from meshseer.collector import CollectorStatus
@@ -2156,6 +2156,60 @@ def test_mesh_routes_support_since_filter(tmp_path, monkeypatch):
     assert routes.json()["routes"][0]["path_node_nums"] == [101, 202, 404]
 
 
+def test_mesh_routes_support_limit_filter(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "meshseer.app.utc_now",
+        lambda: datetime(2026, 3, 30, 12, 30, tzinfo=UTC),
+    )
+
+    app, _collector = build_app(tmp_path)
+    repo = app.state.repository
+
+    repo.insert_packet(
+        PacketRecord(
+            mesh_packet_id=17,
+            received_at="2026-03-30T12:12:00Z",
+            from_node_num=303,
+            to_node_num=101,
+            portnum="TRACEROUTE_APP",
+            channel_index=0,
+            hop_limit=3,
+            hop_start=3,
+            rx_snr=4.5,
+            rx_rssi=-95,
+            text_preview=None,
+            payload_base64=encode_traceroute_payload(route=[202]),
+            raw_json="{}",
+            via_mqtt=False,
+        )
+    )
+    repo.insert_packet(
+        PacketRecord(
+            mesh_packet_id=18,
+            received_at="2026-03-30T12:13:00Z",
+            from_node_num=404,
+            to_node_num=101,
+            portnum="TRACEROUTE_APP",
+            channel_index=0,
+            hop_limit=2,
+            hop_start=2,
+            rx_snr=3.5,
+            rx_rssi=-96,
+            text_preview=None,
+            payload_base64=encode_traceroute_payload(route=[202]),
+            raw_json="{}",
+            via_mqtt=False,
+        )
+    )
+
+    with TestClient(app) as client:
+        routes = client.get("/api/mesh/routes", params={"limit": 1})
+
+    assert routes.status_code == 200
+    assert routes.json()["stats"] == {"total": 1, "forward": 1, "return": 0}
+    assert routes.json()["routes"][0]["mesh_packet_id"] == 18
+
+
 def test_mesh_routes_default_to_one_week_lookback(tmp_path, monkeypatch):
     monkeypatch.setattr(
         "meshseer.app.utc_now",
@@ -2420,6 +2474,20 @@ def test_lifespan_enables_autotrace_when_requested_by_settings(tmp_path):
         assert status.json()["running"] is True
 
     assert autotrace_service.stopped is True
+
+
+def test_autotrace_position_tracking_follows_runtime_service_state():
+    class ToggleService:
+        def __init__(self, enabled):
+            self._enabled = enabled
+
+        def is_enabled(self):
+            return self._enabled
+
+    settings = Settings.from_env({"MESHSEER_DB_PATH": "./data/test.db"})
+
+    assert _autotrace_position_tracking_enabled(settings, ToggleService(False)) is False
+    assert _autotrace_position_tracking_enabled(settings, ToggleService(True)) is True
 
 
 def test_websocket_receives_events(tmp_path):

@@ -4,7 +4,7 @@
 
 Additional translations live in [`readmes/`](readmes/).
 
-Meshseer is a web view of a Meshtastic receiver's LongFast traffic. It shows what one receiver has heard on the primary channel: node map, broadcast chat, recent packets, and passive route data.
+Meshseer is a web view of a Meshtastic receiver's primary-channel traffic. It shows what one receiver has heard on that channel: node map, broadcast chat, recent packets, and passive route data.
 
 Try it:
 

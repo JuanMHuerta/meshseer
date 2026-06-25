@@ -7,6 +7,7 @@ from meshtastic.protobuf import mesh_pb2
 from meshseer.channels import BROADCAST_NODE_NUM
 from meshseer.clock import timestamp_to_utc_iso
 from meshseer.models import NodeRecord, PacketRecord
+from meshseer.normalizers import normalize_packet
 from meshseer.storage import MeshRepository, SQLITE_BUSY_TIMEOUT_MS
 
 
@@ -1023,6 +1024,40 @@ def test_repository_builds_neighbor_links_from_passive_reports(tmp_path):
     assert links["neighbor_links"][0]["a_to_b"]["last_rx_time"] == timestamp_to_utc_iso(1_743_337_800)
 
 
+def test_repository_builds_neighbor_links_from_normalized_raw_json_when_payload_is_missing(tmp_path):
+    repo = MeshRepository(tmp_path / "mesh.db")
+    neighborinfo = mesh_pb2.NeighborInfo(node_id=101)
+    neighbor = neighborinfo.neighbors.add()
+    neighbor.node_id = 303
+    neighbor.snr = 5.0
+    neighbor.last_rx_time = 1_743_337_800
+
+    packet = normalize_packet(
+        {
+            "id": 81,
+            "from": 101,
+            "to": 255,
+            "channel": 0,
+            "rxTime": 1_743_339_000,
+            "decoded": {
+                "portnum": "NEIGHBORINFO_APP",
+                "neighborinfo": neighborinfo,
+                "payload": neighborinfo.SerializeToString(),
+            },
+        },
+        now_provider=lambda: "2026-03-30T12:10:00Z",
+    )
+
+    repo.insert_packet(PacketRecord.from_mapping({**packet, "payload_base64": None}))
+
+    links = repo.get_mesh_links(primary_only=True)
+
+    assert links["stats"] == {"total": 1, "mutual": 0, "one_way": 1}
+    assert links["neighbor_links"][0]["node_a_num"] == 101
+    assert links["neighbor_links"][0]["node_b_num"] == 303
+    assert links["neighbor_links"][0]["a_to_b"]["last_rx_time"] == timestamp_to_utc_iso(1_743_337_800)
+
+
 def test_repository_builds_routes_from_passive_traceroute_packets(tmp_path):
     repo = MeshRepository(tmp_path / "mesh.db")
 
@@ -1092,6 +1127,39 @@ def test_repository_builds_routes_from_routing_route_reply_packets(tmp_path):
     assert routes["routes"][0]["edge_snr_db"] == [4.0, 2.0]
 
 
+def test_repository_builds_routes_from_normalized_raw_json_when_payload_is_missing(tmp_path):
+    repo = MeshRepository(tmp_path / "mesh.db")
+    traceroute = mesh_pb2.RouteDiscovery()
+    traceroute.route.extend([202])
+    traceroute.snr_towards.extend([16, 8])
+
+    packet = normalize_packet(
+        {
+            "id": 93,
+            "from": 303,
+            "to": 101,
+            "channel": 0,
+            "hopLimit": 3,
+            "rxSnr": 4.0,
+            "rxTime": 1_743_339_180,
+            "decoded": {
+                "portnum": "TRACEROUTE_APP",
+                "traceroute": traceroute,
+                "payload": traceroute.SerializeToString(),
+            },
+        },
+        now_provider=lambda: "2026-03-30T12:13:00Z",
+    )
+
+    repo.insert_packet(PacketRecord.from_mapping({**packet, "payload_base64": None}))
+
+    routes = repo.get_mesh_routes(primary_only=True)
+
+    assert routes["stats"] == {"total": 1, "forward": 1, "return": 0}
+    assert routes["routes"][0]["path_node_nums"] == [101, 202, 303]
+    assert routes["routes"][0]["edge_snr_db"] == [4.0, 2.0]
+
+
 def test_repository_filters_mesh_routes_by_since(tmp_path):
     repo = MeshRepository(tmp_path / "mesh.db")
 
@@ -1143,8 +1211,53 @@ def test_repository_filters_mesh_routes_by_since(tmp_path):
     routes = repo.get_mesh_routes(since="2026-03-30T10:00:00Z", primary_only=True)
 
     assert routes["stats"] == {"total": 1, "forward": 1, "return": 0}
+
+
+def test_repository_limits_mesh_routes(tmp_path):
+    repo = MeshRepository(tmp_path / "mesh.db")
+
+    repo.insert_packet(
+        PacketRecord(
+            mesh_packet_id=92,
+            received_at="2026-03-30T12:00:00Z",
+            from_node_num=303,
+            to_node_num=101,
+            portnum="TRACEROUTE_APP",
+            channel_index=0,
+            hop_limit=3,
+            hop_start=3,
+            rx_snr=5.0,
+            rx_rssi=-94,
+            text_preview=None,
+            payload_base64=encode_traceroute_payload(route=[202]),
+            raw_json="{}",
+            via_mqtt=False,
+        )
+    )
+    repo.insert_packet(
+        PacketRecord(
+            mesh_packet_id=93,
+            received_at="2026-03-30T12:05:00Z",
+            from_node_num=404,
+            to_node_num=101,
+            portnum="TRACEROUTE_APP",
+            channel_index=0,
+            hop_limit=2,
+            hop_start=2,
+            rx_snr=4.5,
+            rx_rssi=-96,
+            text_preview=None,
+            payload_base64=encode_traceroute_payload(route=[202]),
+            raw_json="{}",
+            via_mqtt=False,
+        )
+    )
+
+    routes = repo.get_mesh_routes(primary_only=True, limit=1)
+
+    assert routes["stats"] == {"total": 1, "forward": 1, "return": 0}
     assert routes["routes"][0]["mesh_packet_id"] == 93
-    assert routes["routes"][0]["path_node_nums"] == [101, 202, 505]
+    assert routes["routes"][0]["path_node_nums"] == [101, 202, 404]
 
 
 def test_repository_tracks_traceroute_attempts(tmp_path):

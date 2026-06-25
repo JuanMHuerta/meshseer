@@ -1,6 +1,6 @@
 # Meshseer [![en](https://img.shields.io/badge/lang-en-red.svg)](../README.md) [![es](https://img.shields.io/badge/lang-es-yellow.svg)](README.es.md)
 
-Meshseer es una vista web del trafico LongFast de un receptor Meshtastic. Muestra lo que un receptor escucho en el canal primario: mapa de nodos, chat broadcast, paquetes recientes y datos pasivos de rutas.
+Meshseer es una vista web del trafico del canal primario de un receptor Meshtastic. Muestra lo que un receptor escucho en ese canal: mapa de nodos, chat broadcast, paquetes recientes y datos pasivos de rutas.
 
 [![Tests](https://github.com/JuanMHuerta/meshseer/actions/workflows/tests.yml/badge.svg)](https://github.com/JuanMHuerta/meshseer/actions/workflows/tests.yml) [![Release](https://img.shields.io/github/v/release/JuanMHuerta/meshseer)](https://github.com/JuanMHuerta/meshseer/releases)
 

@@ -5,6 +5,7 @@ import json
 import math
 import sqlite3
 import threading
+from collections.abc import Mapping as MappingABC
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Mapping
@@ -21,6 +22,7 @@ ROSTER_ACTIVITY_COUNT_WINDOW_MINUTES = 60
 SQLITE_BUSY_TIMEOUT_MS = 5000
 SQLITE_CONNECT_TIMEOUT_SECONDS = SQLITE_BUSY_TIMEOUT_MS / 1000
 DAILY_NODE_TOTALS_WINDOW_DAYS = 30
+DEFAULT_MESH_ROUTES_LIMIT = 250
 POSITION_PRIORITY_REASONS = {
     "first_fix": 0,
     "moved": 1,
@@ -1131,6 +1133,27 @@ class MeshRepository:
             return None
         return timestamp_to_utc_iso(timestamp)
 
+    @staticmethod
+    def _sequence_items(value: Any) -> list[Any]:
+        if value is None or isinstance(value, (str, bytes, bytearray, MappingABC)):
+            return []
+        try:
+            return list(value)
+        except TypeError:
+            return []
+
+    @staticmethod
+    def _field_value(source: Any, *names: str) -> Any:
+        if isinstance(source, MappingABC):
+            for name in names:
+                if name in source:
+                    return source[name]
+            return None
+        for name in names:
+            if hasattr(source, name):
+                return getattr(source, name)
+        return None
+
     @classmethod
     def _neighbor_reports_from_packet(cls, packet: dict[str, Any]) -> list[dict[str, Any]]:
         source_node_num = cls._coerce_optional_int(packet.get("from_node_num"))
@@ -1169,14 +1192,10 @@ class MeshRepository:
         if not isinstance(info, dict):
             return []
 
-        neighbors = info.get("neighbors")
-        if not isinstance(neighbors, list):
-            return []
-
         reported_at = packet.get("received_at")
         reports: list[dict[str, Any]] = []
-        for neighbor in neighbors:
-            if not isinstance(neighbor, dict):
+        for neighbor in cls._sequence_items(info.get("neighbors")):
+            if not isinstance(neighbor, MappingABC):
                 continue
             target_node_num = cls._coerce_optional_int(
                 neighbor.get("node_id", neighbor.get("nodeId"))
@@ -1198,10 +1217,8 @@ class MeshRepository:
 
     @classmethod
     def _coerce_optional_int_list(cls, value: Any) -> list[int]:
-        if not isinstance(value, list):
-            return []
         items: list[int] = []
-        for entry in value:
+        for entry in cls._sequence_items(value):
             item = cls._coerce_optional_int(entry)
             if item is not None:
                 items.append(item)
@@ -1209,10 +1226,8 @@ class MeshRepository:
 
     @classmethod
     def _route_snr_values(cls, value: Any) -> list[float | None]:
-        if not isinstance(value, list):
-            return []
         values: list[float | None] = []
-        for entry in value:
+        for entry in cls._sequence_items(value):
             snr = cls._coerce_optional_float(entry)
             if snr is None:
                 values.append(None)
@@ -1231,17 +1246,17 @@ class MeshRepository:
 
     @classmethod
     def _route_discovery_mapping(cls, value: Any) -> dict[str, Any] | None:
-        if not isinstance(value, dict):
+        if value is None:
             return None
         return {
-            "route": cls._coerce_optional_int_list(value.get("route")),
+            "route": cls._coerce_optional_int_list(cls._field_value(value, "route")),
             "snr_towards": cls._route_snr_values(
-                value.get("snr_towards", value.get("snrTowards"))
+                cls._field_value(value, "snr_towards", "snrTowards")
             ),
             "route_back": cls._coerce_optional_int_list(
-                value.get("route_back", value.get("routeBack"))
+                cls._field_value(value, "route_back", "routeBack")
             ),
-            "snr_back": cls._route_snr_values(value.get("snr_back", value.get("snrBack"))),
+            "snr_back": cls._route_snr_values(cls._field_value(value, "snr_back", "snrBack")),
         }
 
     @classmethod
@@ -1840,6 +1855,7 @@ class MeshRepository:
         self,
         *,
         since: str | None = None,
+        limit: int = DEFAULT_MESH_ROUTES_LIMIT,
         primary_only: bool = False,
     ) -> dict[str, Any]:
         clauses: list[str] = []
@@ -1877,8 +1893,9 @@ class MeshRepository:
                     received_at DESC,
                     packet_id DESC,
                     CASE WHEN direction = 'forward' THEN 1 ELSE 0 END DESC
+                LIMIT ?
                 """,
-                params,
+                [*params, int(limit)],
             ).fetchall()
 
         routes = [route for row in rows if (route := self._route_observation_row_to_dict(row)) is not None]

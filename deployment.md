@@ -65,6 +65,7 @@ Important details:
 - The final catch-all `http_status:404` rule is required.
 - The `path` field supports regular expressions; use it to block `/api/health`, `/api/admin/*`, `/docs`, `/redoc`, and `/openapi.json` before requests ever reach Meshseer.
 - Preserve the public `Host` header and `X-Forwarded-Proto` so Meshseer can validate websocket origins correctly.
+- Meshseer only trusts forwarded client IP headers when the immediate client is loopback. Keep `cloudflared` or any reverse proxy on the same host as the app origin if you want forwarded audit source attribution.
 - Validate the tunnel config before rollout:
 
 ```bash

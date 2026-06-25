@@ -19,6 +19,17 @@ class FakePubSub:
             callback(**kwargs)
 
 
+class NonListSequence:
+    def __init__(self, *items):
+        self._items = list(items)
+
+    def __getitem__(self, index):
+        return self._items[index]
+
+    def __len__(self):
+        return len(self._items)
+
+
 class FakeInterface:
     def __init__(self, *, my_node_num=None, send_data=None, local_node=None):
         self.closed = False
@@ -276,6 +287,35 @@ def test_receiver_prefers_explicit_primary_channel_name_over_modem_preset():
     receiver.connect_once()
 
     assert receiver.primary_channel_name() == "Neighborhood"
+
+
+def test_receiver_accepts_non_list_channel_sequences():
+    channel_settings = types.SimpleNamespace(name="Repeater")
+    primary_channel = types.SimpleNamespace(settings=channel_settings)
+    lora = types.SimpleNamespace(
+        modem_preset=0,
+        ListFields=lambda: [("modem_preset", 0)],
+    )
+    local_node = types.SimpleNamespace(
+        channels=NonListSequence(primary_channel),
+        localConfig=types.SimpleNamespace(lora=lora),
+    )
+    receiver = MeshtasticReceiver(
+        host="mesh.local",
+        port=4403,
+        callbacks=CollectorCallbacks(
+            on_packet=lambda packet: None,
+            on_node=lambda node: None,
+            on_status=lambda status: None,
+        ),
+        interface_factory=lambda host, port: FakeInterface(local_node=local_node),
+        pubsub=FakePubSub(),
+        sleeper=lambda seconds: None,
+    )
+
+    receiver.connect_once()
+
+    assert receiver.primary_channel_name() == "Repeater"
 
 
 def test_receiver_trace_route_returns_success_for_traceroute_response():

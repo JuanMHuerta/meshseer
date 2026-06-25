@@ -616,6 +616,137 @@ def test_repository_excludes_admin_packets_from_node_activity(tmp_path):
     assert [item["mesh_packet_id"] for item in all_packets] == [2, 1]
 
 
+def test_repository_node_insights_include_sent_received_and_self_packets_once(tmp_path):
+    repo = MeshRepository(tmp_path / "mesh.db")
+
+    repo.insert_packet(
+        PacketRecord(
+            mesh_packet_id=1,
+            received_at="2026-03-30T12:00:00Z",
+            from_node_num=101,
+            to_node_num=BROADCAST_NODE_NUM,
+            portnum="TEXT_MESSAGE_APP",
+            channel_index=0,
+            hop_limit=3,
+            hop_start=3,
+            rx_snr=4.0,
+            text_preview="broadcast",
+            payload_base64=None,
+            raw_json="{}",
+            via_mqtt=False,
+        )
+    )
+    repo.insert_packet(
+        PacketRecord(
+            mesh_packet_id=2,
+            received_at="2026-03-30T12:01:00Z",
+            from_node_num=101,
+            to_node_num=202,
+            portnum="POSITION_APP",
+            channel_index=0,
+            hop_limit=2,
+            hop_start=3,
+            rx_snr=3.0,
+            text_preview=None,
+            payload_base64=None,
+            raw_json="{}",
+            via_mqtt=False,
+        )
+    )
+    repo.insert_packet(
+        PacketRecord(
+            mesh_packet_id=3,
+            received_at="2026-03-30T12:02:00Z",
+            from_node_num=303,
+            to_node_num=101,
+            portnum="TELEMETRY_APP",
+            channel_index=0,
+            hop_limit=3,
+            hop_start=3,
+            rx_snr=2.0,
+            text_preview=None,
+            payload_base64=None,
+            raw_json="{}",
+            via_mqtt=False,
+        )
+    )
+    repo.insert_packet(
+        PacketRecord(
+            mesh_packet_id=4,
+            received_at="2026-03-30T12:03:00Z",
+            from_node_num=101,
+            to_node_num=101,
+            portnum="NODEINFO_APP",
+            channel_index=0,
+            hop_limit=1,
+            hop_start=1,
+            rx_snr=5.0,
+            text_preview=None,
+            payload_base64=None,
+            raw_json="{}",
+            via_mqtt=True,
+        )
+    )
+    repo.insert_packet(
+        PacketRecord(
+            mesh_packet_id=5,
+            received_at="2026-03-30T12:04:00Z",
+            from_node_num=101,
+            to_node_num=BROADCAST_NODE_NUM,
+            portnum="TEXT_MESSAGE_APP",
+            channel_index=2,
+            hop_limit=1,
+            hop_start=1,
+            rx_snr=12.0,
+            text_preview="off channel",
+            payload_base64=None,
+            raw_json="{}",
+            via_mqtt=False,
+        )
+    )
+
+    insights = repo.get_node_insights(101, primary_only=True)
+
+    assert insights["heard_packets"] == 4
+    assert insights["sent_packets"] == 3
+    assert insights["broadcast_packets"] == 1
+    assert insights["text_packets"] == 1
+    assert insights["position_packets"] == 1
+    assert insights["telemetry_packets"] == 1
+    assert insights["mqtt_packets"] == 1
+    assert insights["direct_packets"] == 1
+    assert insights["relayed_packets"] == 1
+    assert insights["avg_rx_snr"] == 3.5
+    assert insights["best_rx_snr"] == 5.0
+    assert insights["worst_rx_snr"] == 2.0
+    assert insights["last_path"] == "mqtt"
+    assert insights["last_seen_at"] == "2026-03-30T12:03:00Z"
+
+
+def test_repository_lists_self_addressed_packets_for_node_once(tmp_path):
+    repo = MeshRepository(tmp_path / "mesh.db")
+
+    repo.insert_packet(
+        PacketRecord(
+            mesh_packet_id=1,
+            received_at="2026-03-30T12:00:00Z",
+            from_node_num=101,
+            to_node_num=101,
+            portnum="TEXT_MESSAGE_APP",
+            channel_index=0,
+            hop_limit=None,
+            rx_snr=None,
+            text_preview="loop",
+            payload_base64=None,
+            raw_json="{}",
+        )
+    )
+
+    packets = repo.list_packets_for_node(101, primary_only=True)
+
+    assert [item["mesh_packet_id"] for item in packets] == [1]
+
+
 def test_repository_backfills_node_channel_index_from_raw_json(tmp_path):
     db_path = tmp_path / "mesh.db"
 

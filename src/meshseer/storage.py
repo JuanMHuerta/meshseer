@@ -977,6 +977,7 @@ class MeshRepository:
                 """
                 CREATE INDEX IF NOT EXISTS idx_packets_received_at ON packets(received_at DESC);
                 CREATE INDEX IF NOT EXISTS idx_packets_from_node_num ON packets(from_node_num);
+                CREATE INDEX IF NOT EXISTS idx_packets_to_node_num ON packets(to_node_num);
                 CREATE INDEX IF NOT EXISTS idx_packets_portnum ON packets(portnum);
                 CREATE INDEX IF NOT EXISTS idx_packets_channel_index ON packets(channel_index);
                 CREATE INDEX IF NOT EXISTS idx_packets_via_mqtt ON packets(via_mqtt);
@@ -997,6 +998,14 @@ class MeshRepository:
                     ON packets(received_at DESC, from_node_num)
                     WHERE COALESCE(channel_index, 0) = 0
                       AND from_node_num IS NOT NULL;
+                CREATE INDEX IF NOT EXISTS idx_packets_primary_from_node_id
+                    ON packets(from_node_num, id DESC)
+                    WHERE COALESCE(channel_index, 0) = 0
+                      AND from_node_num IS NOT NULL;
+                CREATE INDEX IF NOT EXISTS idx_packets_primary_to_node_id
+                    ON packets(to_node_num, id DESC)
+                    WHERE COALESCE(channel_index, 0) = 0
+                      AND to_node_num IS NOT NULL;
                 CREATE INDEX IF NOT EXISTS idx_traceroute_attempts_last_activity
                     ON traceroute_attempts(COALESCE(completed_at, requested_at) DESC, id DESC);
                 CREATE INDEX IF NOT EXISTS idx_traceroute_attempts_target_requested_at
@@ -1005,11 +1014,21 @@ class MeshRepository:
                     ON traceroute_attempts(requested_at DESC);
                 CREATE UNIQUE INDEX IF NOT EXISTS idx_route_observations_packet_direction
                     ON route_observations(packet_id, direction);
+                CREATE INDEX IF NOT EXISTS idx_route_observations_mesh_packet_id
+                    ON route_observations(mesh_packet_id);
                 CREATE INDEX IF NOT EXISTS idx_route_observations_received_at_packet
                     ON route_observations(received_at DESC, packet_id DESC);
                 CREATE INDEX IF NOT EXISTS idx_route_observations_primary_received_at_packet
                     ON route_observations(received_at DESC, packet_id DESC)
                     WHERE COALESCE(channel_index, 0) = 0;
+                CREATE INDEX IF NOT EXISTS idx_route_observations_primary_source_received
+                    ON route_observations(source_node_num, received_at DESC, packet_id DESC)
+                    WHERE COALESCE(channel_index, 0) = 0
+                      AND source_node_num IS NOT NULL;
+                CREATE INDEX IF NOT EXISTS idx_route_observations_primary_destination_received
+                    ON route_observations(destination_node_num, received_at DESC, packet_id DESC)
+                    WHERE COALESCE(channel_index, 0) = 0
+                      AND destination_node_num IS NOT NULL;
                 """
             )
 
@@ -2887,18 +2906,41 @@ class MeshRepository:
             clauses.append(self._primary_channel_clause("p.channel_index"))
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         params.append(limit)
-        query = f"""
-            SELECT
-                p.*,
-                d.short_name AS delivery_short_name,
-                d.long_name AS delivery_long_name
-            FROM packets AS p
-            LEFT JOIN nodes AS d
-                ON d.node_num = COALESCE(p.relay_node, p.next_hop)
-            {where}
-            ORDER BY p.id DESC
-            LIMIT ?
-        """
+        if since is not None:
+            packets_from = (
+                "FROM packets AS p INDEXED BY idx_packets_primary_received_at"
+                if primary_only else
+                "FROM packets AS p INDEXED BY idx_packets_received_at"
+            )
+            query = f"""
+                WITH filtered_packets AS MATERIALIZED (
+                    SELECT p.*
+                    {packets_from}
+                    {where}
+                )
+                SELECT
+                    p.*,
+                    d.short_name AS delivery_short_name,
+                    d.long_name AS delivery_long_name
+                FROM filtered_packets AS p
+                LEFT JOIN nodes AS d
+                    ON d.node_num = COALESCE(p.relay_node, p.next_hop)
+                ORDER BY p.id DESC
+                LIMIT ?
+            """
+        else:
+            query = f"""
+                SELECT
+                    p.*,
+                    d.short_name AS delivery_short_name,
+                    d.long_name AS delivery_long_name
+                FROM packets AS p
+                LEFT JOIN nodes AS d
+                    ON d.node_num = COALESCE(p.relay_node, p.next_hop)
+                {where}
+                ORDER BY p.id DESC
+                LIMIT ?
+            """
         with self._connect() as connection:
             rows = connection.execute(query, params).fetchall()
         return [self._row_to_dict(row) for row in rows if row is not None]
@@ -2911,23 +2953,34 @@ class MeshRepository:
         primary_only: bool = False,
         exclude_admin: bool = False,
     ) -> list[dict[str, Any]]:
-        clauses = ["(from_node_num = ? OR to_node_num = ?)"]
-        params: list[Any] = [node_num, node_num]
+        sent_clauses = ["from_node_num = ?"]
+        received_clauses = ["to_node_num = ?", "(from_node_num IS NULL OR from_node_num != ?)"]
+        params: list[Any] = [node_num]
         if exclude_admin:
-            clauses.append(self._non_admin_packet_clause())
+            sent_clauses.append(self._non_admin_packet_clause())
+            received_clauses.append(self._non_admin_packet_clause())
         if primary_only:
-            clauses.append(self._primary_channel_clause())
-        where = " AND ".join(clauses)
+            sent_clauses.append(self._primary_channel_clause())
+            received_clauses.append(self._primary_channel_clause())
+        sent_where = " AND ".join(sent_clauses)
+        received_where = " AND ".join(received_clauses)
         with self._connect() as connection:
             rows = connection.execute(
                 f"""
                 SELECT *
-                FROM packets
-                WHERE {where}
+                FROM (
+                    SELECT *
+                    FROM packets
+                    WHERE {sent_where}
+                    UNION ALL
+                    SELECT *
+                    FROM packets
+                    WHERE {received_where}
+                )
                 ORDER BY id DESC
                 LIMIT ?
                 """,
-                (*params, limit),
+                (*params, node_num, node_num, limit),
             ).fetchall()
         return [self._row_to_dict(row) for row in rows if row is not None]
 
@@ -3336,11 +3389,13 @@ class MeshRepository:
         return bool(row and row["ok"] == 1)
 
     def get_node_insights(self, node_num: int, *, primary_only: bool = False) -> dict[str, Any]:
-        clauses = ["(from_node_num = ? OR to_node_num = ?)"]
-        params: list[Any] = [node_num, node_num]
+        sent_clauses = ["from_node_num = ?"]
+        received_clauses = ["to_node_num = ?", "(from_node_num IS NULL OR from_node_num != ?)"]
         if primary_only:
-            clauses.append(self._primary_channel_clause())
-        where = self._where_clause(clauses)
+            sent_clauses.append(self._primary_channel_clause())
+            received_clauses.append(self._primary_channel_clause())
+        sent_where = " AND ".join(sent_clauses)
+        received_where = " AND ".join(received_clauses)
         hops_taken_expr = "CASE WHEN hop_start IS NOT NULL AND hop_limit IS NOT NULL AND hop_start >= hop_limit THEN hop_start - hop_limit END"
         with self._connect() as connection:
             aggregate = connection.execute(
@@ -3365,8 +3420,29 @@ class MeshRepository:
                     AVG(rx_snr) AS avg_rx_snr,
                     MAX(rx_snr) AS best_rx_snr,
                     MIN(rx_snr) AS worst_rx_snr
-                FROM packets
-                {where}
+                FROM (
+                    SELECT
+                        from_node_num,
+                        to_node_num,
+                        portnum,
+                        hop_start,
+                        hop_limit,
+                        via_mqtt,
+                        rx_snr
+                    FROM packets
+                    WHERE {sent_where}
+                    UNION ALL
+                    SELECT
+                        from_node_num,
+                        to_node_num,
+                        portnum,
+                        hop_start,
+                        hop_limit,
+                        via_mqtt,
+                        rx_snr
+                    FROM packets
+                    WHERE {received_where}
+                ) AS node_packets
                 """,
                 [
                     node_num,
@@ -3377,18 +3453,37 @@ class MeshRepository:
                     node_num,
                     node_num,
                     node_num,
-                    *params,
+                    node_num,
+                    node_num,
+                    node_num,
                 ],
             ).fetchone()
             latest_packet = connection.execute(
                 f"""
                 SELECT *
-                FROM packets
-                {where}
+                FROM (
+                    SELECT *
+                    FROM (
+                        SELECT *
+                        FROM packets
+                        WHERE {sent_where}
+                        ORDER BY id DESC
+                        LIMIT 1
+                    )
+                    UNION ALL
+                    SELECT *
+                    FROM (
+                        SELECT *
+                        FROM packets
+                        WHERE {received_where}
+                        ORDER BY id DESC
+                        LIMIT 1
+                    )
+                )
                 ORDER BY id DESC
                 LIMIT 1
                 """,
-                params,
+                (node_num, node_num, node_num),
             ).fetchone()
         latest_payload = self._row_to_dict(latest_packet)
         return {

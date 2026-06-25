@@ -17,7 +17,7 @@ from starlette import status
 from meshseer import __version__
 from meshseer.audit import FailedAccessTracker, audit_log, request_source
 from meshseer.autotrace import AutoTracerouteConfig, AutoTracerouteService
-from meshseer.channels import BROADCAST_NODE_NUM, LONGFAST_CHANNEL_NAME, is_primary_channel
+from meshseer.channels import BROADCAST_NODE_NUM, is_primary_channel
 from meshseer.clock import to_utc_iso, utc_now, utc_now_iso
 from meshseer.collector import CollectorCallbacks, CollectorStatus, MeshtasticReceiver
 from meshseer.config import Settings
@@ -106,13 +106,20 @@ def _perspective_payload(settings: Settings, repository: MeshRepository, collect
     if local_node_num is not None:
         local_node = repository.get_node(local_node_num, primary_only=True)
     label = _perspective_label(local_node_num, local_node)
+    channel_name_getter = None if collector is None else getattr(collector, "primary_channel_name", None)
+    channel_name = channel_name_getter() if callable(channel_name_getter) else None
+    channel_description = (
+        f"Everything shown here is what this receiver has heard on {channel_name}."
+        if isinstance(channel_name, str) and channel_name.strip()
+        else "Everything shown here is what this receiver has heard on its primary channel."
+    )
     return {
         "mode": "receiver_perspective",
-        "channel_name": LONGFAST_CHANNEL_NAME,
+        "channel_name": channel_name,
         "channel_scope": "primary_only",
         "local_node_num": local_node_num,
         "label": label,
-        "description": f"Everything shown here is what this receiver has heard on {LONGFAST_CHANNEL_NAME}. This is still a local vantage point, not an authoritative view of the whole mesh.",
+        "description": f"{channel_description} This is still a local vantage point, not an authoritative view of the whole mesh.",
     }
 
 
@@ -124,6 +131,7 @@ def _public_status_payload(settings: Settings, repository: MeshRepository, colle
         "perspective": {
             "local_node_num": perspective["local_node_num"],
             "label": perspective["label"],
+            "channel_name": perspective["channel_name"],
         },
         "ui": {
             "default_style": settings.ui_default_style,
@@ -295,11 +303,12 @@ def create_app(
         stored = repository.get_packet(packet_id)
         if stored is None:
             return
+        local_node_num = _resolved_local_node_num(settings, collector)
         event_broker.publish(
             {
                 "type": "packet_received",
                 "ts": utc_now_iso(),
-                "data": public_packet_payload(stored),
+                "data": public_packet_payload(stored, local_node_num=local_node_num),
             }
         )
         if _is_public_chat_packet(stored):
@@ -315,7 +324,7 @@ def create_app(
                 {
                     "type": "chat_message_received",
                     "ts": utc_now_iso(),
-                    "data": public_chat_message_payload(chat_packet),
+                    "data": public_chat_message_payload(chat_packet, local_node_num=local_node_num),
                 }
             )
         if (
@@ -502,6 +511,7 @@ def create_app(
         from_node: int | None = None,
         portnum: str | None = None,
     ) -> list[dict[str, Any]]:
+        local_node_num = _resolved_local_node_num(settings, collector)
         return public_packets_payload(
             repository.list_packets(
                 limit=limit,
@@ -509,13 +519,16 @@ def create_app(
                 from_node=from_node,
                 portnum=portnum,
                 primary_only=True,
-            )
+            ),
+            local_node_num=local_node_num,
         )
 
     @public_router.get("/api/chat")
     async def list_chat_messages(limit: int = Query(default=PUBLIC_CHAT_LIMIT, ge=1, le=500)) -> list[dict[str, Any]]:
+        local_node_num = _resolved_local_node_num(settings, collector)
         return public_chat_messages_payload(
-            repository.list_chat_messages(limit=min(limit, PUBLIC_CHAT_LIMIT), primary_only=True)
+            repository.list_chat_messages(limit=min(limit, PUBLIC_CHAT_LIMIT), primary_only=True),
+            local_node_num=local_node_num,
         )
 
     @public_router.get("/api/mesh/summary")
@@ -567,6 +580,7 @@ def create_app(
 
     @public_router.get("/api/nodes/{node_num}")
     async def get_node(node_num: int) -> dict[str, Any]:
+        local_node_num = _resolved_local_node_num(settings, collector)
         node = repository.get_node(node_num, primary_only=True)
         if node is None:
             raise HTTPException(status_code=404, detail="node not found")
@@ -605,6 +619,7 @@ def create_app(
                 primary_only=True,
                 limit=24,
             ),
+            local_node_num=local_node_num,
             last_traceroute_attempt=last_traceroute_attempt,
             last_successful_traceroute_attempt=last_successful_traceroute_attempt,
             latest_complete_traceroute=latest_complete_traceroute,

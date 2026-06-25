@@ -1864,6 +1864,9 @@ h3 {
 .breakdown-bar-fill.telemetry { background: #7aabdf; }
 .breakdown-bar-fill.position { background: #5bba8a; }
 .breakdown-bar-fill.other { background: var(--amber); }
+.breakdown-bar-fill.direct { background: var(--amber); }
+.breakdown-bar-fill.relayed { background: var(--text-secondary); }
+.breakdown-bar-fill.mqtt { background: #7aabdf; }
 
 .breakdown-count {
   font-size: 10px;
@@ -1954,6 +1957,10 @@ h3 {
 
 .receiver-sparkline-frame.detailed {
   margin-top: 8px;
+}
+
+.receiver-sparkline-frame.detailed .receiver-sparkline-graphic {
+  height: 54px;
 }
 
 .sparkline-chart-grid {

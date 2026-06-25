@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title data-i18n="document.title">Meshseer | LongFast Mesh Console</title>
+    <title data-i18n="document.title">Meshseer | Mesh Console</title>
     <meta name="theme-color" content="#ffffff">
     <link rel="icon" type="image/svg+xml" href="/static/favicon/favicon.svg">
     <link rel="apple-touch-icon" sizes="180x180" href="/static/favicon/apple-touch-icon.png">
@@ -80,8 +80,8 @@
 
         <!-- FULL-SCREEN MAP -->
         <div class="map-shell" id="mesh-map">
-          <div id="leaflet-map" aria-label="LongFast node map" data-i18n-aria-label="map.longFastNodeMap"></div>
-          <div class="map-empty" id="map-empty" data-i18n="map.waitingForNodeLocations">Waiting for LongFast node locations.</div>
+          <div id="leaflet-map" aria-label="Node map" data-i18n-aria-label="map.nodeMap"></div>
+          <div class="map-empty" id="map-empty" data-i18n="map.waitingForNodeLocations">Waiting for node locations.</div>
           <div class="map-note" id="map-note" hidden></div>
         </div>
 
@@ -190,7 +190,7 @@
           <section class="rail-panel chat-panel" id="mesh-chat" hidden>
             <div class="rail-panel-head">
               <h2 data-i18n="nav.chat">Chat</h2>
-              <span class="rail-panel-subtitle mono-text" data-i18n="common.broadcast">Broadcast</span>
+              <span class="rail-panel-subtitle mono-text" id="chat-panel-subtitle" data-i18n="common.broadcast">Broadcast</span>
               <button type="button" class="drawer-close" data-drawer="rail" aria-label="Close panel" data-i18n-aria-label="actions.closePanel">&#x2715;</button>
             </div>
             <div class="chat-feed" id="chat-feed"></div>

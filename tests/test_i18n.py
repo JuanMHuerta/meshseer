@@ -46,7 +46,9 @@ def test_i18n_script_loads_before_app_script():
 
 def test_readme_language_links_are_bidirectional():
     english_readme = (ROOT / "README.md").read_text(encoding="utf-8")
-    spanish_readme = (ROOT / "README.es.md").read_text(encoding="utf-8")
+    spanish_readme = (ROOT / "readmes" / "README.es.md").read_text(encoding="utf-8")
 
-    assert "[English](README.md) | [Español](README.es.md)" in english_readme
-    assert "[English](README.md) | [Español](README.es.md)" in spanish_readme
+    assert "[![en](https://img.shields.io/badge/lang-en-red.svg)](README.md)" in english_readme
+    assert "[![es](https://img.shields.io/badge/lang-es-yellow.svg)](readmes/README.es.md)" in english_readme
+    assert "[![en](https://img.shields.io/badge/lang-en-red.svg)](../README.md)" in spanish_readme
+    assert "[![es](https://img.shields.io/badge/lang-es-yellow.svg)](README.es.md)" in spanish_readme

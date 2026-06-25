@@ -22,11 +22,12 @@ ADMIN_TOKEN = "test-admin-token"
 
 
 class StubCollector:
-    def __init__(self, *, local_node_num=None):
+    def __init__(self, *, local_node_num=None, primary_channel_name=None):
         self.started = False
         self.stopped = False
         self.status = CollectorStatus(state="connected", connected=True, detail=None)
         self._local_node_num = local_node_num
+        self._primary_channel_name = primary_channel_name
 
     def start(self):
         self.started = True
@@ -39,6 +40,9 @@ class StubCollector:
 
     def local_node_num(self):
         return self._local_node_num
+
+    def primary_channel_name(self):
+        return self._primary_channel_name
 
 
 class StubAutotraceService:
@@ -192,7 +196,7 @@ def build_app(tmp_path, *, admin_token: str | None = None, extra_env: dict[str, 
             updated_at="2026-03-30T12:05:00Z",
         )
     )
-    collector = StubCollector()
+    collector = StubCollector(primary_channel_name="LongFast")
     env = {
         "MESHSEER_DB_PATH": str(tmp_path / "mesh.db"),
         "MESHSEER_LOCAL_NODE_NUM": "101",
@@ -234,12 +238,12 @@ def test_api_routes_and_filters(tmp_path):
     assert "detail" not in status.json()["collector"]
     assert status.json()["perspective"]["local_node_num"] == 101
     assert status.json()["perspective"]["label"] == "ALFA"
+    assert status.json()["perspective"]["channel_name"] == "LongFast"
     assert status.json()["ui"]["default_style"] == "amber-monochrome"
     assert status.json()["version"] == __version__
-    assert "channel_name" not in status.json()["perspective"]
     assert "database" not in health.json()
-    assert packets.json()[0]["path_label"] == "Direct"
-    assert packets.json()[0]["path_tone"] == "direct"
+    assert packets.json()[0]["path_label"] == "Local"
+    assert packets.json()[0]["path_tone"] == "local"
     assert "text_preview" not in packets.json()[0]
     assert "mesh_packet_id" not in packets.json()[0]
     assert "channel_index" not in packets.json()[0]
@@ -253,7 +257,7 @@ def test_api_routes_and_filters(tmp_path):
     assert len(chat.json()) == 1
     assert chat.json()[0]["text_preview"] == "hello mesh"
     assert chat.json()[0]["sender_label"] == "ALFA"
-    assert chat.json()[0]["path_label"] == "Direct"
+    assert chat.json()[0]["path_label"] == "Local"
     assert "from_node_num" not in chat.json()[0]
     assert "mesh_packet_id" not in chat.json()[0]
     assert node.json()["node"]["node_num"] == 101
@@ -263,7 +267,7 @@ def test_api_routes_and_filters(tmp_path):
     assert node.json()["recent_packets"][0]["text_preview"] == "hello mesh"
     assert node.json()["recent_packets"][0]["destination_label"] == "Broadcast"
     assert node.json()["recent_packets"][0]["delivery_node_label"] is None
-    assert node.json()["recent_packets"][0]["path_label"] == "Direct"
+    assert node.json()["recent_packets"][0]["path_label"] == "Local"
     assert node.json()["recent_packets"][0]["rx_snr"] == 6.5
     assert "raw_json" not in node.json()["recent_packets"][0]
     assert "mesh_packet_id" not in node.json()["recent_packets"][0]
@@ -278,6 +282,45 @@ def test_api_routes_and_filters(tmp_path):
     assert admin_nodes.json()[0]["short_name"] == "ALFA"
     assert admin_nodes.json()[0]["raw_json"] == '{"num":101}'
     assert "Meshseer" in index.text
+
+
+def test_public_packets_expose_receiver_local_path_without_route_metadata(tmp_path):
+    app, _collector = build_app(tmp_path)
+    repo = app.state.repository
+    repo.insert_packet(
+        PacketRecord(
+            mesh_packet_id=13,
+            received_at="2026-03-30T12:10:00Z",
+            from_node_num=101,
+            to_node_num=BROADCAST_NODE_NUM,
+            portnum="POSITION_APP",
+            channel_index=0,
+            hop_limit=None,
+            hop_start=None,
+            next_hop=None,
+            relay_node=None,
+            rx_snr=5.2,
+            rx_rssi=-88,
+            text_preview=None,
+            payload_base64="cG9z",
+            raw_json='{"id":13}',
+            via_mqtt=False,
+        )
+    )
+
+    client = TestClient(app)
+    with client:
+        packets = client.get("/api/packets")
+        node = client.get("/api/nodes/101")
+
+    assert packets.status_code == 200
+    assert packets.json()[0]["path_tone"] == "local"
+    assert packets.json()[0]["path_label"] == "Local"
+    assert packets.json()[0]["delivery_node_label"] is None
+    assert node.status_code == 200
+    assert node.json()["recent_packets"][0]["path_tone"] == "local"
+    assert node.json()["recent_packets"][0]["path_label"] == "Local"
+    assert node.json()["recent_packets"][0]["delivery_node_label"] is None
 
 
 def test_status_reflects_ui_default_style_override(tmp_path):
@@ -2412,7 +2455,7 @@ def test_default_collector_callbacks_persist_and_broadcast(tmp_path):
     with TestClient(app) as client:
         collector = client.app.state.collector
         with client.websocket_connect("/ws/events", headers=websocket_headers()) as websocket:
-            collector.callbacks.on_packet(
+            client.app.state.collector.callbacks.on_packet(
                 {
                     "mesh_packet_id": 23,
                     "received_at": "2026-03-30T12:00:05Z",
@@ -2534,6 +2577,49 @@ def test_default_collector_callbacks_persist_and_broadcast(tmp_path):
     assert "raw_json" not in chat.json()[0]
     assert missing_packet.status_code == 404
     assert missing_node.status_code == 404
+
+
+def test_receiver_originated_packets_broadcast_as_local_without_route_metadata(tmp_path):
+    repo = MeshRepository(tmp_path / "mesh.db")
+    app = create_app(
+        Settings.from_env(
+            {
+                "MESHSEER_DB_PATH": str(tmp_path / "mesh.db"),
+                "MESHSEER_LOCAL_NODE_NUM": "101",
+            }
+        ),
+        repository=repo,
+        start_collector=False,
+        start_autotrace_service=False,
+    )
+
+    with TestClient(app) as client:
+        with client.websocket_connect("/ws/events", headers=websocket_headers()) as websocket:
+            client.app.state.collector.callbacks.on_packet(
+                {
+                    "mesh_packet_id": 31,
+                    "received_at": "2026-03-30T12:00:00Z",
+                    "from_node_num": 101,
+                    "to_node_num": BROADCAST_NODE_NUM,
+                    "portnum": "TEXT_MESSAGE_APP",
+                    "channel_index": 0,
+                    "hop_limit": None,
+                    "hop_start": None,
+                    "rx_snr": 4.2,
+                    "text_preview": "from receiver",
+                    "payload_base64": None,
+                    "raw_json": "{}",
+                }
+            )
+            packet_message = websocket.receive_json()
+            chat_message = websocket.receive_json()
+
+    assert packet_message["type"] == "packet_received"
+    assert packet_message["data"]["path_tone"] == "local"
+    assert packet_message["data"]["path_label"] == "Local"
+    assert chat_message["type"] == "chat_message_received"
+    assert chat_message["data"]["path_tone"] == "local"
+    assert chat_message["data"]["path_label"] == "Local"
 
 
 def test_chat_api_caps_public_history_to_40_messages(tmp_path):

@@ -4,6 +4,8 @@ import threading
 from dataclasses import dataclass
 from typing import Any, Callable, Protocol
 
+from meshtastic.protobuf import config_pb2
+
 from meshseer.normalizers import normalize_node, normalize_packet
 
 
@@ -93,6 +95,41 @@ class MeshtasticReceiver:
         my_info = getattr(interface, "myInfo", None)
         node_num = getattr(my_info, "my_node_num", None)
         return node_num if isinstance(node_num, int) else None
+
+    @staticmethod
+    def _format_modem_preset_name(value: int) -> str | None:
+        try:
+            preset_name = config_pb2.Config.LoRaConfig.ModemPreset.Name(value)
+        except ValueError:
+            return None
+        parts = [part.capitalize() for part in preset_name.split("_") if part]
+        return "".join(parts) or None
+
+    def primary_channel_name(self) -> str | None:
+        with self._interface_lock:
+            interface = self._interface
+        if interface is None:
+            return None
+
+        local_node = getattr(interface, "localNode", None)
+        if local_node is None:
+            return None
+
+        channels = getattr(local_node, "channels", None)
+        if isinstance(channels, list) and channels:
+            primary_channel = channels[0]
+            settings = getattr(primary_channel, "settings", None)
+            name = getattr(settings, "name", None)
+            if isinstance(name, str) and name.strip():
+                return name.strip()
+
+        local_config = getattr(local_node, "localConfig", None)
+        lora_config = getattr(local_config, "lora", None)
+        if lora_config is None:
+            return None
+        if not lora_config.ListFields():
+            return None
+        return self._format_modem_preset_name(getattr(lora_config, "modem_preset", None))
 
     def _subscribe_once(self) -> None:
         if self._subscribed:

@@ -228,6 +228,7 @@ def test_node_detail_shows_recent_packets_section(page):
     assert page.locator("#node-detail .node-hud-section h4", has_text="Recent packets").text_content() == "Recent packets"
     assert page.locator("#node-detail .node-packet-card, #node-detail .node-packets-empty").count() >= 1
     assert page.locator("#node-detail .hud-metric-detail", has_text="First ").count() >= 1
+    assert page.locator("#node-detail .hud-metric-label", has_text="Hops Away").count() == 0
 
 
 def test_packet_snr_is_rendered_in_node_detail_and_traffic_drawer(page):
@@ -292,6 +293,70 @@ def test_packet_delivery_label_only_shows_when_delivery_node_is_known(page):
     }
 
 
+def test_node_detail_path_metric_shows_hop_count_not_direct_label(page):
+    labels = page.evaluate(
+        """
+        () => {
+          state.perspective = { ...(state.perspective || {}), local_node_num: 77 };
+          return {
+            zero: nodePathLabel({ hops_away: 0 }),
+            one: nodePathLabel({ hops_away: 1 }),
+            two: nodePathLabel({ hops_away: 2 }),
+            local: nodePathLabel({ node_num: 77, hops_away: 0 }),
+            mqtt: nodePathLabel({ via_mqtt: true }),
+            traced: nodePathLabel(
+              { node_num: 202, hops_away: 0 },
+              { latest_complete_traceroute: { forward_path_node_nums: [77, 303, 202] } },
+            ),
+            tracedDescription: nodePathDescription(
+              { node_num: 202, hops_away: 0 },
+              { latest_complete_traceroute: { forward_path_node_nums: [77, 303, 202] } },
+            ),
+          };
+        }
+        """
+    )
+
+    assert labels == {
+        "zero": "Direct",
+        "one": "1 Hop",
+        "two": "2 Hops",
+        "local": "Local",
+        "mqtt": "MQTT",
+        "traced": "1 Hop",
+        "tracedDescription": "1 hops away from this receiver",
+    }
+
+
+def test_receiver_local_packets_render_local_path_in_traffic_drawer(page):
+    packet = page.evaluate(
+        """
+        () => {
+          const packet = {
+            path_tone: 'local',
+            path_label: 'Local',
+            relay_node: 0,
+            next_hop: 0,
+            from_node_num: 101,
+            to_node_num: 4294967295,
+            portnum: 'POSITION_APP',
+            received_at: '2026-03-30T12:10:00Z',
+            rx_snr: 5.2,
+          };
+          return {
+            label: packetPathLabel(packet),
+            markup: packetRowMarkup(packet),
+          };
+        }
+        """
+    )
+
+    assert packet["label"] == "Local"
+    assert ">Local<" in packet["markup"]
+    assert "Unknown" not in packet["markup"]
+    assert "path-badge local" in packet["markup"]
+
+
 def test_route_selection_includes_intermediate_nodes(page):
     matches = page.evaluate(
         """
@@ -307,6 +372,130 @@ def test_route_selection_includes_intermediate_nodes(page):
         "endpoint": True,
         "intermediate": True,
         "missing": False,
+    }
+
+
+def test_active_mesh_routes_prefer_latest_complete_family_over_newer_single_for_same_pair(page):
+    routes = page.evaluate(
+        """
+        () => {
+          const now = Date.now();
+          const iso = (offsetMs = 0) => new Date(now - offsetMs).toISOString();
+          state.showRoutes = true;
+          state.selectedNodeNum = null;
+          state.perspective = { ...(state.perspective || {}), local_node_num: 101 };
+          state.nodes = [
+            { node_num: 101, latitude: 10.1, longitude: -84.1, last_heard_at: iso(0), hops_away: 0 },
+            { node_num: 202, latitude: 10.2, longitude: -84.2, last_heard_at: iso(0), hops_away: 1 },
+            { node_num: 303, latitude: 10.3, longitude: -84.3, last_heard_at: iso(0), hops_away: 1 },
+          ];
+          state.meshRoutes = {
+            routes: [
+              {
+                mesh_packet_id: 9002,
+                packet_id: 9002,
+                received_at: iso(5_000),
+                direction: 'forward',
+                source_node_num: 101,
+                destination_node_num: 202,
+                path_node_nums: [101, 202],
+              },
+              {
+                mesh_packet_id: 9001,
+                packet_id: 9001,
+                received_at: iso(30_000),
+                direction: 'forward',
+                source_node_num: 101,
+                destination_node_num: 202,
+                path_node_nums: [101, 303, 202],
+              },
+              {
+                mesh_packet_id: 9001,
+                packet_id: 9001,
+                received_at: iso(30_000),
+                direction: 'return',
+                source_node_num: 202,
+                destination_node_num: 101,
+                path_node_nums: [202, 303, 101],
+              },
+            ],
+            stats: { total: 3, forward: 2, return: 1 },
+          };
+          return activeMeshRoutes().map((route) => ({
+            mesh_packet_id: route.mesh_packet_id,
+            direction: route.direction,
+            path_node_nums: route.path_node_nums,
+          }));
+        }
+        """
+    )
+
+    assert routes == [
+        {"mesh_packet_id": 9001, "direction": "forward", "path_node_nums": [101, 303, 202]},
+        {"mesh_packet_id": 9001, "direction": "return", "path_node_nums": [202, 303, 101]},
+    ]
+
+
+def test_selected_local_node_keeps_all_route_families_and_neighborhood_nodes(page):
+    result = page.evaluate(
+        """
+        () => {
+          const now = Date.now();
+          const iso = (offsetMs = 0) => new Date(now - offsetMs).toISOString();
+          state.showRoutes = true;
+          state.selectedNodeNum = 101;
+          state.perspective = { ...(state.perspective || {}), local_node_num: 101 };
+          state.nodes = [
+            { node_num: 101, latitude: 10.1, longitude: -84.1, last_heard_at: iso(0), hops_away: 0 },
+            { node_num: 202, latitude: 10.2, longitude: -84.2, last_heard_at: iso(0), hops_away: 1 },
+            { node_num: 303, latitude: 10.3, longitude: -84.3, last_heard_at: iso(0), hops_away: 1 },
+            { node_num: 404, latitude: 10.4, longitude: -84.4, last_heard_at: iso(0), hops_away: 1 },
+            { node_num: 505, latitude: 10.5, longitude: -84.5, last_heard_at: iso(0), hops_away: 2 },
+          ];
+          state.meshRoutes = {
+            routes: [
+              {
+                mesh_packet_id: 9101,
+                packet_id: 9101,
+                received_at: iso(15_000),
+                direction: 'forward',
+                source_node_num: 101,
+                destination_node_num: 202,
+                path_node_nums: [101, 303, 202],
+              },
+              {
+                mesh_packet_id: 9101,
+                packet_id: 9101,
+                received_at: iso(15_000),
+                direction: 'return',
+                source_node_num: 202,
+                destination_node_num: 101,
+                path_node_nums: [202, 303, 101],
+              },
+              {
+                mesh_packet_id: 9102,
+                packet_id: 9102,
+                received_at: iso(10_000),
+                direction: 'forward',
+                source_node_num: 101,
+                destination_node_num: 505,
+                path_node_nums: [101, 404, 505],
+              },
+            ],
+            stats: { total: 3, forward: 2, return: 1 },
+          };
+          const routes = activeMeshRoutes();
+          return {
+            routePaths: routes.map((route) => route.path_node_nums),
+            neighborhood: [...selectedNeighborhood(routes)].sort((left, right) => left - right),
+          };
+        }
+        """
+    )
+
+    assert result == {
+        "routePaths": [[101, 404, 505], [101, 303, 202], [202, 303, 101]],
+        "neighborhood": [101, 202, 303, 404, 505],
     }
 
 
@@ -443,6 +632,68 @@ def test_recent_packets_header_stays_isolated_in_dark_themes(tmp_path):
             assert table_styles["borderSpacing"] == "0px"
             assert table_styles["headerPosition"] == "sticky"
             assert table_styles["headerBackgroundAlpha"] >= 0.9
+
+
+def test_channel_scoped_ui_uses_actual_channel_name(tmp_path):
+    with open_page(tmp_path) as page:
+        def rewrite_status(route):
+            response = route.fetch()
+            payload = response.json()
+            payload["perspective"]["channel_name"] = "MediumSlow"
+            route.fulfill(
+                response=response,
+                json=payload,
+            )
+
+        page.route("**/api/status", rewrite_status)
+        page.route("**/api/nodes/roster", lambda route: route.fulfill(json=[]))
+        page.route("**/api/chat", lambda route: route.fulfill(json=[]))
+        page.reload(wait_until="domcontentloaded")
+        page.wait_for_selector("#collector-card", state="visible", timeout=20_000)
+        page.wait_for_function(
+            """
+            () => Boolean(document.querySelector('#leaflet-map.leaflet-container'))
+            """
+        )
+
+        page.click("#rail-toggle-nodes")
+        expect_rail_open(page)
+        page.click("#rail-toggle-chat")
+        expect_rail_open(page)
+        page.wait_for_function(
+            """
+            () => (
+              document.title === 'Meshseer | MediumSlow Mesh Console'
+              && document.querySelector('#leaflet-map')?.getAttribute('aria-label') === 'MediumSlow node map'
+              && document.querySelector('#map-empty')?.textContent.includes('Waiting for MediumSlow node locations.')
+              && document.querySelector('#chat-panel-subtitle')?.textContent === 'Broadcast · MediumSlow'
+            )
+            """
+        )
+        page.evaluate(
+            """
+            () => {
+              if (typeof window.renderChat === 'function') {
+                window.renderChat([]);
+              }
+            }
+            """
+        )
+        page.wait_for_function(
+            """
+            () => (
+              document.querySelector('#chat-feed')?.textContent.includes('Broadcast MediumSlow messages')
+              && document.querySelector('#node-list')?.textContent.includes('MediumSlow nodes appear here')
+            )
+            """
+        )
+
+        assert page.evaluate("() => document.title") == "Meshseer | MediumSlow Mesh Console"
+        assert page.locator("#leaflet-map").get_attribute("aria-label") == "MediumSlow node map"
+        assert "Waiting for MediumSlow node locations." in (page.locator("#map-empty").text_content() or "")
+        assert page.locator("#chat-panel-subtitle").text_content() == "Broadcast · MediumSlow"
+        assert "Broadcast MediumSlow messages" in (page.locator("#chat-feed").text_content() or "")
+        assert "MediumSlow nodes appear here" in (page.locator("#node-list").text_content() or "")
 
 
 def test_spanish_browser_locale_is_used_and_manual_language_choice_persists(tmp_path):

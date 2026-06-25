@@ -20,9 +20,10 @@ class FakePubSub:
 
 
 class FakeInterface:
-    def __init__(self, *, my_node_num=None, send_data=None):
+    def __init__(self, *, my_node_num=None, send_data=None, local_node=None):
         self.closed = False
         self._send_data = send_data
+        self._local_node = local_node
         self.sent_packets = []
         if my_node_num is not None:
             self.myInfo = types.SimpleNamespace(my_node_num=my_node_num)
@@ -43,8 +44,10 @@ class FakeInterface:
         raise AssertionError("getNode must never be called")
 
     @property
-    def localNode(self):  # pragma: no cover
-        raise AssertionError("localNode must never be used")
+    def localNode(self):
+        if self._local_node is None:  # pragma: no cover
+            raise AssertionError("localNode must never be used")
+        return self._local_node
 
 
 def test_receiver_connects_and_processes_events():
@@ -217,6 +220,62 @@ def test_receiver_exposes_local_node_num_from_interface_metadata():
     receiver.connect_once()
 
     assert receiver.local_node_num() == 101
+
+
+def test_receiver_exposes_primary_channel_name_from_modem_preset():
+    lora = types.SimpleNamespace(
+        modem_preset=3,
+        ListFields=lambda: [("modem_preset", 3)],
+    )
+    local_node = types.SimpleNamespace(
+        channels=[],
+        localConfig=types.SimpleNamespace(lora=lora),
+    )
+    receiver = MeshtasticReceiver(
+        host="mesh.local",
+        port=4403,
+        callbacks=CollectorCallbacks(
+            on_packet=lambda packet: None,
+            on_node=lambda node: None,
+            on_status=lambda status: None,
+        ),
+        interface_factory=lambda host, port: FakeInterface(local_node=local_node),
+        pubsub=FakePubSub(),
+        sleeper=lambda seconds: None,
+    )
+
+    receiver.connect_once()
+
+    assert receiver.primary_channel_name() == "MediumSlow"
+
+
+def test_receiver_prefers_explicit_primary_channel_name_over_modem_preset():
+    channel_settings = types.SimpleNamespace(name="Neighborhood")
+    primary_channel = types.SimpleNamespace(settings=channel_settings)
+    lora = types.SimpleNamespace(
+        modem_preset=0,
+        ListFields=lambda: [("modem_preset", 0)],
+    )
+    local_node = types.SimpleNamespace(
+        channels=[primary_channel],
+        localConfig=types.SimpleNamespace(lora=lora),
+    )
+    receiver = MeshtasticReceiver(
+        host="mesh.local",
+        port=4403,
+        callbacks=CollectorCallbacks(
+            on_packet=lambda packet: None,
+            on_node=lambda node: None,
+            on_status=lambda status: None,
+        ),
+        interface_factory=lambda host, port: FakeInterface(local_node=local_node),
+        pubsub=FakePubSub(),
+        sleeper=lambda seconds: None,
+    )
+
+    receiver.connect_once()
+
+    assert receiver.primary_channel_name() == "Neighborhood"
 
 
 def test_receiver_trace_route_returns_success_for_traceroute_response():

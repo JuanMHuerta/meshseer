@@ -149,9 +149,17 @@ def _coerce_int(value: Any) -> int | None:
     return None
 
 
-def _packet_path_tone(packet: Mapping[str, Any]) -> str:
+def _packet_path_tone(packet: Mapping[str, Any], *, local_node_num: int | None = None) -> str:
     if packet.get("via_mqtt"):
         return "mqtt"
+    from_node_num = _coerce_int(packet.get("from_node_num"))
+    if local_node_num is not None and from_node_num == local_node_num:
+        return "local"
+    relay_node = _coerce_int(packet.get("relay_node"))
+    next_hop = _coerce_int(packet.get("next_hop"))
+    delivered_by = relay_node if relay_node is not None else next_hop
+    if delivered_by == 0:
+        return "local"
     hop_start = _coerce_int(packet.get("hop_start"))
     hop_limit = _coerce_int(packet.get("hop_limit"))
     if hop_start is None or hop_limit is None or hop_start < hop_limit:
@@ -159,10 +167,12 @@ def _packet_path_tone(packet: Mapping[str, Any]) -> str:
     return "direct" if hop_start == hop_limit else "relayed"
 
 
-def _packet_path_label(packet: Mapping[str, Any]) -> str:
-    tone = _packet_path_tone(packet)
+def _packet_path_label(packet: Mapping[str, Any], *, local_node_num: int | None = None) -> str:
+    tone = _packet_path_tone(packet, local_node_num=local_node_num)
     if tone == "mqtt":
         return "MQTT"
+    if tone == "local":
+        return "Local"
     if tone == "unknown":
         return "Unknown"
     hop_start = _coerce_int(packet.get("hop_start"))
@@ -226,41 +236,45 @@ def collector_status_payload(status: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
-def public_packet_payload(packet: Mapping[str, Any]) -> dict[str, Any]:
+def public_packet_payload(packet: Mapping[str, Any], *, local_node_num: int | None = None) -> dict[str, Any]:
     payload = _pick(packet, PUBLIC_PACKET_FIELDS)
-    payload["path_tone"] = _packet_path_tone(packet)
-    payload["path_label"] = _packet_path_label(packet)
+    payload["path_tone"] = _packet_path_tone(packet, local_node_num=local_node_num)
+    payload["path_label"] = _packet_path_label(packet, local_node_num=local_node_num)
     payload["delivery_node_label"] = _delivery_node_label(packet)
     return payload
 
 
-def public_packets_payload(items: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
-    return [public_packet_payload(item) for item in items]
+def public_packets_payload(items: list[Mapping[str, Any]], *, local_node_num: int | None = None) -> list[dict[str, Any]]:
+    return [public_packet_payload(item, local_node_num=local_node_num) for item in items]
 
 
-def public_chat_message_payload(packet: Mapping[str, Any]) -> dict[str, Any]:
+def public_chat_message_payload(packet: Mapping[str, Any], *, local_node_num: int | None = None) -> dict[str, Any]:
     payload = _pick(packet, PUBLIC_CHAT_FIELDS)
     payload["sender_label"] = _sender_label(packet)
-    payload["path_tone"] = _packet_path_tone(packet)
-    payload["path_label"] = _packet_path_label(packet)
+    payload["path_tone"] = _packet_path_tone(packet, local_node_num=local_node_num)
+    payload["path_label"] = _packet_path_label(packet, local_node_num=local_node_num)
     return payload
 
 
-def public_chat_messages_payload(items: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
-    return [public_chat_message_payload(item) for item in items]
+def public_chat_messages_payload(items: list[Mapping[str, Any]], *, local_node_num: int | None = None) -> list[dict[str, Any]]:
+    return [public_chat_message_payload(item, local_node_num=local_node_num) for item in items]
 
 
-def public_node_recent_packet_payload(packet: Mapping[str, Any]) -> dict[str, Any]:
+def public_node_recent_packet_payload(packet: Mapping[str, Any], *, local_node_num: int | None = None) -> dict[str, Any]:
     payload = _pick(packet, PUBLIC_NODE_RECENT_PACKET_FIELDS)
     payload["destination_label"] = _destination_label(packet)
-    payload["path_tone"] = _packet_path_tone(packet)
-    payload["path_label"] = _packet_path_label(packet)
+    payload["path_tone"] = _packet_path_tone(packet, local_node_num=local_node_num)
+    payload["path_label"] = _packet_path_label(packet, local_node_num=local_node_num)
     payload["delivery_node_label"] = _delivery_node_label(packet)
     return payload
 
 
-def public_node_recent_packets_payload(items: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
-    return [public_node_recent_packet_payload(item) for item in items]
+def public_node_recent_packets_payload(
+    items: list[Mapping[str, Any]],
+    *,
+    local_node_num: int | None = None,
+) -> list[dict[str, Any]]:
+    return [public_node_recent_packet_payload(item, local_node_num=local_node_num) for item in items]
 
 
 def public_node_payload(node: Mapping[str, Any]) -> dict[str, Any]:
@@ -284,6 +298,7 @@ def public_node_detail_payload(
     insights: Mapping[str, Any],
     recent_packets: list[Mapping[str, Any]],
     metric_history: list[Mapping[str, Any]],
+    local_node_num: int | None = None,
     last_traceroute_attempt: Mapping[str, Any] | None = None,
     last_successful_traceroute_attempt: Mapping[str, Any] | None = None,
     latest_complete_traceroute: Mapping[str, Any] | None = None,
@@ -305,7 +320,7 @@ def public_node_detail_payload(
     return {
         "node": public_node_detail_node_payload(node),
         "insights": _pick(insights, PUBLIC_NODE_INSIGHTS_FIELDS),
-        "recent_packets": public_node_recent_packets_payload(recent_packets),
+        "recent_packets": public_node_recent_packets_payload(recent_packets, local_node_num=local_node_num),
         "metric_history": [_pick(item, PUBLIC_NODE_METRIC_HISTORY_FIELDS) for item in metric_history],
         "last_traceroute_attempt": last_attempt_payload,
         "last_successful_traceroute_attempt": last_successful_payload,

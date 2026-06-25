@@ -10,7 +10,8 @@
   });
 
   const EN = Object.freeze({
-    "document.title": "Meshseer | LongFast Mesh Console",
+    "document.title": "Meshseer | Mesh Console",
+    "document.titleWithChannel": "Meshseer | {channel} Mesh Console",
 
     "common.appName": "Meshseer",
     "common.broadcast": "Broadcast",
@@ -84,8 +85,10 @@
     "nav.traffic": "Traffic",
     "nav.options": "Options",
 
-    "map.longFastNodeMap": "LongFast node map",
-    "map.waitingForNodeLocations": "Waiting for LongFast node locations.",
+    "map.nodeMap": "Node map",
+    "map.nodeMapWithChannel": "{channel} node map",
+    "map.waitingForNodeLocations": "Waiting for node locations.",
+    "map.waitingForNodeLocationsWithChannel": "Waiting for {channel} node locations.",
     "map.noMappedNodes24h": "No mapped nodes heard in the last 24 hours.",
     "map.routesHidden": "Route overlays are hidden.",
     "map.noRouteOverlays": "No route overlays available for the current node set.",
@@ -132,7 +135,8 @@
     "nodes.noMatchingTitle": "No Matching Nodes",
     "nodes.noMatchingBody": "Adjust the roster filters or search query to widen the view.",
     "nodes.noNodesTitle": "No Nodes Yet",
-    "nodes.noNodesBody": "LongFast nodes appear here as the receiver hears them.",
+    "nodes.noNodesBody": "Nodes appear here as the receiver hears them.",
+    "nodes.noNodesBodyWithChannel": "{channel} nodes appear here as the receiver hears them.",
     "nodes.nodeDetail": "Node Detail",
     "nodes.selectedNode": "Selected Node",
     "nodes.freshness.live": "LIVE",
@@ -194,7 +198,8 @@
     "traffic.port.other": "Other",
 
     "chat.emptyTitle": "No Chat Yet",
-    "chat.emptyBody": "Broadcast LongFast messages will stream here when heard by this receiver.",
+    "chat.emptyBody": "Broadcast messages will stream here when heard by this receiver.",
+    "chat.emptyBodyWithChannel": "Broadcast {channel} messages will stream here when heard by this receiver.",
 
     "signals.waitingIntel": "Waiting for passive mesh traffic to build an intel view.",
     "signals.noPassiveTraffic": "No passive traffic yet.",
@@ -247,7 +252,8 @@
   });
 
   const ES = Object.freeze({
-    "document.title": "Meshseer | Consola LongFast Mesh",
+    "document.title": "Meshseer | Consola Mesh",
+    "document.titleWithChannel": "Meshseer | Consola Mesh {channel}",
 
     "common.appName": "Meshseer",
     "common.broadcast": "Broadcast",
@@ -321,8 +327,10 @@
     "nav.traffic": "Tráfico",
     "nav.options": "Opciones",
 
-    "map.longFastNodeMap": "Mapa de nodos LongFast",
-    "map.waitingForNodeLocations": "Esperando ubicaciones LongFast.",
+    "map.nodeMap": "Mapa de nodos",
+    "map.nodeMapWithChannel": "Mapa de nodos {channel}",
+    "map.waitingForNodeLocations": "Esperando ubicaciones de nodos.",
+    "map.waitingForNodeLocationsWithChannel": "Esperando ubicaciones {channel}.",
     "map.noMappedNodes24h": "Sin nodos mapeados en las últimas 24 h.",
     "map.routesHidden": "Las rutas están ocultas.",
     "map.noRouteOverlays": "No hay rutas para el conjunto actual de nodos.",
@@ -369,7 +377,8 @@
     "nodes.noMatchingTitle": "Sin nodos coincidentes",
     "nodes.noMatchingBody": "Ajusta filtros o búsqueda para ampliar la vista.",
     "nodes.noNodesTitle": "Sin nodos aún",
-    "nodes.noNodesBody": "Los nodos LongFast aparecen aquí cuando el receptor los oye.",
+    "nodes.noNodesBody": "Los nodos aparecen aquí cuando el receptor los oye.",
+    "nodes.noNodesBodyWithChannel": "Los nodos {channel} aparecen aquí cuando el receptor los oye.",
     "nodes.nodeDetail": "Detalle nodo",
     "nodes.selectedNode": "Nodo seleccionado",
     "nodes.freshness.live": "ACTIVO",
@@ -431,7 +440,8 @@
     "traffic.port.other": "Otro",
 
     "chat.emptyTitle": "Sin chat aún",
-    "chat.emptyBody": "Los mensajes Broadcast LongFast aparecerán aquí cuando este receptor los oiga.",
+    "chat.emptyBody": "Los mensajes Broadcast aparecerán aquí cuando este receptor los oiga.",
+    "chat.emptyBodyWithChannel": "Los mensajes Broadcast {channel} aparecerán aquí cuando este receptor los oiga.",
 
     "signals.waitingIntel": "Esperando tráfico mesh pasivo para crear la vista intel.",
     "signals.noPassiveTraffic": "Sin tráfico pasivo aún.",

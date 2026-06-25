@@ -12,6 +12,7 @@ const nodeDetail = document.getElementById("node-detail");
 const nodeList = document.getElementById("node-list");
 const intelGrid = document.getElementById("intel-grid");
 const intelStory = document.getElementById("intel-story");
+const chatPanelSubtitle = document.getElementById("chat-panel-subtitle");
 const chatFeed = document.getElementById("chat-feed");
 const packetsBody = document.getElementById("packets-body");
 const refreshDashboard = document.getElementById("refresh-dashboard");
@@ -290,6 +291,7 @@ const state = {
   showRoutes: true,
   meshSummary: null,
   meshRoutes: { routes: [], stats: { total: 0, forward: 0, return: 0 } },
+  drawnRouteCount: null,
   nodeDetails: new Map(),
   nodeDetailLoadingNodeNum: null,
   nodeDetailErrorNodeNum: null,
@@ -1102,6 +1104,9 @@ function packetHopsTaken(packet) {
   if (pathTone === "mqtt" || pathTone === "unknown") {
     return null;
   }
+  if (pathTone === "local") {
+    return 0;
+  }
   if (pathTone === "direct") {
     return 0;
   }
@@ -1127,6 +1132,9 @@ function packetPathLabel(packet) {
     }
     if (normalized === "unknown") {
       return t("common.unknown");
+    }
+    if (normalized === "local") {
+      return t("common.local");
     }
     if (normalized === "direct") {
       return t("path.direct");
@@ -1154,41 +1162,97 @@ function nodePathTone(node) {
   return Number(node.hops_away) <= 1 ? "direct" : "relayed";
 }
 
-function nodePathLabel(node) {
-  const status = nodeStatus(node);
-  if (status === "local") {
-    return t("path.receiver");
+function detailTraceroutePath(detailPayload, node) {
+  const localNodeNum = Number(state.perspective?.local_node_num);
+  const nodeNum = Number(node?.node_num);
+  if (!Number.isFinite(nodeNum)) {
+    return [];
   }
+
+  const candidatePaths = [
+    detailPayload?.latest_complete_traceroute?.forward_path_node_nums,
+    detailPayload?.last_successful_traceroute_attempt?.route?.path_node_nums,
+    detailPayload?.last_traceroute_attempt?.route?.path_node_nums,
+  ];
+
+  for (const candidate of candidatePaths) {
+    const pathNodeNums = (Array.isArray(candidate) ? candidate : [])
+      .map((value) => Number(value))
+      .filter((value) => Number.isFinite(value));
+    if (pathNodeNums.length < 2) {
+      continue;
+    }
+
+    const startNodeNum = pathNodeNums[0];
+    const endNodeNum = pathNodeNums[pathNodeNums.length - 1];
+    if (Number.isFinite(localNodeNum)) {
+      if (startNodeNum === localNodeNum && endNodeNum === nodeNum) {
+        return pathNodeNums;
+      }
+      if (startNodeNum === nodeNum && endNodeNum === localNodeNum) {
+        return [...pathNodeNums].reverse();
+      }
+    }
+    if (endNodeNum === nodeNum) {
+      return pathNodeNums;
+    }
+    if (startNodeNum === nodeNum) {
+      return [...pathNodeNums].reverse();
+    }
+  }
+
+  return [];
+}
+
+function effectiveNodeHopCount(node, detailPayload = null) {
+  const traceroutePath = detailTraceroutePath(detailPayload, node);
+  if (traceroutePath.length >= 2) {
+    return Math.max(0, traceroutePath.length - 2);
+  }
+  if (node?.hops_away == null) {
+    return null;
+  }
+  const hopsAway = Number(node.hops_away);
+  return Number.isFinite(hopsAway) ? hopsAway : null;
+}
+
+function nodePathLabel(node, detailPayload = null) {
+  if (isLocalNode(node)) {
+    return t("common.local");
+  }
+  const status = nodeStatus(node);
   if (status === "mqtt") {
     return t("path.mqtt");
   }
-  if (node?.hops_away == null) {
+  const hopCount = effectiveNodeHopCount(node, detailPayload);
+  if (hopCount == null) {
     return t("path.pathUnknown");
   }
-  if (Number(node.hops_away) <= 1) {
+  if (hopCount === 0) {
     return t("path.direct");
   }
-  if (Number(node.hops_away) === 2) {
-    return t("path.hops", { count: 2 });
+  if (hopCount === 1) {
+    return t("path.oneHop");
   }
-  return t("path.hops", { count: Number(node.hops_away) });
+  return t("path.hops", { count: hopCount });
 }
 
-function nodePathDescription(node) {
-  const status = nodeStatus(node);
-  if (status === "local") {
+function nodePathDescription(node, detailPayload = null) {
+  if (isLocalNode(node)) {
     return t("path.receiverLocal");
   }
+  const status = nodeStatus(node);
   if (status === "mqtt") {
     return t("path.throughMqtt");
   }
-  if (node?.hops_away == null) {
+  const hopCount = effectiveNodeHopCount(node, detailPayload);
+  if (hopCount == null) {
     return t("path.noEstimate");
   }
-  if (Number(node.hops_away) <= 1) {
+  if (hopCount === 0) {
     return t("path.directFromReceiver");
   }
-  return t("path.hopsFromReceiver", { count: Number(node.hops_away) });
+  return t("path.hopsFromReceiver", { count: hopCount });
 }
 
 function nodeSignalOpacity(node, nowMs = Date.now()) {
@@ -1221,41 +1285,37 @@ function routeKey(route) {
   return route?.group_key || routeIdentityKey(route);
 }
 
-function routeAgeMinutes(route, nowMs = Date.now()) {
-  return ageMinutesSince(route?.latest_received_at || route?.received_at, nowMs);
+function routePairKey(route) {
+  const sourceNodeNum = Number(route?.source_node_num);
+  const destinationNodeNum = Number(route?.destination_node_num);
+  if (!Number.isFinite(sourceNodeNum) || !Number.isFinite(destinationNodeNum)) {
+    return null;
+  }
+  return sourceNodeNum < destinationNodeNum
+    ? `${sourceNodeNum}:${destinationNodeNum}`
+    : `${destinationNodeNum}:${sourceNodeNum}`;
 }
 
-function groupedMeshRoutes() {
-  const groupedRoutes = new Map();
-  state.meshRoutes.routes.forEach((route) => {
-    const key = routeIdentityKey(route);
-    const existing = groupedRoutes.get(key);
-    if (!existing) {
-      groupedRoutes.set(key, {
-        ...route,
-        group_key: key,
-        count: 1,
-        latest_received_at: route.received_at || null,
-      });
-      return;
-    }
+function routeSeenAt(route) {
+  return route?.received_at || route?.latest_received_at || "";
+}
 
-    existing.count += 1;
-    if ((route.received_at || "") > (existing.latest_received_at || "")) {
-      existing.latest_received_at = route.received_at || existing.latest_received_at;
-      existing.received_at = route.received_at || existing.received_at;
-      existing.packet_id = route.packet_id || existing.packet_id;
-      existing.mesh_packet_id = route.mesh_packet_id || existing.mesh_packet_id;
-    }
-  });
-  return [...groupedRoutes.values()].sort((left, right) => {
-    const leftSeen = left.latest_received_at || "";
-    const rightSeen = right.latest_received_at || "";
-    if (leftSeen !== rightSeen) {
-      return rightSeen.localeCompare(leftSeen);
-    }
-    return intValue(right.count) - intValue(left.count);
-  });
+function compareRoutesByRecency(left, right) {
+  const leftSeen = routeSeenAt(left);
+  const rightSeen = routeSeenAt(right);
+  if (leftSeen !== rightSeen) {
+    return rightSeen.localeCompare(leftSeen);
+  }
+  const leftPacketId = intValue(left?.packet_id || left?.mesh_packet_id);
+  const rightPacketId = intValue(right?.packet_id || right?.mesh_packet_id);
+  if (leftPacketId !== rightPacketId) {
+    return rightPacketId - leftPacketId;
+  }
+  return String(left?.direction || "").localeCompare(String(right?.direction || ""));
+}
+
+function routeAgeMinutes(route, nowMs = Date.now()) {
+  return ageMinutesSince(route?.latest_received_at || route?.received_at, nowMs);
 }
 
 function routeIncludesNode(route, selectedNodeNum = state.selectedNodeNum) {
@@ -1285,6 +1345,47 @@ function routeSelected(route) {
   return routeTargetsNode(route);
 }
 
+function latestRouteFamilies(routes, selectedNodeNum = state.selectedNodeNum) {
+  const candidates = [...routes]
+    .filter((route) => selectedNodeNum == null || routeTargetsNode(route, selectedNodeNum))
+    .sort(compareRoutesByRecency);
+  const pairs = new Map();
+
+  candidates.forEach((route) => {
+    const pairKey = routePairKey(route) || routeKey(route);
+    let bucket = pairs.get(pairKey);
+    if (!bucket) {
+      bucket = {
+        latestSingle: null,
+        bestComplete: null,
+        families: new Map(),
+      };
+      pairs.set(pairKey, bucket);
+    }
+
+    if (!bucket.latestSingle) {
+      bucket.latestSingle = route;
+    }
+
+    const familyKey = route?.mesh_packet_id != null
+      ? `mesh:${route.mesh_packet_id}`
+      : `${pairKey}:${routeSeenAt(route)}`;
+    const family = bucket.families.get(familyKey) || { forward: null, return: null };
+    if (route?.direction === "forward" && !family.forward) {
+      family.forward = route;
+    } else if (route?.direction === "return" && !family.return) {
+      family.return = route;
+    }
+    bucket.families.set(familyKey, family);
+
+    if (!bucket.bestComplete && family.forward && family.return) {
+      bucket.bestComplete = [family.forward, family.return];
+    }
+  });
+
+  return [...pairs.values()].flatMap((bucket) => bucket.bestComplete || (bucket.latestSingle ? [bucket.latestSingle] : []));
+}
+
 function routeLatLngs(route, nowMs = Date.now()) {
   const points = [];
   for (const nodeNum of route.path_node_nums) {
@@ -1297,79 +1398,19 @@ function routeLatLngs(route, nowMs = Date.now()) {
   return points.length >= 2 ? points : null;
 }
 
-function visibleMeshRoutes(nowMs = Date.now()) {
-  return groupedMeshRoutes().filter((route) => routeLatLngs(route, nowMs));
-}
-
-function latestSelectedRoutesByDirection(routes) {
-  if (state.selectedNodeNum == null) {
-    return routes;
-  }
-
-  const latestByDirection = new Map();
-  routes.forEach((route) => {
-    const direction = route?.direction || "";
-    const existing = latestByDirection.get(direction);
-    const receivedAt = route?.received_at || route?.latest_received_at || "";
-    const existingReceivedAt = existing?.received_at || existing?.latest_received_at || "";
-    if (!existing || receivedAt > existingReceivedAt) {
-      latestByDirection.set(direction, route);
-    }
-  });
-  return [...latestByDirection.values()].sort((left, right) => {
-    const leftSeen = left?.received_at || left?.latest_received_at || "";
-    const rightSeen = right?.received_at || right?.latest_received_at || "";
-    return rightSeen.localeCompare(leftSeen);
-  });
-}
-
-function latestCompleteSelectedRouteGroup(routes) {
-  if (state.selectedNodeNum == null) {
-    return routes;
-  }
-  const endpointRoutes = [...routes]
-    .filter((route) => routeTargetsNode(route))
-    .sort((left, right) => {
-      const leftSeen = left?.received_at || left?.latest_received_at || "";
-      const rightSeen = right?.received_at || right?.latest_received_at || "";
-      return rightSeen.localeCompare(leftSeen);
-    });
-  const grouped = new Map();
-  for (const route of endpointRoutes) {
-    const key = route?.mesh_packet_id ?? routeKey(route);
-    const bucket = grouped.get(key) || { forward: null, return: null };
-    if (route?.direction === "forward" && !bucket.forward) {
-      bucket.forward = route;
-    } else if (route?.direction === "return" && !bucket.return) {
-      bucket.return = route;
-    }
-    grouped.set(key, bucket);
-    if (bucket.forward && bucket.return) {
-      return [bucket.forward, bucket.return];
-    }
-  }
-  return [];
-}
-
 function activeMeshRoutes(nowMs = Date.now()) {
   if (!state.showRoutes) {
     return [];
   }
-  const baseRoutes = state.selectedNodeNum == null ? visibleMeshRoutes(nowMs) : state.meshRoutes.routes.filter((route) => routeLatLngs(route, nowMs));
+  const baseRoutes = state.meshRoutes.routes.filter((route) => routeLatLngs(route, nowMs));
   const routes = baseRoutes.filter((route) => {
-    if (state.selectedNodeNum != null && !routeSelected(route)) {
-      return false;
-    }
     const ageMinutes = routeAgeMinutes(route, nowMs);
     if (ageMinutes == null) {
       return false;
     }
     return ageMinutes <= (routeSelected(route) ? SELECTED_ROUTE_WINDOW_MINUTES : NETWORK_ROUTE_WINDOW_MINUTES);
   });
-  if (state.selectedNodeNum != null) {
-    return latestCompleteSelectedRouteGroup(routes);
-  }
-  return latestSelectedRoutesByDirection(routes);
+  return latestRouteFamilies(routes, state.selectedNodeNum);
 }
 
 function routeStyle(route, ctx) {
@@ -1710,7 +1751,9 @@ function renderKpiTicker(summary) {
   const activeNodes3h = intValue(nodes.active_3h);
   const currentPacketCount = intValue(currentWindow?.packet_count);
   const currentPacketsRate = packetsPerMinute(currentPacketCount, windowMinutes);
-  const meshPaths = intValue(state.meshRoutes?.stats?.total);
+  const meshPaths = Number.isFinite(Number(state.drawnRouteCount))
+    ? intValue(state.drawnRouteCount)
+    : null;
 
   const statNodes = statsRow.querySelector("#stat-nodes .stat-value");
   const statActive = statsRow.querySelector("#stat-active .stat-value");
@@ -1727,7 +1770,7 @@ function renderKpiTicker(summary) {
     statTraffic.textContent = currentPacketCount ? formatNumber(currentPacketsRate, 1) : "--";
   }
   if (statPaths) {
-    statPaths.textContent = meshPaths ? formatWholeNumber(meshPaths) : "--";
+    statPaths.textContent = meshPaths == null ? "--" : formatWholeNumber(meshPaths);
   }
 }
 
@@ -1940,32 +1983,15 @@ function sparklineGeometry(series, width = 212, height = 54, padding = 4) {
 }
 
 function receiverSparkline(label, tone, series) {
-  if (!series.length) {
-    return "";
-  }
-
-  const geometry = sparklineGeometry(series);
-  if (!geometry) {
-    return "";
-  }
   const ariaLabel = tone === "channel"
     ? t("signals.heardNodesHistory")
     : (tone === "coverage" ? t("signals.coverageHistory") : t("common.historyFor", { label }));
-
-  return `
-    <div class="receiver-sparkline-frame ${tone}">
-      <svg
-        class="receiver-sparkline-graphic"
-        viewBox="0 0 212 54"
-        aria-label="${escapeHtml(ariaLabel)}"
-        role="img"
-      >
-        <path class="receiver-sparkline-area" d="${geometry.areaPath}"></path>
-        <path class="receiver-sparkline-line" d="${geometry.linePath}"></path>
-        <circle class="receiver-sparkline-dot" cx="${geometry.lastX}" cy="${geometry.lastY}" r="3.5"></circle>
-      </svg>
-    </div>
-  `;
+  return singleSeriesAxisSparkline(series, {
+    ariaLabel,
+    frameClass: `${tone} detailed`,
+    formatXLabel: (sample) => formatSparklineDay(sample?.day),
+    yLabelSuffix: tone === "coverage" ? "%" : "",
+  });
 }
 
 function receiverTelemetryPanel(label, currentValue, key, tone, receiver) {
@@ -1983,15 +2009,12 @@ function receiverTelemetryPanel(label, currentValue, key, tone, receiver) {
       <span class="receiver-metric-label">${escapeHtml(label)}</span>
       <strong class="receiver-metric-value">${escapeHtml(formatNumber(currentValue, 1, "%"))}</strong>
       ${meta ? `<span class="receiver-metric-meta mono-text">${escapeHtml(meta)}</span>` : ""}
-      ${series.length && geometry ? `
-        <div class="receiver-sparkline-frame ${tone}">
-          <svg class="receiver-sparkline-graphic" viewBox="0 0 212 54" aria-label="${escapeHtml(ariaLabel)}" role="img">
-            <path class="receiver-sparkline-area" d="${geometry.areaPath}"></path>
-            <path class="receiver-sparkline-line" d="${geometry.linePath}"></path>
-            <circle class="receiver-sparkline-dot" cx="${geometry.lastX}" cy="${geometry.lastY}" r="3.5"></circle>
-          </svg>
-        </div>
-      ` : ""}
+      ${singleSeriesAxisSparkline(series, {
+        ariaLabel,
+        frameClass: `${tone} detailed`,
+        formatXLabel: (sample) => formatSparklineTime(sample?.recorded_at),
+        yLabelSuffix: "%",
+      })}
     </section>
   `;
 }
@@ -2093,6 +2116,21 @@ function formatSparklineTime(value) {
   }).format(date);
 }
 
+function formatSparklineDay(value) {
+  if (!value) {
+    return t("common.na");
+  }
+  const date = new Date(`${value}T00:00:00Z`);
+  if (Number.isNaN(date.getTime())) {
+    return t("common.na");
+  }
+  return new Intl.DateTimeFormat(currentIntlLocale(), {
+    month: "short",
+    day: "numeric",
+    timeZone: "UTC",
+  }).format(date);
+}
+
 function sparklineTickIndexes(length, maxTicks = 3) {
   if (length <= 0) {
     return [];
@@ -2160,6 +2198,82 @@ function sparklinePaths(geometry, values) {
     lastX: last.x.toFixed(2),
     lastY: last.y.toFixed(2),
   };
+}
+
+function renderAxisSparkline(frameClass, ariaLabel, xTicks, yTicks, yLabelSuffix, content) {
+  const classes = ["receiver-sparkline-frame", frameClass].filter(Boolean).join(" ");
+  return `
+    <div class="${classes}">
+      <div class="sparkline-chart-grid">
+        <div class="sparkline-y-axis mono-text" aria-hidden="true">
+          ${yTicks.map((tick) => `<span>${escapeHtml(`${tick.label}${yLabelSuffix}`)}</span>`).join("")}
+        </div>
+        <div class="sparkline-plot">
+          <svg
+            class="receiver-sparkline-graphic"
+            viewBox="0 0 212 54"
+            aria-label="${escapeHtml(ariaLabel)}"
+            role="img"
+          >
+            ${yTicks.map((tick) => `
+              <line
+                class="receiver-sparkline-guide"
+                x1="4"
+                x2="208"
+                y1="${Number(tick.y).toFixed(2)}"
+                y2="${Number(tick.y).toFixed(2)}"
+              ></line>
+            `).join("")}
+            ${content}
+          </svg>
+        </div>
+      </div>
+      <div class="sparkline-x-axis mono-text" aria-hidden="true">
+        ${xTicks.map((tick) => `
+          <span class="sparkline-x-tick">
+            <span class="sparkline-x-notch"></span>
+            <span>${escapeHtml(tick.label)}</span>
+          </span>
+        `).join("")}
+      </div>
+    </div>
+  `;
+}
+
+function singleSeriesAxisSparkline(series, options = {}) {
+  if (!series.length) {
+    return "";
+  }
+
+  const geometry = sparklineGeometry(series);
+  if (!geometry) {
+    return "";
+  }
+
+  const {
+    ariaLabel,
+    frameClass = "",
+    formatXLabel = (sample) => formatSparklineTime(sample?.timestamp),
+    yLabelSuffix = "",
+  } = options;
+  const xTicks = sparklineTickIndexes(series.length, 3).map((index) => ({
+    index,
+    label: formatXLabel(series[index]),
+  }));
+  const yTicks = sparklineYTicks(geometry);
+
+  return renderAxisSparkline(
+    frameClass,
+    ariaLabel,
+    xTicks,
+    yTicks,
+    yLabelSuffix,
+    `
+      <path class="receiver-sparkline-area" d="${geometry.areaPath}"></path>
+      <path class="receiver-sparkline-line" d="${geometry.linePath}"></path>
+      <circle class="receiver-sparkline-dot" cx="${geometry.lastX}" cy="${geometry.lastY}" r="3.5"></circle>
+    `,
+  );
 }
 
 function nodeSnrSparkline(series) {
@@ -2561,6 +2675,45 @@ function renderPerspectiveLabel() {
     : `${label} · RX ${localNodeNum}`;
 }
 
+function chatChannelName() {
+  const channelName = state.perspective?.channel_name;
+  return typeof channelName === "string" && channelName.trim() ? channelName.trim() : null;
+}
+
+function channelScopedText(defaultKey, withChannelKey) {
+  const channelName = chatChannelName();
+  if (channelName) {
+    return t(withChannelKey, { channel: channelName });
+  }
+  return t(defaultKey);
+}
+
+function renderDocumentTitle() {
+  document.title = channelScopedText("document.title", "document.titleWithChannel");
+}
+
+function renderMapLabels() {
+  if (mapRoot) {
+    mapRoot.setAttribute("aria-label", channelScopedText("map.nodeMap", "map.nodeMapWithChannel"));
+  }
+}
+
+function renderChatPanelSubtitle() {
+  if (!chatPanelSubtitle) {
+    return;
+  }
+  const channelName = chatChannelName();
+  chatPanelSubtitle.textContent = channelName
+    ? `${t("common.broadcast")} · ${channelName}`
+    : t("common.broadcast");
+}
+
+function renderChannelScopedUi() {
+  renderDocumentTitle();
+  renderMapLabels();
+  renderChatPanelSubtitle();
+}
+
 function renderConnectionIndicator() {
   const title = connectionStateTitle();
   const detail = connectionStateDetail();
@@ -2616,6 +2769,7 @@ function setCollectorStatus(data) {
 function setPerspective(data) {
   state.perspective = data;
   renderPerspectiveLabel();
+  renderChannelScopedUi();
 
   if (state.nodes.length) {
     renderNodesView();
@@ -3126,7 +3280,7 @@ function renderNodeDetail(node) {
   const metricHistory = Array.isArray(detailPayload?.metric_history) ? detailPayload.metric_history : [];
   const freshness = nodeFreshness(detailNode);
   const hudTone = freshness;
-  const pathLabel = nodePathLabel(detailNode);
+  const pathLabel = nodePathLabel(detailNode, detailPayload);
   const roleLabel = [detailNode.role, detailNode.hardware_model].filter(Boolean).join(" / ") || t("common.node");
 
   nodeDetail.innerHTML = `
@@ -3134,14 +3288,13 @@ function renderNodeDetail(node) {
       <div class="node-hud-head">
         <div>
           <h3>${escapeHtml(nodeLabel(detailNode))}</h3>
-          <p class="node-hud-subtitle">${escapeHtml(`${roleLabel} · ${nodePathDescription(detailNode)}`)}</p>
+          <p class="node-hud-subtitle">${escapeHtml(`${roleLabel} · ${nodePathDescription(detailNode, detailPayload)}`)}</p>
         </div>
         <div class="node-hud-state ${hudTone}">${escapeHtml(freshnessLabel(detailNode))}</div>
       </div>
 
       <div class="node-hud-metrics">
         ${metric(t("nodes.metric.path"), pathLabel)}
-        ${metric(t("nodes.metric.hopsAway"), detailNode.hops_away ?? t("common.na"))}
         ${metric(t("nodes.metric.lastHeard"), formatTime(detailNode.last_heard_at), "", detailNode.first_heard_at ? t("nodes.metric.first", { time: formatTime(detailNode.first_heard_at) }) : "")}
         ${metric(t("nodes.metric.packetsHeard"), formatWholeNumber(insights?.heard_packets))}
         ${metric(t("nodes.metric.battery"), detailNode.battery_level == null ? t("common.na") : `${Math.round(detailNode.battery_level)}%`)}
@@ -3170,10 +3323,13 @@ function renderNodeList() {
   const items = visibleNodeItems();
   if (!items.length) {
     const hasFilters = state.nodeFilters.size > 0 || Boolean(state.nodeQuery.trim());
+    const emptyBody = hasFilters
+      ? t("nodes.noMatchingBody")
+      : channelScopedText("nodes.noNodesBody", "nodes.noNodesBodyWithChannel");
     nodeList.innerHTML = `
       <div class="node-list-empty">
         <h3>${escapeHtml(hasFilters ? t("nodes.noMatchingTitle") : t("nodes.noNodesTitle"))}</h3>
-        <p>${escapeHtml(hasFilters ? t("nodes.noMatchingBody") : t("nodes.noNodesBody"))}</p>
+        <p>${escapeHtml(emptyBody)}</p>
       </div>
     `;
     return;
@@ -3543,6 +3699,7 @@ function renderMap(items) {
   const mappedNodes = sortNodes(items).filter((node) => nodeHasCoordinates(node) && nodeIsVisible(node, nowMs));
   const map = ensureMap();
   const routes = activeMeshRoutes(nowMs);
+  state.drawnRouteCount = routes.length;
   renderRouteToggle();
   renderMapNotes();
 
@@ -3550,7 +3707,7 @@ function renderMap(items) {
     state.remoteNodeNums = new Set();
     mapEmpty.textContent = state.nodes.some(nodeHasCoordinates)
       ? t("map.noMappedNodes24h")
-      : t("map.waitingForNodeLocations");
+      : channelScopedText("map.waitingForNodeLocations", "map.waitingForNodeLocationsWithChannel");
     mapEmpty.hidden = false;
     mapNote.hidden = true;
     mapNote.textContent = "";
@@ -3565,6 +3722,7 @@ function renderMap(items) {
       mapState.markerLayer.clearLayers();
       mapState.markersByNodeNum.clear();
     }
+    refreshKpiTicker();
     updateOverviewStats();
     return;
   }
@@ -3575,7 +3733,7 @@ function renderMap(items) {
   const ctx = { nowMs, neighborhood, degreeMap, zoom };
 
   state.remoteNodeNums = new Set();
-  mapEmpty.textContent = t("map.waitingForNodeLocations");
+  mapEmpty.textContent = channelScopedText("map.waitingForNodeLocations", "map.waitingForNodeLocationsWithChannel");
   mapEmpty.hidden = true;
   mapState.routeLayer.clearLayers();
   mapState.routeArrowLayer.clearLayers();
@@ -3646,6 +3804,7 @@ function renderMap(items) {
     map.invalidateSize();
   }
 
+  refreshKpiTicker();
   updateOverviewStats();
 }
 
@@ -3676,21 +3835,10 @@ function renderMeshSummary(data) {
   const directPackets = intValue(traffic.direct);
   const relayedPackets = intValue(traffic.relayed);
   const mqttPackets = intValue(traffic.mqtt);
-  const unknownPackets = Math.max(0, totalPackets - directPackets - relayedPackets - mqttPackets);
   const textPackets = intValue(traffic.text);
   const positionPackets = intValue(traffic.position);
   const telemetryPackets = intValue(traffic.telemetry);
   const otherPackets = Math.max(0, totalPackets - textPackets - positionPackets - telemetryPackets);
-  const coverageShare = sharePercentage(mappedNodes, totalNodes);
-  const directShare = sharePercentage(directPackets, totalPackets);
-
-  const pathSegments = [
-    { label: t("path.directRf"), value: directPackets, tone: "direct" },
-    { label: t("path.relayed"), value: relayedPackets, tone: "relayed" },
-    { label: t("path.mqtt"), value: mqttPackets, tone: "mqtt" },
-    { label: t("common.unknown"), value: unknownPackets, tone: "unknown" },
-  ];
-  const dominantPath = dominantSegment(pathSegments);
 
   // Block 1 — Coverage: 2-column metric grid
   intelGrid.innerHTML = [
@@ -3709,29 +3857,31 @@ function renderMeshSummary(data) {
     return;
   }
 
-  // Block 2 — Routing health: 3 KV rows
-  const dominantLabel = dominantPath
-    ? `${sharePercentage(dominantPath.value, totalPackets)}% ${dominantPath.label.toLocaleLowerCase(currentIntlLocale())}`
-    : t("common.waiting");
-  const dominantHelp = t("signals.dominantPathHelp");
-  const dominantPathRow = `
-    <div class="routing-health-row">
-      <span class="routing-health-label">
-        ${escapeHtml(t("signals.dominantPath"))}
-        <span class="signals-help" tabindex="0" role="button" aria-label="${escapeHtml(t("signals.dominantPathAria"))}">
-          <span class="signals-help-icon" aria-hidden="true">?</span>
-          <span class="signals-help-tooltip" role="tooltip">${escapeHtml(dominantHelp)}</span>
-        </span>
-      </span>
-      <span class="routing-health-value">${escapeHtml(dominantLabel)}</span>
-    </div>
-  `;
+  // Block 2 — Routing health: proportional bars by signal path
+  const routingTypes = [
+    { label: t("path.directRf"), value: directPackets, tone: "direct" },
+    { label: t("path.relayed"), value: relayedPackets, tone: "relayed" },
+    { label: t("path.mqtt"), value: mqttPackets, tone: "mqtt" },
+  ];
   const routingHealthHtml = `
     <div class="signals-section">
       <span class="signals-section-label">${escapeHtml(t("signals.routingHealth"))}</span>
       <div class="routing-health">
-        ${dominantPathRow}
-        ${routingHealthRow(t("path.directRf"), directPackets ? t("signals.directRfPackets", { percent: directShare, count: formatWholeNumber(directPackets) }) : t("signals.noDirectTraffic"))}
+        <div class="packet-breakdown">
+          ${routingTypes.map((type) => {
+            const pct = totalPackets > 0 ? Math.round((type.value / totalPackets) * 100) : 0;
+            const barPct = totalPackets > 0 ? (type.value / totalPackets) * 100 : 0;
+            const title = `${type.label}: ${formatWholeNumber(type.value)} (${pct}%)`;
+            return `
+              <div class="breakdown-row" title="${escapeHtml(title)}">
+                <span class="breakdown-label">${escapeHtml(type.label)}</span>
+                <span class="breakdown-bar"><span class="breakdown-bar-fill ${type.tone}" style="width:${barPct}%"></span></span>
+                <span class="breakdown-count mono-text">${formatWholeNumber(type.value)}</span>
+                <span class="breakdown-pct mono-text">${pct}%</span>
+              </div>
+            `;
+          }).join("")}
+        </div>
         ${routingHealthRow(t("signals.totalPackets"), formatWholeNumber(totalPackets))}
       </div>
     </div>
@@ -3779,8 +3929,9 @@ function renderMeshRoutes(data) {
   state.meshRoutes = data || { routes: [], stats: { total: 0, forward: 0, return: 0 } };
   if (state.nodes.length) {
     renderMap(state.nodes);
+    return;
   }
-  // Update paths stat in top bar (T-06)
+  state.drawnRouteCount = 0;
   refreshKpiTicker();
 }
 
@@ -3789,7 +3940,7 @@ function packetRowMarkup(packet) {
   const hops = packetHopsTaken(packet);
   const pathTone = packetPathTone(packet);
   const isMqtt = pathTone === "mqtt";
-  const isUnknown = hops == null && !isMqtt;
+  const isUnknown = hops == null && !isMqtt && pathTone !== "local";
   const isHighHop = hops != null && hops >= 4;
   const pathCellClass = isHighHop ? " path-cell-high" : "";
 
@@ -4025,10 +4176,14 @@ function renderChat(items) {
   const hasNewLatestMessage = chatLastMessageKey != null && latestMessageKey != null && latestMessageKey !== chatLastMessageKey;
 
   if (!items.length) {
+    const channelName = chatChannelName();
+    const emptyBody = channelName
+      ? t("chat.emptyBodyWithChannel", { channel: channelName })
+      : t("chat.emptyBody");
     chatFeed.innerHTML = `
       <div class="chat-empty">
         <h3>${escapeHtml(t("chat.emptyTitle"))}</h3>
-        <p>${escapeHtml(t("chat.emptyBody"))}</p>
+        <p>${escapeHtml(emptyBody)}</p>
       </div>
     `;
     chatLastMessageKey = null;
@@ -4386,6 +4541,7 @@ function renderLocalizedUi() {
   syncThemeControls();
   syncPacketLimitControl();
   renderPerspectiveLabel();
+  renderChannelScopedUi();
   renderConnectionIndicator();
   renderStatusBarLegend();
   renderRouteToggle();
@@ -4417,6 +4573,7 @@ function initializeStaticUI() {
   i18n.applyStaticTranslations();
   applyThemeSelection(DEFAULT_UI_THEME);
   renderPerspectiveLabel();
+  renderChannelScopedUi();
   renderConnectionIndicator();
   renderStatusBarLegend();
   refreshKpiTicker();

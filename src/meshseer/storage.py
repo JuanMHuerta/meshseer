@@ -1083,6 +1083,11 @@ class MeshRepository:
             return "unknown"
         if packet.get("via_mqtt"):
             return "mqtt"
+        delivered_by = packet.get("relay_node")
+        if delivered_by is None:
+            delivered_by = packet.get("next_hop")
+        if delivered_by == 0:
+            return "local"
         hops_taken = cls._hops_taken(packet.get("hop_start"), packet.get("hop_limit"))
         if hops_taken is None:
             return "unknown"

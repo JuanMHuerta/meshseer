@@ -17,6 +17,7 @@ def test_settings_defaults():
     assert settings.db_path.name == "meshseer.db"
     assert settings.local_node_num is None
     assert settings.admin_bearer_token is None
+    assert settings.carto_api_key is None
     assert settings.autotrace_enabled is False
     assert settings.ws_max_connections == 32
     assert settings.ws_queue_size == 32
@@ -41,6 +42,7 @@ def test_settings_override_from_env(tmp_path):
             "MESHSEER_DB_PATH": str(tmp_path / "mesh.db"),
             "MESHSEER_LOCAL_NODE_NUM": "456",
             "MESHSEER_ADMIN_BEARER_TOKEN": "  secret-token  ",
+            "MESHSEER_CARTO_API_KEY": "  carto-test-key  ",
             "MESHSEER_AUTOTRACE_ENABLED": "true",
             "MESHSEER_WS_MAX_CONNECTIONS": "12",
             "MESHSEER_WS_QUEUE_SIZE": "8",
@@ -62,6 +64,7 @@ def test_settings_override_from_env(tmp_path):
     assert settings.db_path == tmp_path / "mesh.db"
     assert settings.local_node_num == 456
     assert settings.admin_bearer_token == "secret-token"
+    assert settings.carto_api_key == "carto-test-key"
     assert settings.autotrace_enabled is True
     assert settings.ws_max_connections == 12
     assert settings.ws_queue_size == 8

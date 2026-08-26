@@ -115,6 +115,7 @@ Use [.env.example](.env.example) as the baseline. The most important settings ar
 - `MESHSEER_ENV`: `development` or `production`. Production disables `/docs`, `/redoc`, and `/openapi.json`.
 - `MESHSEER_BIND_HOST`, `MESHSEER_BIND_PORT`: HTTP bind settings.
 - `MESHSEER_ADMIN_BEARER_TOKEN`: enables the local-only admin API.
+- `MESHSEER_CARTO_API_KEY`: CARTO raster basemap key. Set this in deployed environments to remove CARTO's API-key watermark. This is a browser-side key and is sent to CARTO with tile requests, so restrict it to the dashboard's domain in CARTO rather than treating it as a server secret.
 
 Additional supported settings:
 

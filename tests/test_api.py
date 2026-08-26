@@ -270,6 +270,30 @@ def test_api_routes_and_filters(tmp_path):
     assert "Meshseer" in index.text
 
 
+def test_map_config_exposes_the_configured_carto_browser_key(tmp_path):
+    app, _collector = build_app(
+        tmp_path,
+        extra_env={"MESHSEER_CARTO_API_KEY": "carto-browser-key"},
+    )
+
+    with TestClient(app) as client:
+        response = client.get("/api/map/config")
+
+    assert response.status_code == 200
+    assert response.json() == {"carto_api_key": "carto-browser-key"}
+    assert response.headers["cache-control"] == "no-store"
+
+
+def test_map_config_returns_null_when_no_carto_key_is_configured(tmp_path):
+    app, _collector = build_app(tmp_path)
+
+    with TestClient(app) as client:
+        response = client.get("/api/map/config")
+
+    assert response.status_code == 200
+    assert response.json() == {"carto_api_key": None}
+
+
 def test_docs_routes_are_hidden_in_production(tmp_path):
     development_path = tmp_path / "development"
     production_path = tmp_path / "production"

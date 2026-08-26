@@ -17,6 +17,7 @@ Run Meshseer only on loopback:
 - `MESHSEER_BIND_HOST=127.0.0.1`
 - `MESHSEER_BIND_PORT=8000`
 - `MESHSEER_ADMIN_BEARER_TOKEN=<long-random-secret>`
+- `MESHSEER_CARTO_API_KEY=<CARTO basemap key>`
 
 This differs from a development box that you may temporarily expose on a trusted LAN with `MESHSEER_BIND_HOST=0.0.0.0`. Do not carry that override into production.
 
@@ -28,7 +29,7 @@ Operational rules:
 - Use the bearer token only for local admin calls such as `curl` on the machine or over SSH port-forwarding. Do not place this token in browser code, Cloudflare headers, or public tunnel config.
 - Meshseer now enables SQLite `WAL` mode and a fixed `busy_timeout` automatically on repository-managed connections. No extra production knob is required for that baseline tuning.
 - Meshseer also prunes retained packet, node metric, and traceroute history on startup and during normal write activity. Tune that with the `MESHSEER_RETENTION_*` env vars if your host needs a different retention window.
-- The shipped UI vendors its Leaflet and font assets locally. The only remaining external browser dependency is the CARTO/OpenStreetMap basemap tile service.
+- The shipped UI vendors its Leaflet and font assets locally. The only remaining external browser dependency is the CARTO/OpenStreetMap basemap tile service. CARTO raster tiles require `MESHSEER_CARTO_API_KEY`; it is delivered to the browser through the public `/api/map/config` endpoint and must be restricted to the dashboard domain in CARTO.
 
 References:
 

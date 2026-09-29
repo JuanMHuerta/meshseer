@@ -332,7 +332,7 @@ def test_responses_include_security_headers_and_cache_policy(tmp_path):
 
     for response in (index, health, static_js):
         assert response.headers["x-content-type-options"] == "nosniff"
-        assert response.headers["referrer-policy"] == "same-origin"
+        assert response.headers["referrer-policy"] == "strict-origin-when-cross-origin"
         assert response.headers["permissions-policy"] == "geolocation=(), microphone=(), camera=()"
         assert response.headers["x-frame-options"] == "DENY"
 

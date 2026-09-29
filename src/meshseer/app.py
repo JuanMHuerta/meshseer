@@ -229,7 +229,7 @@ def _security_headers(path: str) -> dict[str, str]:
     headers = {
         "Cache-Control": _http_cache_control(path),
         "Permissions-Policy": "geolocation=(), microphone=(), camera=()",
-        "Referrer-Policy": "same-origin",
+        "Referrer-Policy": "strict-origin-when-cross-origin",
         "X-Content-Type-Options": "nosniff",
         "X-Frame-Options": "DENY",
     }

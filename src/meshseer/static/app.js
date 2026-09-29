@@ -108,6 +108,7 @@ const state = {
   activeDrawerView: "nodes",
   trafficDrawerOpen: false,
   meshSummaryPrevious: null,
+  cartoApiKey: null,
 };
 
 const mapState = {
@@ -1994,12 +1995,14 @@ function ensureMap() {
   });
 
   L.control.zoom({ position: "bottomright" }).addTo(map);
-  L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}{r}.png", {
+  const cartoApiKey = state.cartoApiKey;
+  const cartoKeyQuery = cartoApiKey ? `?key=${encodeURIComponent(cartoApiKey)}` : "";
+  L.tileLayer(`https://{s}.basemaps.cartocdn.com/rastertiles/dark_nolabels/{z}/{x}/{y}{r}.png${cartoKeyQuery}`, {
     subdomains: "abcd",
     maxZoom: 20,
     attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; CARTO',
   }).addTo(map);
-  L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_only_labels/{z}/{x}/{y}{r}.png", {
+  L.tileLayer(`https://{s}.basemaps.cartocdn.com/rastertiles/dark_only_labels/{z}/{x}/{y}{r}.png${cartoKeyQuery}`, {
     subdomains: "abcd",
     maxZoom: 20,
     opacity: 0.4,
@@ -2713,6 +2716,15 @@ async function loadHealth() {
   });
 }
 
+async function loadMapConfig() {
+  return runSingleFlight("mapConfig", async () => {
+    const payload = await fetchJson("/api/map/config");
+    state.cartoApiKey = typeof payload.carto_api_key === "string" && payload.carto_api_key.trim()
+      ? payload.carto_api_key.trim()
+      : null;
+  });
+}
+
 async function loadNodes() {
   return runSingleFlight("nodes", async () => {
     state.nodes = (await fetchJson("/api/nodes/roster")).map((node) => syncRosterNodeMeta(node));
@@ -2772,8 +2784,11 @@ async function loadMeshRoutes() {
 }
 
 async function loadAll() {
-  const results = await Promise.allSettled([
+  const bootstrapResults = await Promise.allSettled([
     loadHealth(),
+    loadMapConfig(),
+  ]);
+  const results = await Promise.allSettled([
     loadNodes(),
     loadPackets(),
     loadRecentActivityPackets(),
@@ -2781,10 +2796,11 @@ async function loadAll() {
     loadMeshSummary(),
     loadMeshRoutes(),
   ]);
-  if (results.some((result) => result.status === "fulfilled")) {
+  const allResults = [...bootstrapResults, ...results];
+  if (allResults.some((result) => result.status === "fulfilled")) {
     markUpdated();
   }
-  return results
+  return allResults
     .filter((result) => result.status === "rejected")
     .map((result) => result.reason);
 }

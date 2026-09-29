@@ -454,6 +454,13 @@ def create_app(
     async def public_status() -> dict[str, Any]:
         return _public_status_payload(settings, repository, collector)
 
+    @public_router.get("/api/map/config")
+    async def public_map_config() -> dict[str, str | None]:
+        # CARTO raster keys are client-side API keys: they must be included in
+        # browser tile requests. Keep the runtime value out of static assets so
+        # deployments can configure it without rebuilding the image.
+        return {"carto_api_key": settings.carto_api_key}
+
     @public_router.get("/api/packets")
     async def list_packets(
         limit: int = Query(default=50, ge=1, le=500),

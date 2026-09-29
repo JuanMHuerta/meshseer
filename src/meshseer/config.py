@@ -75,6 +75,7 @@ class Settings:
     db_path: Path
     local_node_num: int | None
     admin_bearer_token: str | None
+    carto_api_key: str | None
     autotrace_enabled: bool
     autotrace_interval_seconds: int
     autotrace_target_window_hours: int
@@ -107,6 +108,7 @@ class Settings:
             db_path=Path(values.get("MESHSEER_DB_PATH", "./data/meshseer.db")),
             local_node_num=_optional_int(values.get("MESHSEER_LOCAL_NODE_NUM")),
             admin_bearer_token=_optional_stripped(values.get("MESHSEER_ADMIN_BEARER_TOKEN")),
+            carto_api_key=_optional_stripped(values.get("MESHSEER_CARTO_API_KEY")),
             autotrace_enabled=_optional_bool(values.get("MESHSEER_AUTOTRACE_ENABLED")),
             autotrace_interval_seconds=int(values.get("MESHSEER_AUTOTRACE_INTERVAL_SECONDS", "300")),
             autotrace_target_window_hours=int(values.get("MESHSEER_AUTOTRACE_TARGET_WINDOW_HOURS", "24")),

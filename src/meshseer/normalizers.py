@@ -2,26 +2,42 @@ from __future__ import annotations
 
 import base64
 import json
-from typing import Any, Mapping
+from collections.abc import Mapping, Sequence
+from typing import Any
+
+from google.protobuf.json_format import MessageToDict
+from google.protobuf.message import Message
 
 from meshseer.clock import timestamp_to_utc_iso, utc_now_iso
 
 
+def _sanitize_mapping(value: Mapping[Any, Any]) -> dict[str, Any]:
+    return {str(key): _sanitize(item) for key, item in value.items()}
+
+
 def _sanitize(value: Any) -> Any:
-    if isinstance(value, dict):
-        return {str(key): _sanitize(item) for key, item in value.items()}
-    if isinstance(value, list):
-        return [_sanitize(item) for item in value]
-    if isinstance(value, tuple):
-        return [_sanitize(item) for item in value]
+    if isinstance(value, Mapping):
+        return _sanitize_mapping(value)
     if isinstance(value, bytes):
         return base64.b64encode(value).decode("ascii")
     if value is None or isinstance(value, (str, int, float, bool)):
         return value
-    if hasattr(value, "items"):
-        return {str(key): _sanitize(item) for key, item in value.items()}
+    if isinstance(value, Message):
+        return _sanitize(
+            MessageToDict(
+                value,
+                preserving_proto_field_name=True,
+            )
+        )
+    if isinstance(value, Sequence):
+        return [_sanitize(item) for item in value]
+    if hasattr(value, "__iter__"):
+        try:
+            return [_sanitize(item) for item in value]
+        except TypeError:
+            pass
     if hasattr(value, "__dict__") and value.__dict__:
-        return {str(key): _sanitize(item) for key, item in vars(value).items()}
+        return _sanitize_mapping(vars(value))
     return str(value)
 
 

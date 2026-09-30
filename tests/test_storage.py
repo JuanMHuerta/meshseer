@@ -7,6 +7,7 @@ from meshtastic.protobuf import mesh_pb2
 from meshseer.channels import BROADCAST_NODE_NUM
 from meshseer.clock import timestamp_to_utc_iso
 from meshseer.models import NodeRecord, PacketRecord
+from meshseer.normalizers import normalize_packet
 from meshseer.storage import MeshRepository, SQLITE_BUSY_TIMEOUT_MS
 
 
@@ -489,6 +490,91 @@ def test_repository_filters_packets_and_chat(tmp_path):
     assert [item["mesh_packet_id"] for item in chat] == [1]
 
 
+def test_repository_lists_recent_packets_from_node_on_primary_channel(tmp_path):
+    repo = MeshRepository(tmp_path / "mesh.db")
+
+    repo.upsert_node(
+        NodeRecord(
+            node_num=202,
+            node_id="!000000ca",
+            short_name="BETA",
+            long_name="Beta Node",
+            hardware_model="HELTEC",
+            role="CLIENT",
+            channel_index=0,
+            last_heard_at="2026-03-30T12:02:00Z",
+            last_snr=3.0,
+            latitude=None,
+            longitude=None,
+            altitude=None,
+            battery_level=None,
+            channel_utilization=None,
+            air_util_tx=None,
+            raw_json='{"num":202}',
+            updated_at="2026-03-30T12:02:00Z",
+            hops_away=1,
+            via_mqtt=False,
+        )
+    )
+    repo.insert_packet(
+        PacketRecord(
+            mesh_packet_id=1,
+            received_at="2026-03-30T12:00:00Z",
+            from_node_num=101,
+            to_node_num=BROADCAST_NODE_NUM,
+            portnum="TEXT_MESSAGE_APP",
+            channel_index=0,
+            hop_limit=3,
+            hop_start=3,
+            rx_snr=4.0,
+            text_preview="broadcast",
+            payload_base64=None,
+            raw_json="{}",
+            via_mqtt=False,
+        )
+    )
+    repo.insert_packet(
+        PacketRecord(
+            mesh_packet_id=2,
+            received_at="2026-03-30T12:01:00Z",
+            from_node_num=101,
+            to_node_num=202,
+            portnum="POSITION_APP",
+            channel_index=0,
+            hop_limit=2,
+            hop_start=2,
+            rx_snr=3.2,
+            text_preview=None,
+            payload_base64=None,
+            raw_json="{}",
+            via_mqtt=False,
+        )
+    )
+    repo.insert_packet(
+        PacketRecord(
+            mesh_packet_id=3,
+            received_at="2026-03-30T12:02:00Z",
+            from_node_num=101,
+            to_node_num=202,
+            portnum="NODEINFO_APP",
+            channel_index=2,
+            hop_limit=1,
+            hop_start=1,
+            rx_snr=1.5,
+            text_preview=None,
+            payload_base64=None,
+            raw_json="{}",
+            via_mqtt=False,
+        )
+    )
+
+    recent = repo.list_recent_packets_from_node(101, limit=10, primary_only=True)
+
+    assert [item["mesh_packet_id"] for item in recent] == [2, 1]
+    assert recent[0]["to_short_name"] == "BETA"
+    assert recent[1]["to_node_num"] == BROADCAST_NODE_NUM
+
+
 def test_repository_excludes_admin_packets_from_node_activity(tmp_path):
     repo = MeshRepository(tmp_path / "mesh.db")
 
@@ -528,6 +614,137 @@ def test_repository_excludes_admin_packets_from_node_activity(tmp_path):
 
     assert [item["mesh_packet_id"] for item in visible_packets] == [1]
     assert [item["mesh_packet_id"] for item in all_packets] == [2, 1]
+
+
+def test_repository_node_insights_include_sent_received_and_self_packets_once(tmp_path):
+    repo = MeshRepository(tmp_path / "mesh.db")
+
+    repo.insert_packet(
+        PacketRecord(
+            mesh_packet_id=1,
+            received_at="2026-03-30T12:00:00Z",
+            from_node_num=101,
+            to_node_num=BROADCAST_NODE_NUM,
+            portnum="TEXT_MESSAGE_APP",
+            channel_index=0,
+            hop_limit=3,
+            hop_start=3,
+            rx_snr=4.0,
+            text_preview="broadcast",
+            payload_base64=None,
+            raw_json="{}",
+            via_mqtt=False,
+        )
+    )
+    repo.insert_packet(
+        PacketRecord(
+            mesh_packet_id=2,
+            received_at="2026-03-30T12:01:00Z",
+            from_node_num=101,
+            to_node_num=202,
+            portnum="POSITION_APP",
+            channel_index=0,
+            hop_limit=2,
+            hop_start=3,
+            rx_snr=3.0,
+            text_preview=None,
+            payload_base64=None,
+            raw_json="{}",
+            via_mqtt=False,
+        )
+    )
+    repo.insert_packet(
+        PacketRecord(
+            mesh_packet_id=3,
+            received_at="2026-03-30T12:02:00Z",
+            from_node_num=303,
+            to_node_num=101,
+            portnum="TELEMETRY_APP",
+            channel_index=0,
+            hop_limit=3,
+            hop_start=3,
+            rx_snr=2.0,
+            text_preview=None,
+            payload_base64=None,
+            raw_json="{}",
+            via_mqtt=False,
+        )
+    )
+    repo.insert_packet(
+        PacketRecord(
+            mesh_packet_id=4,
+            received_at="2026-03-30T12:03:00Z",
+            from_node_num=101,
+            to_node_num=101,
+            portnum="NODEINFO_APP",
+            channel_index=0,
+            hop_limit=1,
+            hop_start=1,
+            rx_snr=5.0,
+            text_preview=None,
+            payload_base64=None,
+            raw_json="{}",
+            via_mqtt=True,
+        )
+    )
+    repo.insert_packet(
+        PacketRecord(
+            mesh_packet_id=5,
+            received_at="2026-03-30T12:04:00Z",
+            from_node_num=101,
+            to_node_num=BROADCAST_NODE_NUM,
+            portnum="TEXT_MESSAGE_APP",
+            channel_index=2,
+            hop_limit=1,
+            hop_start=1,
+            rx_snr=12.0,
+            text_preview="off channel",
+            payload_base64=None,
+            raw_json="{}",
+            via_mqtt=False,
+        )
+    )
+
+    insights = repo.get_node_insights(101, primary_only=True)
+
+    assert insights["heard_packets"] == 4
+    assert insights["sent_packets"] == 3
+    assert insights["broadcast_packets"] == 1
+    assert insights["text_packets"] == 1
+    assert insights["position_packets"] == 1
+    assert insights["telemetry_packets"] == 1
+    assert insights["mqtt_packets"] == 1
+    assert insights["direct_packets"] == 1
+    assert insights["relayed_packets"] == 1
+    assert insights["avg_rx_snr"] == 3.5
+    assert insights["best_rx_snr"] == 5.0
+    assert insights["worst_rx_snr"] == 2.0
+    assert insights["last_path"] == "mqtt"
+    assert insights["last_seen_at"] == "2026-03-30T12:03:00Z"
+
+
+def test_repository_lists_self_addressed_packets_for_node_once(tmp_path):
+    repo = MeshRepository(tmp_path / "mesh.db")
+
+    repo.insert_packet(
+        PacketRecord(
+            mesh_packet_id=1,
+            received_at="2026-03-30T12:00:00Z",
+            from_node_num=101,
+            to_node_num=101,
+            portnum="TEXT_MESSAGE_APP",
+            channel_index=0,
+            hop_limit=None,
+            rx_snr=None,
+            text_preview="loop",
+            payload_base64=None,
+            raw_json="{}",
+        )
+    )
+
+    packets = repo.list_packets_for_node(101, primary_only=True)
+
+    assert [item["mesh_packet_id"] for item in packets] == [1]
 
 
 def test_repository_backfills_node_channel_index_from_raw_json(tmp_path):
@@ -938,6 +1155,40 @@ def test_repository_builds_neighbor_links_from_passive_reports(tmp_path):
     assert links["neighbor_links"][0]["a_to_b"]["last_rx_time"] == timestamp_to_utc_iso(1_743_337_800)
 
 
+def test_repository_builds_neighbor_links_from_normalized_raw_json_when_payload_is_missing(tmp_path):
+    repo = MeshRepository(tmp_path / "mesh.db")
+    neighborinfo = mesh_pb2.NeighborInfo(node_id=101)
+    neighbor = neighborinfo.neighbors.add()
+    neighbor.node_id = 303
+    neighbor.snr = 5.0
+    neighbor.last_rx_time = 1_743_337_800
+
+    packet = normalize_packet(
+        {
+            "id": 81,
+            "from": 101,
+            "to": 255,
+            "channel": 0,
+            "rxTime": 1_743_339_000,
+            "decoded": {
+                "portnum": "NEIGHBORINFO_APP",
+                "neighborinfo": neighborinfo,
+                "payload": neighborinfo.SerializeToString(),
+            },
+        },
+        now_provider=lambda: "2026-03-30T12:10:00Z",
+    )
+
+    repo.insert_packet(PacketRecord.from_mapping({**packet, "payload_base64": None}))
+
+    links = repo.get_mesh_links(primary_only=True)
+
+    assert links["stats"] == {"total": 1, "mutual": 0, "one_way": 1}
+    assert links["neighbor_links"][0]["node_a_num"] == 101
+    assert links["neighbor_links"][0]["node_b_num"] == 303
+    assert links["neighbor_links"][0]["a_to_b"]["last_rx_time"] == timestamp_to_utc_iso(1_743_337_800)
+
+
 def test_repository_builds_routes_from_passive_traceroute_packets(tmp_path):
     repo = MeshRepository(tmp_path / "mesh.db")
 
@@ -1007,6 +1258,39 @@ def test_repository_builds_routes_from_routing_route_reply_packets(tmp_path):
     assert routes["routes"][0]["edge_snr_db"] == [4.0, 2.0]
 
 
+def test_repository_builds_routes_from_normalized_raw_json_when_payload_is_missing(tmp_path):
+    repo = MeshRepository(tmp_path / "mesh.db")
+    traceroute = mesh_pb2.RouteDiscovery()
+    traceroute.route.extend([202])
+    traceroute.snr_towards.extend([16, 8])
+
+    packet = normalize_packet(
+        {
+            "id": 93,
+            "from": 303,
+            "to": 101,
+            "channel": 0,
+            "hopLimit": 3,
+            "rxSnr": 4.0,
+            "rxTime": 1_743_339_180,
+            "decoded": {
+                "portnum": "TRACEROUTE_APP",
+                "traceroute": traceroute,
+                "payload": traceroute.SerializeToString(),
+            },
+        },
+        now_provider=lambda: "2026-03-30T12:13:00Z",
+    )
+
+    repo.insert_packet(PacketRecord.from_mapping({**packet, "payload_base64": None}))
+
+    routes = repo.get_mesh_routes(primary_only=True)
+
+    assert routes["stats"] == {"total": 1, "forward": 1, "return": 0}
+    assert routes["routes"][0]["path_node_nums"] == [101, 202, 303]
+    assert routes["routes"][0]["edge_snr_db"] == [4.0, 2.0]
+
+
 def test_repository_filters_mesh_routes_by_since(tmp_path):
     repo = MeshRepository(tmp_path / "mesh.db")
 
@@ -1058,8 +1342,53 @@ def test_repository_filters_mesh_routes_by_since(tmp_path):
     routes = repo.get_mesh_routes(since="2026-03-30T10:00:00Z", primary_only=True)
 
     assert routes["stats"] == {"total": 1, "forward": 1, "return": 0}
+
+
+def test_repository_limits_mesh_routes(tmp_path):
+    repo = MeshRepository(tmp_path / "mesh.db")
+
+    repo.insert_packet(
+        PacketRecord(
+            mesh_packet_id=92,
+            received_at="2026-03-30T12:00:00Z",
+            from_node_num=303,
+            to_node_num=101,
+            portnum="TRACEROUTE_APP",
+            channel_index=0,
+            hop_limit=3,
+            hop_start=3,
+            rx_snr=5.0,
+            rx_rssi=-94,
+            text_preview=None,
+            payload_base64=encode_traceroute_payload(route=[202]),
+            raw_json="{}",
+            via_mqtt=False,
+        )
+    )
+    repo.insert_packet(
+        PacketRecord(
+            mesh_packet_id=93,
+            received_at="2026-03-30T12:05:00Z",
+            from_node_num=404,
+            to_node_num=101,
+            portnum="TRACEROUTE_APP",
+            channel_index=0,
+            hop_limit=2,
+            hop_start=2,
+            rx_snr=4.5,
+            rx_rssi=-96,
+            text_preview=None,
+            payload_base64=encode_traceroute_payload(route=[202]),
+            raw_json="{}",
+            via_mqtt=False,
+        )
+    )
+
+    routes = repo.get_mesh_routes(primary_only=True, limit=1)
+
+    assert routes["stats"] == {"total": 1, "forward": 1, "return": 0}
     assert routes["routes"][0]["mesh_packet_id"] == 93
-    assert routes["routes"][0]["path_node_nums"] == [101, 202, 505]
+    assert routes["routes"][0]["path_node_nums"] == [101, 202, 404]
 
 
 def test_repository_tracks_traceroute_attempts(tmp_path):
@@ -1109,6 +1438,201 @@ def test_repository_tracks_traceroute_attempts(tmp_path):
     assert recent[0]["status"] == "success"
     assert recent[0]["request_mesh_packet_id"] == 88
     assert recent[0]["response_mesh_packet_id"] == 99
+
+
+def test_repository_returns_last_attempt_and_last_successful_attempt_for_node(tmp_path):
+    repo = MeshRepository(tmp_path / "mesh.db")
+    repo.upsert_node(
+        NodeRecord(
+            node_num=202,
+            node_id="!000000ca",
+            short_name="BETA",
+            long_name="Beta Node",
+            hardware_model="TBEAM",
+            role="CLIENT",
+            channel_index=0,
+            last_heard_at="2026-03-30T12:00:00Z",
+            last_snr=4.0,
+            latitude=None,
+            longitude=None,
+            altitude=None,
+            battery_level=None,
+            channel_utilization=None,
+            air_util_tx=None,
+            raw_json='{"num":202}',
+            updated_at="2026-03-30T12:00:00Z",
+            hops_away=2,
+            via_mqtt=False,
+        )
+    )
+
+    success_attempt_id = repo.start_traceroute_attempt(
+        target_node_num=202,
+        requested_at="2026-03-30T12:00:00Z",
+        hop_limit=2,
+    )
+    repo.complete_traceroute_attempt(
+        success_attempt_id,
+        completed_at="2026-03-30T12:00:20Z",
+        status="success",
+        request_mesh_packet_id=88,
+        response_mesh_packet_id=99,
+        detail=None,
+    )
+
+    timeout_attempt_id = repo.start_traceroute_attempt(
+        target_node_num=202,
+        requested_at="2026-03-30T12:10:00Z",
+        hop_limit=2,
+    )
+    repo.complete_traceroute_attempt(
+        timeout_attempt_id,
+        completed_at="2026-03-30T12:10:20Z",
+        status="timeout",
+        request_mesh_packet_id=108,
+        response_mesh_packet_id=None,
+        detail="Timed out waiting for traceroute response",
+    )
+
+    last_attempt = repo.get_last_traceroute_attempt_for_node(202)
+    last_successful = repo.get_last_successful_traceroute_attempt_for_node(202)
+
+    assert last_attempt is not None
+    assert last_attempt["id"] == timeout_attempt_id
+    assert last_attempt["status"] == "timeout"
+    assert last_successful is not None
+    assert last_successful["id"] == success_attempt_id
+    assert last_successful["status"] == "success"
+
+
+def test_repository_returns_latest_complete_traceroute_for_node(tmp_path):
+    repo = MeshRepository(tmp_path / "mesh.db")
+    for node_num, short_name in ((101, "NEM2"), (202, "INX4"), (303, "INX3")):
+        repo.upsert_node(
+            NodeRecord(
+                node_num=node_num,
+                node_id=f"!{node_num:08x}",
+                short_name=short_name,
+                long_name=short_name,
+                hardware_model="TBEAM",
+                role="CLIENT",
+                channel_index=0,
+                last_heard_at="2026-03-30T12:00:00Z",
+                last_snr=4.0,
+                latitude=None,
+                longitude=None,
+                altitude=None,
+                battery_level=None,
+                channel_utilization=None,
+                air_util_tx=None,
+                raw_json=f'{{"num":{node_num}}}',
+                updated_at="2026-03-30T12:00:00Z",
+                hops_away=1,
+                via_mqtt=False,
+            )
+        )
+
+    repo.insert_packet(
+        PacketRecord(
+            mesh_packet_id=9001,
+            received_at="2026-03-30T12:10:00Z",
+            from_node_num=303,
+            to_node_num=101,
+            portnum="TRACEROUTE_APP",
+            channel_index=0,
+            hop_limit=2,
+            hop_start=3,
+            rx_snr=3.5,
+            rx_rssi=-90,
+            text_preview=None,
+            payload_base64=encode_traceroute_payload(
+                route=[202],
+                snr_towards=[20, 10],
+                route_back=[202],
+                snr_back=[15, 5],
+            ),
+            raw_json='{"decoded":{"requestId":7001,"traceroute":{"route":[202],"snrTowards":[20,10],"routeBack":[202],"snrBack":[15,5]}}}',
+            via_mqtt=False,
+        )
+    )
+
+    latest_complete = repo.get_latest_complete_traceroute_for_node(303, primary_only=True)
+
+    assert latest_complete is not None
+    assert latest_complete["mesh_packet_id"] == 9001
+    assert latest_complete["request_mesh_packet_id"] == 7001
+    assert latest_complete["discovery_request_id"] == 7001
+    assert latest_complete["forward_path_node_nums"] == [101, 202, 303]
+    assert latest_complete["return_path_node_nums"] == [303, 202, 101]
+    assert latest_complete["full_path_node_nums"] == [101, 202, 303, 202, 101]
+
+
+def test_repository_returns_latest_complete_route_reply_for_node(tmp_path):
+    repo = MeshRepository(tmp_path / "mesh.db")
+    for node_num in (101, 202, 303):
+        repo.upsert_node(
+            NodeRecord(
+                node_num=node_num,
+                node_id=f"!{node_num:08x}",
+                short_name=f"N{node_num}",
+                long_name=f"N{node_num}",
+                hardware_model="TBEAM",
+                role="CLIENT",
+                channel_index=0,
+                last_heard_at="2026-03-30T12:00:00Z",
+                last_snr=4.0,
+                latitude=None,
+                longitude=None,
+                altitude=None,
+                battery_level=None,
+                channel_utilization=None,
+                air_util_tx=None,
+                raw_json=f'{{"num":{node_num}}}',
+                updated_at="2026-03-30T12:00:00Z",
+                hops_away=1,
+                via_mqtt=False,
+            )
+        )
+
+    attempt_id = repo.start_traceroute_attempt(
+        target_node_num=303,
+        requested_at="2026-03-30T12:09:30Z",
+        hop_limit=2,
+    )
+    repo.complete_traceroute_attempt(
+        attempt_id,
+        completed_at="2026-03-30T12:10:05Z",
+        status="success",
+        request_mesh_packet_id=5001,
+        response_mesh_packet_id=9002,
+        detail=None,
+    )
+    repo.insert_packet(
+        PacketRecord(
+            mesh_packet_id=9002,
+            received_at="2026-03-30T12:10:00Z",
+            from_node_num=303,
+            to_node_num=101,
+            portnum="ROUTING_APP",
+            channel_index=0,
+            hop_limit=2,
+            hop_start=3,
+            rx_snr=3.5,
+            rx_rssi=-90,
+            text_preview=None,
+            payload_base64=None,
+            raw_json='{"decoded":{"requestId":7002,"routing":{"routeReply":{"route":[202],"snrTowards":[20,10],"routeBack":[202],"snrBack":[15,5]}}}}',
+            via_mqtt=False,
+        )
+    )
+
+    latest_complete = repo.get_latest_complete_traceroute_for_node(303, primary_only=True)
+
+    assert latest_complete is not None
+    assert latest_complete["mesh_packet_id"] == 9002
+    assert latest_complete["request_mesh_packet_id"] == 5001
+    assert latest_complete["discovery_request_id"] == 7002
+    assert latest_complete["full_path_node_nums"] == [101, 202, 303, 202, 101]
 
 
 def test_repository_selects_autotrace_candidates_with_cooldowns(tmp_path):
@@ -1213,6 +1737,304 @@ def test_repository_selects_autotrace_candidates_with_cooldowns(tmp_path):
     assert count == 2
     assert next_target is not None
     assert next_target["node_num"] == 202
+
+
+def test_repository_prioritizes_recent_position_triggers(tmp_path):
+    repo = MeshRepository(tmp_path / "mesh.db")
+    now = datetime(2026, 3, 30, 12, 0, 0, tzinfo=UTC)
+
+    for node_num, short_name, latitude, longitude, hops_away in (
+        (101, "LOCAL", None, None, None),
+        (202, "MOBILE", -34.6000, -58.3800, 2),
+        (303, "STATIC", -34.6100, -58.3900, 3),
+    ):
+        repo.upsert_node(
+            NodeRecord(
+                node_num=node_num,
+                node_id=f"!{node_num:08x}",
+                short_name=short_name,
+                long_name=f"{short_name} Node",
+                hardware_model="TBEAM",
+                role="CLIENT",
+                channel_index=0,
+                last_heard_at="2026-03-30T11:58:00Z",
+                last_snr=4.0,
+                latitude=latitude,
+                longitude=longitude,
+                altitude=None,
+                battery_level=None,
+                channel_utilization=None,
+                air_util_tx=None,
+                raw_json=f'{{"num":{node_num}}}',
+                updated_at="2026-03-30T11:58:00Z",
+                hops_away=hops_away,
+                via_mqtt=False,
+            )
+        )
+
+    reason = repo.mark_position_trace_candidate(
+        node_num=202,
+        triggered_at="2026-03-30T11:59:30Z",
+        latitude=-34.6000,
+        longitude=-58.3800,
+        movement_distance_meters=150.0,
+        cooldown_hours=24,
+        primary_only=True,
+    )
+
+    next_target = repo.get_next_autotrace_target(
+        local_node_num=101,
+        target_window_hours=24,
+        cooldown_hours=24,
+        ack_only_cooldown_hours=6,
+        position_priority_window_minutes=15,
+        position_movement_cooldown_minutes=60,
+        primary_only=True,
+        now=now,
+    )
+
+    assert reason == "first_fix"
+    assert next_target is not None
+    assert next_target["node_num"] == 202
+    assert next_target["position_reason"] == "first_fix"
+
+
+def test_repository_allows_movement_retrace_after_shorter_cooldown(tmp_path):
+    repo = MeshRepository(tmp_path / "mesh.db")
+    now = datetime(2026, 3, 30, 12, 0, 0, tzinfo=UTC)
+    repo.upsert_node(
+        NodeRecord(
+            node_num=101,
+            node_id="!00000065",
+            short_name="LOCAL",
+            long_name="LOCAL Node",
+            hardware_model="TBEAM",
+            role="CLIENT",
+            channel_index=0,
+            last_heard_at="2026-03-30T12:00:00Z",
+            last_snr=4.0,
+            latitude=None,
+            longitude=None,
+            altitude=None,
+            battery_level=None,
+            channel_utilization=None,
+            air_util_tx=None,
+            raw_json='{"num":101}',
+            updated_at="2026-03-30T12:00:00Z",
+            hops_away=None,
+            via_mqtt=False,
+        )
+    )
+    repo.upsert_node(
+        NodeRecord(
+            node_num=202,
+            node_id="!000000ca",
+            short_name="MOBILE",
+            long_name="MOBILE Node",
+            hardware_model="TBEAM",
+            role="CLIENT",
+            channel_index=0,
+            last_heard_at="2026-03-30T11:58:00Z",
+            last_snr=4.0,
+            latitude=-34.6020,
+            longitude=-58.3810,
+            altitude=None,
+            battery_level=None,
+            channel_utilization=None,
+            air_util_tx=None,
+            raw_json='{"num":202}',
+            updated_at="2026-03-30T11:58:00Z",
+            hops_away=2,
+            via_mqtt=False,
+        )
+    )
+
+    attempt_id = repo.start_traceroute_attempt(
+        target_node_num=202,
+        requested_at="2026-03-30T10:20:00Z",
+        hop_limit=2,
+        traced_latitude=-34.6037,
+        traced_longitude=-58.3816,
+    )
+    repo.complete_traceroute_attempt(
+        attempt_id,
+        completed_at="2026-03-30T10:20:05Z",
+        status="success",
+        request_mesh_packet_id=11,
+        response_mesh_packet_id=12,
+        detail=None,
+    )
+
+    reason = repo.mark_position_trace_candidate(
+        node_num=202,
+        triggered_at="2026-03-30T12:00:00Z",
+        latitude=-34.6020,
+        longitude=-58.3810,
+        movement_distance_meters=150.0,
+        cooldown_hours=24,
+        primary_only=True,
+    )
+    eligible = repo.get_next_autotrace_target(
+        local_node_num=101,
+        target_window_hours=24,
+        cooldown_hours=24,
+        ack_only_cooldown_hours=6,
+        position_priority_window_minutes=15,
+        position_movement_cooldown_minutes=60,
+        primary_only=True,
+        now=now,
+    )
+
+    assert reason == "moved"
+    assert eligible is not None
+    assert eligible["node_num"] == 202
+    assert eligible["position_reason"] == "moved"
+
+
+def test_repository_blocks_movement_retrace_before_shorter_cooldown(tmp_path):
+    repo = MeshRepository(tmp_path / "mesh.db")
+    repo.upsert_node(
+        NodeRecord(
+            node_num=101,
+            node_id="!00000065",
+            short_name="LOCAL",
+            long_name="LOCAL Node",
+            hardware_model="TBEAM",
+            role="CLIENT",
+            channel_index=0,
+            last_heard_at="2026-03-30T12:00:00Z",
+            last_snr=4.0,
+            latitude=None,
+            longitude=None,
+            altitude=None,
+            battery_level=None,
+            channel_utilization=None,
+            air_util_tx=None,
+            raw_json='{"num":101}',
+            updated_at="2026-03-30T12:00:00Z",
+            hops_away=None,
+            via_mqtt=False,
+        )
+    )
+    repo.upsert_node(
+        NodeRecord(
+            node_num=202,
+            node_id="!000000ca",
+            short_name="MOBILE",
+            long_name="MOBILE Node",
+            hardware_model="TBEAM",
+            role="CLIENT",
+            channel_index=0,
+            last_heard_at="2026-03-30T11:58:00Z",
+            last_snr=4.0,
+            latitude=-34.6020,
+            longitude=-58.3810,
+            altitude=None,
+            battery_level=None,
+            channel_utilization=None,
+            air_util_tx=None,
+            raw_json='{"num":202}',
+            updated_at="2026-03-30T11:58:00Z",
+            hops_away=2,
+            via_mqtt=False,
+        )
+    )
+
+    attempt_id = repo.start_traceroute_attempt(
+        target_node_num=202,
+        requested_at="2026-03-30T11:35:00Z",
+        hop_limit=2,
+        traced_latitude=-34.6037,
+        traced_longitude=-58.3816,
+    )
+    repo.complete_traceroute_attempt(
+        attempt_id,
+        completed_at="2026-03-30T11:35:05Z",
+        status="success",
+        request_mesh_packet_id=11,
+        response_mesh_packet_id=12,
+        detail=None,
+    )
+
+    repo.mark_position_trace_candidate(
+        node_num=202,
+        triggered_at="2026-03-30T12:00:00Z",
+        latitude=-34.6020,
+        longitude=-58.3810,
+        movement_distance_meters=150.0,
+        cooldown_hours=24,
+        primary_only=True,
+    )
+    blocked = repo.get_next_autotrace_target(
+        local_node_num=101,
+        target_window_hours=24,
+        cooldown_hours=24,
+        ack_only_cooldown_hours=6,
+        position_priority_window_minutes=15,
+        position_movement_cooldown_minutes=60,
+        primary_only=True,
+        now=datetime(2026, 3, 30, 12, 0, 0, tzinfo=UTC),
+    )
+
+    assert blocked is None
+
+
+def test_repository_maintenance_preserves_zero_coordinate_trace_baseline(tmp_path):
+    repo = MeshRepository(tmp_path / "mesh.db")
+    repo.upsert_node(
+        NodeRecord(
+            node_num=202,
+            node_id="!000000ca",
+            short_name="ZERO",
+            long_name="ZERO Node",
+            hardware_model="TBEAM",
+            role="CLIENT",
+            channel_index=0,
+            last_heard_at="2026-03-30T12:00:00Z",
+            last_snr=4.0,
+            latitude=0.0,
+            longitude=0.0,
+            altitude=None,
+            battery_level=None,
+            channel_utilization=None,
+            air_util_tx=None,
+            raw_json='{"num":202}',
+            updated_at="2026-03-30T12:00:00Z",
+            hops_away=1,
+            via_mqtt=False,
+        )
+    )
+
+    attempt_id = repo.start_traceroute_attempt(
+        target_node_num=202,
+        requested_at="2026-03-30T12:00:05Z",
+        hop_limit=1,
+        traced_latitude=0.0,
+        traced_longitude=0.0,
+    )
+    repo.complete_traceroute_attempt(
+        attempt_id,
+        completed_at="2026-03-30T12:00:10Z",
+        status="success",
+        request_mesh_packet_id=11,
+        response_mesh_packet_id=12,
+        detail=None,
+    )
+
+    repo.run_maintenance(force=True)
+
+    with repo._connect() as connection:
+        state = connection.execute(
+            """
+            SELECT last_traced_position_lat, last_traced_position_lon
+            FROM autotrace_target_state
+            WHERE target_node_num = ?
+            """,
+            (202,),
+        ).fetchone()
+
+    assert state is not None
+    assert tuple(state) == (0.0, 0.0)
 
 
 def test_repository_retries_ack_only_nodes_after_ack_only_cooldown(tmp_path):

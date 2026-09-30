@@ -1,8 +1,10 @@
-# Meshseer
+# Meshseer [![en](https://img.shields.io/badge/lang-en-red.svg)](README.md) [![es](https://img.shields.io/badge/lang-es-yellow.svg)](readmes/README.es.md)
 
 [![Tests](https://github.com/JuanMHuerta/meshseer/actions/workflows/tests.yml/badge.svg)](https://github.com/JuanMHuerta/meshseer/actions/workflows/tests.yml) [![Release](https://img.shields.io/github/v/release/JuanMHuerta/meshseer)](https://github.com/JuanMHuerta/meshseer/releases)
 
-Meshseer is a web view of a Meshtastic receiver's LongFast traffic. It shows what one receiver has heard on the primary channel: node map, broadcast chat, recent packets, and passive route data.
+Additional translations live in [`readmes/`](readmes/).
+
+Meshseer is a web view of a Meshtastic receiver's primary-channel traffic. It shows what one receiver has heard on that channel: node map, broadcast chat, recent packets, and passive route data.
 
 Try it:
 
@@ -18,6 +20,7 @@ Try it:
 - Meshtastic TCP interface only today
 - public UI is read-only
 - auto-traceroute is optional, local-only, and disabled by default
+- when auto-traceroute is enabled, recent position packets can raise a node's tracing priority, but sends still stay interval-limited
 - frontend assets are vendored locally; the default basemap tiles still come from CARTO/OpenStreetMap
 
 ## Quick Start With Docker
@@ -39,6 +42,12 @@ cp .env.example .env
 MESHSEER_MESHTASTIC_HOST=192.168.1.50
 MESHSEER_MESHTASTIC_PORT=4403
 MESHSEER_ENV=production
+```
+
+Optionally choose the default UI theme:
+
+```dotenv
+MESHSEER_UI_DEFAULT_STYLE=amber-monochrome
 ```
 
 3. Pull the published image:
@@ -113,6 +122,7 @@ Use [.env.example](.env.example) as the baseline. The most important settings ar
 - `MESHSEER_DB_PATH`: SQLite database path. Defaults to `./data/meshseer.db` when running locally.
 - `MESHSEER_LOCAL_NODE_NUM`: optional override for the receiver node number shown in the UI and API.
 - `MESHSEER_ENV`: `development` or `production`. Production disables `/docs`, `/redoc`, and `/openapi.json`.
+- `MESHSEER_UI_DEFAULT_STYLE`: UI basemap style default. Allowed values: `classic`, `classic-dark`, `amber-monochrome`. Defaults to `amber-monochrome`.
 - `MESHSEER_BIND_HOST`, `MESHSEER_BIND_PORT`: HTTP bind settings.
 - `MESHSEER_ADMIN_BEARER_TOKEN`: enables the local-only admin API.
 - `MESHSEER_CARTO_API_KEY`: CARTO raster basemap key. Set this in deployed environments to remove CARTO's API-key watermark. This is a browser-side key and is sent to CARTO with tile requests, so restrict it to the dashboard's domain in CARTO rather than treating it as a server secret.
@@ -122,6 +132,7 @@ Additional supported settings:
 - websocket tuning: `MESHSEER_WS_MAX_CONNECTIONS`, `MESHSEER_WS_QUEUE_SIZE`, `MESHSEER_WS_SEND_TIMEOUT_SECONDS`, `MESHSEER_WS_PING_INTERVAL_SECONDS`, `MESHSEER_WS_PING_TIMEOUT_SECONDS`
 - retention and pruning: `MESHSEER_RETENTION_PACKETS_DAYS`, `MESHSEER_RETENTION_NODE_METRIC_HISTORY_DAYS`, `MESHSEER_RETENTION_TRACEROUTE_ATTEMPTS_DAYS`, `MESHSEER_RETENTION_PRUNE_INTERVAL_SECONDS`
 - autotrace: `MESHSEER_AUTOTRACE_ENABLED`, `MESHSEER_AUTOTRACE_INTERVAL_SECONDS`, `MESHSEER_AUTOTRACE_TARGET_WINDOW_HOURS`, `MESHSEER_AUTOTRACE_COOLDOWN_HOURS`, `MESHSEER_AUTOTRACE_ACK_ONLY_COOLDOWN_HOURS`, `MESHSEER_AUTOTRACE_RESPONSE_TIMEOUT_SECONDS`
+- position-assisted autotrace priority: `MESHSEER_AUTOTRACE_POSITION_PRIORITY_WINDOW_MINUTES`, `MESHSEER_AUTOTRACE_POSITION_MOVEMENT_DISTANCE_METERS`, `MESHSEER_AUTOTRACE_POSITION_MOVEMENT_COOLDOWN_MINUTES`
 
 ## What Meshseer Stores
 
@@ -172,8 +183,11 @@ When enabled, Meshseer:
 
 - sends at most one traceroute per configured interval
 - targets recent RF nodes only
+- treats fresh primary-channel position packets as high-priority tracing hints instead of sending immediately
+- promotes first-fix, moved, and stale-route position updates ahead of background candidates
 - skips the local node, MQTT nodes, and nodes without `hops_away`
 - applies cooldowns after attempts, including failed ones
+- allows movement-driven retraces to bypass the normal long cooldown after a shorter, bounded retry window
 - records each attempt in SQLite with timestamps, hop limit, status, and packet IDs when available
 
 Default values:
@@ -184,6 +198,9 @@ Default values:
 - `MESHSEER_AUTOTRACE_COOLDOWN_HOURS=24`
 - `MESHSEER_AUTOTRACE_ACK_ONLY_COOLDOWN_HOURS=6`
 - `MESHSEER_AUTOTRACE_RESPONSE_TIMEOUT_SECONDS=20`
+- `MESHSEER_AUTOTRACE_POSITION_PRIORITY_WINDOW_MINUTES=15`
+- `MESHSEER_AUTOTRACE_POSITION_MOVEMENT_DISTANCE_METERS=150`
+- `MESHSEER_AUTOTRACE_POSITION_MOVEMENT_COOLDOWN_MINUTES=60`
 
 The admin API is mounted only when `MESHSEER_ADMIN_BEARER_TOKEN` is configured.
 
@@ -223,8 +240,6 @@ Attempt statuses:
 - The public dashboard uses `/api/status`; `/api/health` is primarily for local health checks.
 
 Deployment notes for the public dashboard plus local-only admin topology live in [deployment.md](deployment.md).
-
-For a concrete Proxmox LXC plus Cloudflare Tunnel rollout, see [deploy/proxmox/README.md](deploy/proxmox/README.md).
 
 ## License
 

@@ -17,7 +17,7 @@ from starlette import status
 from meshseer import __version__
 from meshseer.audit import FailedAccessTracker, audit_log, request_source
 from meshseer.autotrace import AutoTracerouteConfig, AutoTracerouteService
-from meshseer.channels import BROADCAST_NODE_NUM, LONGFAST_CHANNEL_NAME, is_primary_channel
+from meshseer.channels import BROADCAST_NODE_NUM, is_primary_channel
 from meshseer.clock import to_utc_iso, utc_now, utc_now_iso
 from meshseer.collector import CollectorCallbacks, CollectorStatus, MeshtasticReceiver
 from meshseer.config import Settings
@@ -40,7 +40,10 @@ from meshseer.storage import MeshRepository
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 RECEIVER_UTILIZATION_WINDOW_MINUTES = 10
 ROUTES_MAX_LOOKBACK_DAYS = 7
+PUBLIC_MESH_ROUTES_LIMIT = 250
+PUBLIC_MESH_ROUTES_LIMIT_MAX = 500
 PUBLIC_CHAT_LIMIT = 40
+PUBLIC_NODE_RECENT_PACKETS_LIMIT = 12
 PRODUCTION_CSP = "; ".join(
     (
         "default-src 'self'",
@@ -57,11 +60,11 @@ PRODUCTION_CSP = "; ".join(
 )
 
 
-def _is_longfast_packet(packet: dict[str, Any]) -> bool:
+def _is_primary_channel_packet(packet: dict[str, Any]) -> bool:
     return is_primary_channel(packet.get("channel_index"))
 
 
-def _is_longfast_node(node: dict[str, Any]) -> bool:
+def _is_primary_channel_node(node: dict[str, Any]) -> bool:
     return is_primary_channel(node.get("channel_index"))
 
 
@@ -71,6 +74,19 @@ def _status_payload(status: CollectorStatus) -> dict[str, Any]:
         "connected": status.connected,
         "detail": status.detail,
     }
+
+
+def _autotrace_position_tracking_enabled(
+    settings: Settings,
+    service: Any | None,
+) -> bool:
+    enabled_getter = None if service is None else getattr(service, "is_enabled", None)
+    if callable(enabled_getter):
+        try:
+            return bool(enabled_getter())
+        except Exception:
+            return False
+    return bool(settings.autotrace_enabled)
 
 
 def _perspective_label(local_node_num: int | None, local_node: dict[str, Any] | None) -> str:
@@ -105,13 +121,20 @@ def _perspective_payload(settings: Settings, repository: MeshRepository, collect
     if local_node_num is not None:
         local_node = repository.get_node(local_node_num, primary_only=True)
     label = _perspective_label(local_node_num, local_node)
+    channel_name_getter = None if collector is None else getattr(collector, "primary_channel_name", None)
+    channel_name = channel_name_getter() if callable(channel_name_getter) else None
+    channel_description = (
+        f"Everything shown here is what this receiver has heard on {channel_name}."
+        if isinstance(channel_name, str) and channel_name.strip()
+        else "Everything shown here is what this receiver has heard on its primary channel."
+    )
     return {
         "mode": "receiver_perspective",
-        "channel_name": LONGFAST_CHANNEL_NAME,
+        "channel_name": channel_name,
         "channel_scope": "primary_only",
         "local_node_num": local_node_num,
         "label": label,
-        "description": f"Everything shown here is what this receiver has heard on {LONGFAST_CHANNEL_NAME}. This is still a local vantage point, not an authoritative view of the whole mesh.",
+        "description": f"{channel_description} This is still a local vantage point, not an authoritative view of the whole mesh.",
     }
 
 
@@ -123,6 +146,10 @@ def _public_status_payload(settings: Settings, repository: MeshRepository, colle
         "perspective": {
             "local_node_num": perspective["local_node_num"],
             "label": perspective["label"],
+            "channel_name": perspective["channel_name"],
+        },
+        "ui": {
+            "default_style": settings.ui_default_style,
         },
         "version": __version__,
     }
@@ -174,6 +201,41 @@ def _is_public_chat_packet(packet: Mapping[str, Any]) -> bool:
         and bool(text_preview.strip())
         and packet.get("to_node_num") == BROADCAST_NODE_NUM
     )
+
+
+def _packet_position(packet: Mapping[str, Any]) -> tuple[float, float] | None:
+    try:
+        raw_json = json.loads(packet.get("raw_json") or "{}")
+    except (TypeError, ValueError):
+        return None
+    decoded = raw_json.get("decoded")
+    if not isinstance(decoded, dict):
+        return None
+    position = decoded.get("position")
+    if not isinstance(position, dict):
+        return None
+    latitude = position.get("latitude")
+    longitude = position.get("longitude")
+    if not isinstance(latitude, (int, float)) or not isinstance(longitude, (int, float)):
+        return None
+    return float(latitude), float(longitude)
+
+
+def _traceroute_attempt_with_route(
+    repository: MeshRepository,
+    *,
+    target_node_num: int,
+    attempt: Mapping[str, Any] | None,
+) -> dict[str, Any] | None:
+    if attempt is None:
+        return None
+    return {
+        **attempt,
+        "route": repository.get_traceroute_route_for_attempt(
+            target_node_num=target_node_num,
+            response_mesh_packet_id=attempt.get("response_mesh_packet_id"),
+        ),
+    }
 
 
 def _websocket_origin_allowed(websocket: WebSocket) -> bool:
@@ -265,7 +327,7 @@ def create_app(
     )
 
     def handle_packet(packet: dict[str, Any]) -> None:
-        if not _is_longfast_packet(packet):
+        if not _is_primary_channel_packet(packet):
             return
         packet_record = PacketRecord.from_mapping(packet)
         packet_id = repository.insert_packet(packet_record)
@@ -273,11 +335,12 @@ def create_app(
         stored = repository.get_packet(packet_id)
         if stored is None:
             return
+        local_node_num = _resolved_local_node_num(settings, collector)
         event_broker.publish(
             {
                 "type": "packet_received",
                 "ts": utc_now_iso(),
-                "data": public_packet_payload(stored),
+                "data": public_packet_payload(stored, local_node_num=local_node_num),
             }
         )
         if _is_public_chat_packet(stored):
@@ -293,12 +356,30 @@ def create_app(
                 {
                     "type": "chat_message_received",
                     "ts": utc_now_iso(),
-                    "data": public_chat_message_payload(chat_packet),
+                    "data": public_chat_message_payload(chat_packet, local_node_num=local_node_num),
                 }
-            )
+        )
+        if (
+            _autotrace_position_tracking_enabled(settings, autotrace_service)
+            and
+            packet_record.portnum == "POSITION_APP"
+            and isinstance(packet_record.from_node_num, int)
+            and not packet_record.via_mqtt
+        ):
+            position = _packet_position(stored)
+            if position is not None:
+                repository.mark_position_trace_candidate(
+                    node_num=packet_record.from_node_num,
+                    triggered_at=packet_record.received_at,
+                    latitude=position[0],
+                    longitude=position[1],
+                    movement_distance_meters=settings.autotrace_position_movement_distance_meters,
+                    cooldown_hours=settings.autotrace_cooldown_hours,
+                    primary_only=True,
+                )
 
     def handle_node(node: dict[str, Any]) -> None:
-        if not _is_longfast_node(node):
+        if not _is_primary_channel_node(node):
             return
         repository.upsert_node(NodeRecord.from_mapping(node))
         stored = repository.get_node(node["node_num"], primary_only=True)
@@ -340,6 +421,9 @@ def create_app(
             cooldown_hours=settings.autotrace_cooldown_hours,
             ack_only_cooldown_hours=settings.autotrace_ack_only_cooldown_hours,
             response_timeout_seconds=settings.autotrace_response_timeout_seconds,
+            position_priority_window_minutes=settings.autotrace_position_priority_window_minutes,
+            position_movement_distance_meters=settings.autotrace_position_movement_distance_meters,
+            position_movement_cooldown_minutes=settings.autotrace_position_movement_cooldown_minutes,
         ),
     )
 
@@ -468,6 +552,7 @@ def create_app(
         from_node: int | None = None,
         portnum: str | None = None,
     ) -> list[dict[str, Any]]:
+        local_node_num = _resolved_local_node_num(settings, collector)
         return public_packets_payload(
             repository.list_packets(
                 limit=limit,
@@ -475,13 +560,16 @@ def create_app(
                 from_node=from_node,
                 portnum=portnum,
                 primary_only=True,
-            )
+            ),
+            local_node_num=local_node_num,
         )
 
     @public_router.get("/api/chat")
     async def list_chat_messages(limit: int = Query(default=PUBLIC_CHAT_LIMIT, ge=1, le=500)) -> list[dict[str, Any]]:
+        local_node_num = _resolved_local_node_num(settings, collector)
         return public_chat_messages_payload(
-            repository.list_chat_messages(limit=min(limit, PUBLIC_CHAT_LIMIT), primary_only=True)
+            repository.list_chat_messages(limit=min(limit, PUBLIC_CHAT_LIMIT), primary_only=True),
+            local_node_num=local_node_num,
         )
 
     @public_router.get("/api/mesh/summary")
@@ -519,8 +607,15 @@ def create_app(
         return public_mesh_summary_payload(summary, receiver=receiver)
 
     @public_router.get("/api/mesh/routes")
-    async def mesh_routes(since: str | None = None) -> dict[str, Any]:
-        return repository.get_mesh_routes(since=_bounded_routes_since(since), primary_only=True)
+    async def mesh_routes(
+        since: str | None = None,
+        limit: int = Query(default=PUBLIC_MESH_ROUTES_LIMIT, ge=1, le=PUBLIC_MESH_ROUTES_LIMIT_MAX),
+    ) -> dict[str, Any]:
+        return repository.get_mesh_routes(
+            since=_bounded_routes_since(since),
+            limit=limit,
+            primary_only=True,
+        )
 
     @public_router.get("/api/nodes/roster")
     async def list_nodes_roster() -> list[dict[str, Any]]:
@@ -533,12 +628,41 @@ def create_app(
 
     @public_router.get("/api/nodes/{node_num}")
     async def get_node(node_num: int) -> dict[str, Any]:
+        local_node_num = _resolved_local_node_num(settings, collector)
         node = repository.get_node(node_num, primary_only=True)
         if node is None:
             raise HTTPException(status_code=404, detail="node not found")
+        last_traceroute_attempt = _traceroute_attempt_with_route(
+            repository,
+            target_node_num=node_num,
+            attempt=repository.get_last_traceroute_attempt_for_node(node_num),
+        )
+        last_successful_traceroute_attempt = _traceroute_attempt_with_route(
+            repository,
+            target_node_num=node_num,
+            attempt=repository.get_last_successful_traceroute_attempt_for_node(node_num),
+        )
+        latest_complete_traceroute = repository.get_latest_complete_traceroute_for_node(
+            node_num,
+            primary_only=True,
+        )
         return public_node_detail_payload(
             node,
             insights=repository.get_node_insights(node_num, primary_only=True),
+            recent_packets=repository.list_recent_packets_from_node(
+                node_num,
+                limit=PUBLIC_NODE_RECENT_PACKETS_LIMIT,
+                primary_only=True,
+            ),
+            metric_history=repository.list_node_metric_history(
+                node_num,
+                primary_only=True,
+                limit=24,
+            ),
+            local_node_num=local_node_num,
+            last_traceroute_attempt=last_traceroute_attempt,
+            last_successful_traceroute_attempt=last_successful_traceroute_attempt,
+            latest_complete_traceroute=latest_complete_traceroute,
         )
 
     @public_router.websocket("/ws/events")

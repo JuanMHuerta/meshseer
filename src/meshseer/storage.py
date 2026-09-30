@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import base64
 import json
+import math
 import sqlite3
 import threading
+from collections.abc import Mapping as MappingABC
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Mapping
@@ -20,6 +22,13 @@ ROSTER_ACTIVITY_COUNT_WINDOW_MINUTES = 60
 SQLITE_BUSY_TIMEOUT_MS = 5000
 SQLITE_CONNECT_TIMEOUT_SECONDS = SQLITE_BUSY_TIMEOUT_MS / 1000
 DAILY_NODE_TOTALS_WINDOW_DAYS = 30
+DEFAULT_MESH_ROUTES_LIMIT = 250
+POSITION_PRIORITY_REASONS = {
+    "first_fix": 0,
+    "moved": 1,
+    "stale_refresh": 2,
+    "fresh_position": 3,
+}
 
 
 class MeshRepository:
@@ -72,6 +81,13 @@ class MeshRepository:
         if column in existing:
             return
         connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+
+    @staticmethod
+    def _earliest_timestamp(*values: Any) -> str | None:
+        candidates = [value for value in values if isinstance(value, str) and value]
+        if not candidates:
+            return None
+        return min(candidates)
 
     @staticmethod
     def _coerce_optional_int(value: Any) -> int | None:
@@ -328,6 +344,7 @@ class MeshRepository:
                     hardware_model,
                     role,
                     channel_index,
+                    first_heard_at,
                     last_heard_at,
                     last_snr,
                     latitude,
@@ -340,12 +357,13 @@ class MeshRepository:
                     via_mqtt,
                     raw_json,
                     updated_at
-                ) VALUES (?, ?, NULL, NULL, NULL, NULL, ?, ?, ?, NULL, NULL, NULL, NULL, NULL, NULL, NULL, ?, ?, ?)
+                ) VALUES (?, ?, NULL, NULL, NULL, NULL, ?, ?, ?, ?, NULL, NULL, NULL, NULL, NULL, NULL, NULL, ?, ?, ?)
                 """,
                 (
                     node_num,
                     packet_node_id,
                     packet_channel_index,
+                    received_at,
                     received_at,
                     packet_rx_snr,
                     None if packet_via_mqtt is None else int(bool(packet_via_mqtt)),
@@ -355,6 +373,7 @@ class MeshRepository:
             )
             current_primary = cls._is_primary_channel_value(packet_channel_index)
         else:
+            new_first_heard_at = cls._earliest_timestamp(existing.get("first_heard_at"), received_at)
             new_last_heard_at = existing.get("last_heard_at")
             new_last_snr = existing.get("last_snr")
             if new_last_heard_at is None or str(new_last_heard_at) <= received_at:
@@ -377,6 +396,7 @@ class MeshRepository:
                 UPDATE nodes
                 SET node_id = ?,
                     channel_index = ?,
+                    first_heard_at = ?,
                     last_heard_at = ?,
                     last_snr = ?,
                     via_mqtt = ?
@@ -385,6 +405,7 @@ class MeshRepository:
                 (
                     new_node_id,
                     new_channel_index,
+                    new_first_heard_at,
                     new_last_heard_at,
                     new_last_snr,
                     None if new_via_mqtt is None else int(bool(new_via_mqtt)),
@@ -426,6 +447,24 @@ class MeshRepository:
                 continue
             cls._observe_packet_node_activity(connection, packet)
             observed_node_nums.add(node_num)
+
+    @classmethod
+    def _backfill_node_first_heard_at(cls, connection: sqlite3.Connection) -> None:
+        connection.execute(
+            """
+            UPDATE nodes
+            SET first_heard_at = COALESCE(
+                (
+                    SELECT MIN(p.received_at)
+                    FROM packets AS p
+                    WHERE p.from_node_num = nodes.node_num
+                ),
+                last_heard_at,
+                updated_at
+            )
+            WHERE first_heard_at IS NULL
+            """
+        )
 
     @staticmethod
     def _append_node_metric_history(connection: sqlite3.Connection, node: NodeRecord) -> None:
@@ -807,6 +846,7 @@ class MeshRepository:
                     hardware_model TEXT,
                     role TEXT,
                     channel_index INTEGER,
+                    first_heard_at TEXT,
                     last_heard_at TEXT,
                     last_snr REAL,
                     latitude REAL,
@@ -884,7 +924,14 @@ class MeshRepository:
                     target_node_num INTEGER PRIMARY KEY,
                     last_activity_at TEXT NOT NULL,
                     last_status TEXT NOT NULL,
-                    ack_only_streak INTEGER NOT NULL DEFAULT 0
+                    ack_only_streak INTEGER NOT NULL DEFAULT 0,
+                    position_trigger_pending INTEGER NOT NULL DEFAULT 0,
+                    last_position_trigger_at TEXT,
+                    last_position_lat REAL,
+                    last_position_lon REAL,
+                    last_position_trigger_reason TEXT,
+                    last_traced_position_lat REAL,
+                    last_traced_position_lon REAL
                 );
                 """
             )
@@ -895,12 +942,31 @@ class MeshRepository:
             self._ensure_column(connection, "packets", "via_mqtt", "INTEGER")
             self._ensure_column(connection, "packets", "transport_mechanism", "TEXT")
             self._ensure_column(connection, "nodes", "channel_index", "INTEGER")
+            self._ensure_column(connection, "nodes", "first_heard_at", "TEXT")
             self._ensure_column(connection, "nodes", "hops_away", "INTEGER")
             self._ensure_column(connection, "nodes", "via_mqtt", "INTEGER")
             self._ensure_column(connection, "daily_node_totals", "mapped_nodes", "INTEGER")
+            self._ensure_column(
+                connection,
+                "autotrace_target_state",
+                "position_trigger_pending",
+                "INTEGER NOT NULL DEFAULT 0",
+            )
+            self._ensure_column(connection, "autotrace_target_state", "last_position_trigger_at", "TEXT")
+            self._ensure_column(connection, "autotrace_target_state", "last_position_lat", "REAL")
+            self._ensure_column(connection, "autotrace_target_state", "last_position_lon", "REAL")
+            self._ensure_column(
+                connection,
+                "autotrace_target_state",
+                "last_position_trigger_reason",
+                "TEXT",
+            )
+            self._ensure_column(connection, "autotrace_target_state", "last_traced_position_lat", "REAL")
+            self._ensure_column(connection, "autotrace_target_state", "last_traced_position_lon", "REAL")
             self._backfill_node_channels(connection)
             self._backfill_packet_metadata(connection)
             self._backfill_node_metadata(connection)
+            self._backfill_node_first_heard_at(connection)
             self._backfill_node_activity_from_packets(connection)
             self._backfill_node_metric_history(connection)
             self._backfill_packet_traffic_rollups(connection)
@@ -911,6 +977,7 @@ class MeshRepository:
                 """
                 CREATE INDEX IF NOT EXISTS idx_packets_received_at ON packets(received_at DESC);
                 CREATE INDEX IF NOT EXISTS idx_packets_from_node_num ON packets(from_node_num);
+                CREATE INDEX IF NOT EXISTS idx_packets_to_node_num ON packets(to_node_num);
                 CREATE INDEX IF NOT EXISTS idx_packets_portnum ON packets(portnum);
                 CREATE INDEX IF NOT EXISTS idx_packets_channel_index ON packets(channel_index);
                 CREATE INDEX IF NOT EXISTS idx_packets_via_mqtt ON packets(via_mqtt);
@@ -931,6 +998,14 @@ class MeshRepository:
                     ON packets(received_at DESC, from_node_num)
                     WHERE COALESCE(channel_index, 0) = 0
                       AND from_node_num IS NOT NULL;
+                CREATE INDEX IF NOT EXISTS idx_packets_primary_from_node_id
+                    ON packets(from_node_num, id DESC)
+                    WHERE COALESCE(channel_index, 0) = 0
+                      AND from_node_num IS NOT NULL;
+                CREATE INDEX IF NOT EXISTS idx_packets_primary_to_node_id
+                    ON packets(to_node_num, id DESC)
+                    WHERE COALESCE(channel_index, 0) = 0
+                      AND to_node_num IS NOT NULL;
                 CREATE INDEX IF NOT EXISTS idx_traceroute_attempts_last_activity
                     ON traceroute_attempts(COALESCE(completed_at, requested_at) DESC, id DESC);
                 CREATE INDEX IF NOT EXISTS idx_traceroute_attempts_target_requested_at
@@ -939,11 +1014,21 @@ class MeshRepository:
                     ON traceroute_attempts(requested_at DESC);
                 CREATE UNIQUE INDEX IF NOT EXISTS idx_route_observations_packet_direction
                     ON route_observations(packet_id, direction);
+                CREATE INDEX IF NOT EXISTS idx_route_observations_mesh_packet_id
+                    ON route_observations(mesh_packet_id);
                 CREATE INDEX IF NOT EXISTS idx_route_observations_received_at_packet
                     ON route_observations(received_at DESC, packet_id DESC);
                 CREATE INDEX IF NOT EXISTS idx_route_observations_primary_received_at_packet
                     ON route_observations(received_at DESC, packet_id DESC)
                     WHERE COALESCE(channel_index, 0) = 0;
+                CREATE INDEX IF NOT EXISTS idx_route_observations_primary_source_received
+                    ON route_observations(source_node_num, received_at DESC, packet_id DESC)
+                    WHERE COALESCE(channel_index, 0) = 0
+                      AND source_node_num IS NOT NULL;
+                CREATE INDEX IF NOT EXISTS idx_route_observations_primary_destination_received
+                    ON route_observations(destination_node_num, received_at DESC, packet_id DESC)
+                    WHERE COALESCE(channel_index, 0) = 0
+                      AND destination_node_num IS NOT NULL;
                 """
             )
 
@@ -954,6 +1039,8 @@ class MeshRepository:
         payload = {key: row[key] for key in row.keys()}
         if "via_mqtt" in payload and payload["via_mqtt"] is not None:
             payload["via_mqtt"] = bool(payload["via_mqtt"])
+        if "position_trigger_pending" in payload and payload["position_trigger_pending"] is not None:
+            payload["position_trigger_pending"] = bool(payload["position_trigger_pending"])
         return payload
 
     @classmethod
@@ -968,6 +1055,38 @@ class MeshRepository:
             except ValueError:
                 return None
         return None
+
+    @staticmethod
+    def _parse_utc_timestamp(value: Any) -> datetime | None:
+        if not isinstance(value, str) or not value:
+            return None
+        try:
+            return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(UTC)
+        except ValueError:
+            return None
+
+    @staticmethod
+    def _haversine_distance_meters(
+        lat_a: float | None,
+        lon_a: float | None,
+        lat_b: float | None,
+        lon_b: float | None,
+    ) -> float | None:
+        if None in {lat_a, lon_a, lat_b, lon_b}:
+            return None
+        if not all(isinstance(value, (int, float)) and math.isfinite(float(value)) for value in (lat_a, lon_a, lat_b, lon_b)):
+            return None
+
+        radius_m = 6_371_008.8
+        phi_a = math.radians(float(lat_a))
+        phi_b = math.radians(float(lat_b))
+        delta_phi = math.radians(float(lat_b) - float(lat_a))
+        delta_lambda = math.radians(float(lon_b) - float(lon_a))
+        hav = (
+            math.sin(delta_phi / 2.0) ** 2
+            + math.cos(phi_a) * math.cos(phi_b) * math.sin(delta_lambda / 2.0) ** 2
+        )
+        return radius_m * 2.0 * math.atan2(math.sqrt(hav), math.sqrt(1.0 - hav))
 
     @staticmethod
     def _primary_channel_clause(column_name: str = "channel_index") -> str:
@@ -985,6 +1104,11 @@ class MeshRepository:
             return "unknown"
         if packet.get("via_mqtt"):
             return "mqtt"
+        delivered_by = packet.get("relay_node")
+        if delivered_by is None:
+            delivered_by = packet.get("next_hop")
+        if delivered_by == 0:
+            return "local"
         hops_taken = cls._hops_taken(packet.get("hop_start"), packet.get("hop_limit"))
         if hops_taken is None:
             return "unknown"
@@ -1028,6 +1152,27 @@ class MeshRepository:
             return None
         return timestamp_to_utc_iso(timestamp)
 
+    @staticmethod
+    def _sequence_items(value: Any) -> list[Any]:
+        if value is None or isinstance(value, (str, bytes, bytearray, MappingABC)):
+            return []
+        try:
+            return list(value)
+        except TypeError:
+            return []
+
+    @staticmethod
+    def _field_value(source: Any, *names: str) -> Any:
+        if isinstance(source, MappingABC):
+            for name in names:
+                if name in source:
+                    return source[name]
+            return None
+        for name in names:
+            if hasattr(source, name):
+                return getattr(source, name)
+        return None
+
     @classmethod
     def _neighbor_reports_from_packet(cls, packet: dict[str, Any]) -> list[dict[str, Any]]:
         source_node_num = cls._coerce_optional_int(packet.get("from_node_num"))
@@ -1066,14 +1211,10 @@ class MeshRepository:
         if not isinstance(info, dict):
             return []
 
-        neighbors = info.get("neighbors")
-        if not isinstance(neighbors, list):
-            return []
-
         reported_at = packet.get("received_at")
         reports: list[dict[str, Any]] = []
-        for neighbor in neighbors:
-            if not isinstance(neighbor, dict):
+        for neighbor in cls._sequence_items(info.get("neighbors")):
+            if not isinstance(neighbor, MappingABC):
                 continue
             target_node_num = cls._coerce_optional_int(
                 neighbor.get("node_id", neighbor.get("nodeId"))
@@ -1095,10 +1236,8 @@ class MeshRepository:
 
     @classmethod
     def _coerce_optional_int_list(cls, value: Any) -> list[int]:
-        if not isinstance(value, list):
-            return []
         items: list[int] = []
-        for entry in value:
+        for entry in cls._sequence_items(value):
             item = cls._coerce_optional_int(entry)
             if item is not None:
                 items.append(item)
@@ -1106,10 +1245,8 @@ class MeshRepository:
 
     @classmethod
     def _route_snr_values(cls, value: Any) -> list[float | None]:
-        if not isinstance(value, list):
-            return []
         values: list[float | None] = []
-        for entry in value:
+        for entry in cls._sequence_items(value):
             snr = cls._coerce_optional_float(entry)
             if snr is None:
                 values.append(None)
@@ -1128,17 +1265,17 @@ class MeshRepository:
 
     @classmethod
     def _route_discovery_mapping(cls, value: Any) -> dict[str, Any] | None:
-        if not isinstance(value, dict):
+        if value is None:
             return None
         return {
-            "route": cls._coerce_optional_int_list(value.get("route")),
+            "route": cls._coerce_optional_int_list(cls._field_value(value, "route")),
             "snr_towards": cls._route_snr_values(
-                value.get("snr_towards", value.get("snrTowards"))
+                cls._field_value(value, "snr_towards", "snrTowards")
             ),
             "route_back": cls._coerce_optional_int_list(
-                value.get("route_back", value.get("routeBack"))
+                cls._field_value(value, "route_back", "routeBack")
             ),
-            "snr_back": cls._route_snr_values(value.get("snr_back", value.get("snrBack"))),
+            "snr_back": cls._route_snr_values(cls._field_value(value, "snr_back", "snrBack")),
         }
 
     @classmethod
@@ -1424,6 +1561,8 @@ class MeshRepository:
         last_activity_at: str,
         last_status: str,
         ack_only_streak: int,
+        traced_latitude: float | None = None,
+        traced_longitude: float | None = None,
     ) -> None:
         connection.execute(
             """
@@ -1431,18 +1570,51 @@ class MeshRepository:
                 target_node_num,
                 last_activity_at,
                 last_status,
-                ack_only_streak
-            ) VALUES (?, ?, ?, ?)
+                ack_only_streak,
+                position_trigger_pending,
+                last_position_trigger_at,
+                last_position_lat,
+                last_position_lon,
+                last_position_trigger_reason,
+                last_traced_position_lat,
+                last_traced_position_lon
+            ) VALUES (?, ?, ?, ?, 0, NULL, NULL, NULL, NULL, ?, ?)
             ON CONFLICT(target_node_num) DO UPDATE SET
                 last_activity_at = excluded.last_activity_at,
                 last_status = excluded.last_status,
-                ack_only_streak = excluded.ack_only_streak
+                ack_only_streak = excluded.ack_only_streak,
+                position_trigger_pending = CASE
+                    WHEN autotrace_target_state.last_position_trigger_at IS NOT NULL
+                         AND autotrace_target_state.last_position_trigger_at > excluded.last_activity_at
+                    THEN autotrace_target_state.position_trigger_pending
+                    ELSE 0
+                END,
+                last_traced_position_lat = COALESCE(
+                    excluded.last_traced_position_lat,
+                    autotrace_target_state.last_traced_position_lat
+                ),
+                last_traced_position_lon = COALESCE(
+                    excluded.last_traced_position_lon,
+                    autotrace_target_state.last_traced_position_lon
+                )
             """,
-            (target_node_num, last_activity_at, last_status, ack_only_streak),
+            (
+                target_node_num,
+                last_activity_at,
+                last_status,
+                ack_only_streak,
+                traced_latitude,
+                traced_longitude,
+            ),
         )
 
     @classmethod
     def _backfill_autotrace_target_state(cls, connection: sqlite3.Connection) -> None:
+        existing_rows = {
+            cls._coerce_optional_int(row["target_node_num"]): dict(row)
+            for row in connection.execute("SELECT * FROM autotrace_target_state").fetchall()
+            if cls._coerce_optional_int(row["target_node_num"]) is not None
+        }
         connection.execute("DELETE FROM autotrace_target_state")
 
         cursor = connection.execute(
@@ -1506,6 +1678,175 @@ class MeshRepository:
                 ack_only_streak=ack_only_streak,
             )
 
+        for target_node_num, row in existing_rows.items():
+            if target_node_num is None:
+                continue
+            if not cls._has_autotrace_position_state(row):
+                continue
+            connection.execute(
+                """
+                INSERT INTO autotrace_target_state (
+                    target_node_num,
+                    last_activity_at,
+                    last_status,
+                    ack_only_streak,
+                    position_trigger_pending,
+                    last_position_trigger_at,
+                    last_position_lat,
+                    last_position_lon,
+                    last_position_trigger_reason,
+                    last_traced_position_lat,
+                    last_traced_position_lon
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(target_node_num) DO UPDATE SET
+                    position_trigger_pending = excluded.position_trigger_pending,
+                    last_position_trigger_at = excluded.last_position_trigger_at,
+                    last_position_lat = excluded.last_position_lat,
+                    last_position_lon = excluded.last_position_lon,
+                    last_position_trigger_reason = excluded.last_position_trigger_reason,
+                    last_traced_position_lat = COALESCE(
+                        autotrace_target_state.last_traced_position_lat,
+                        excluded.last_traced_position_lat
+                    ),
+                    last_traced_position_lon = COALESCE(
+                        autotrace_target_state.last_traced_position_lon,
+                        excluded.last_traced_position_lon
+                    )
+                """,
+                (
+                    target_node_num,
+                    row.get("last_activity_at") or "",
+                    row.get("last_status") or "idle",
+                    int(row.get("ack_only_streak") or 0),
+                    int(row.get("position_trigger_pending") or 0),
+                    row.get("last_position_trigger_at"),
+                    row.get("last_position_lat"),
+                    row.get("last_position_lon"),
+                    row.get("last_position_trigger_reason"),
+                    row.get("last_traced_position_lat"),
+                    row.get("last_traced_position_lon"),
+                ),
+            )
+
+    @classmethod
+    def _position_trigger_reason(
+        cls,
+        *,
+        latitude: float,
+        longitude: float,
+        last_traced_latitude: float | None,
+        last_traced_longitude: float | None,
+        last_route_activity_at: str | None,
+        triggered_at: str,
+        movement_distance_meters: float,
+        cooldown_hours: int,
+    ) -> str:
+        if last_traced_latitude is None or last_traced_longitude is None:
+            return "first_fix"
+
+        moved_meters = cls._haversine_distance_meters(
+            last_traced_latitude,
+            last_traced_longitude,
+            latitude,
+            longitude,
+        )
+        if moved_meters is not None and moved_meters >= movement_distance_meters:
+            return "moved"
+
+        route_activity = cls._parse_utc_timestamp(last_route_activity_at)
+        trigger_time = cls._parse_utc_timestamp(triggered_at)
+        if route_activity is None or trigger_time is None:
+            return "stale_refresh"
+
+        if route_activity <= (trigger_time - timedelta(hours=max(1, cooldown_hours))):
+            return "stale_refresh"
+        return "fresh_position"
+
+    @classmethod
+    def _has_autotrace_position_state(cls, row: Mapping[str, Any]) -> bool:
+        if bool(row.get("position_trigger_pending")):
+            return True
+
+        for key in ("last_position_trigger_at", "last_position_trigger_reason"):
+            value = row.get(key)
+            if isinstance(value, str) and value:
+                return True
+
+        for key in (
+            "last_position_lat",
+            "last_position_lon",
+            "last_traced_position_lat",
+            "last_traced_position_lon",
+        ):
+            if cls._coerce_optional_float(row.get(key)) is not None:
+                return True
+
+        return False
+
+    def mark_position_trace_candidate(
+        self,
+        *,
+        node_num: int,
+        triggered_at: str,
+        latitude: float,
+        longitude: float,
+        movement_distance_meters: float,
+        cooldown_hours: int,
+        primary_only: bool = False,
+    ) -> str:
+        observed_column = self._route_activity_column(primary_only=primary_only)
+        with self._connect() as connection:
+            row = connection.execute(
+                f"""
+                SELECT
+                    s.last_traced_position_lat,
+                    s.last_traced_position_lon,
+                    r.{observed_column} AS last_route_activity_at
+                FROM nodes AS n
+                LEFT JOIN autotrace_target_state AS s
+                    ON s.target_node_num = n.node_num
+                LEFT JOIN route_node_activity AS r
+                    ON r.node_num = n.node_num
+                WHERE n.node_num = ?
+                """,
+                (node_num,),
+            ).fetchone()
+            reason = type(self)._position_trigger_reason(
+                latitude=latitude,
+                longitude=longitude,
+                last_traced_latitude=self._coerce_optional_float(None if row is None else row["last_traced_position_lat"]),
+                last_traced_longitude=self._coerce_optional_float(None if row is None else row["last_traced_position_lon"]),
+                last_route_activity_at=None if row is None else row["last_route_activity_at"],
+                triggered_at=triggered_at,
+                movement_distance_meters=max(0.0, float(movement_distance_meters)),
+                cooldown_hours=max(1, cooldown_hours),
+            )
+            connection.execute(
+                """
+                INSERT INTO autotrace_target_state (
+                    target_node_num,
+                    last_activity_at,
+                    last_status,
+                    ack_only_streak,
+                    position_trigger_pending,
+                    last_position_trigger_at,
+                    last_position_lat,
+                    last_position_lon,
+                    last_position_trigger_reason,
+                    last_traced_position_lat,
+                    last_traced_position_lon
+                ) VALUES (?, '', 'idle', 0, 1, ?, ?, ?, ?, NULL, NULL)
+                ON CONFLICT(target_node_num) DO UPDATE SET
+                    position_trigger_pending = 1,
+                    last_position_trigger_at = excluded.last_position_trigger_at,
+                    last_position_lat = excluded.last_position_lat,
+                    last_position_lon = excluded.last_position_lon,
+                    last_position_trigger_reason = excluded.last_position_trigger_reason
+                """,
+                (node_num, triggered_at, latitude, longitude, reason),
+            )
+        return reason
+
     @classmethod
     def _route_observation_row_to_dict(cls, row: sqlite3.Row | None) -> dict[str, Any] | None:
         payload = cls._row_to_dict(row)
@@ -1533,6 +1874,7 @@ class MeshRepository:
         self,
         *,
         since: str | None = None,
+        limit: int = DEFAULT_MESH_ROUTES_LIMIT,
         primary_only: bool = False,
     ) -> dict[str, Any]:
         clauses: list[str] = []
@@ -1570,8 +1912,9 @@ class MeshRepository:
                     received_at DESC,
                     packet_id DESC,
                     CASE WHEN direction = 'forward' THEN 1 ELSE 0 END DESC
+                LIMIT ?
                 """,
-                params,
+                [*params, int(limit)],
             ).fetchall()
 
         routes = [route for row in rows if (route := self._route_observation_row_to_dict(row)) is not None]
@@ -1583,6 +1926,171 @@ class MeshRepository:
                 "forward": sum(1 for route in routes if route["direction"] == "forward"),
                 "return": sum(1 for route in routes if route["direction"] == "return"),
             },
+        }
+
+    def get_traceroute_route_for_attempt(
+        self,
+        *,
+        target_node_num: int,
+        response_mesh_packet_id: int | None,
+    ) -> dict[str, Any] | None:
+        if response_mesh_packet_id is None:
+            return None
+
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT
+                    packet_id,
+                    mesh_packet_id,
+                    received_at,
+                    portnum,
+                    variant,
+                    direction,
+                    source_node_num,
+                    destination_node_num,
+                    path_node_nums_json,
+                    edge_snr_db_json,
+                    hop_count
+                FROM route_observations
+                WHERE mesh_packet_id = ?
+                ORDER BY
+                    CASE
+                        WHEN destination_node_num = ? THEN 0
+                        WHEN source_node_num = ? THEN 1
+                        ELSE 2
+                    END,
+                    CASE WHEN direction = 'forward' THEN 0 ELSE 1 END,
+                    hop_count ASC,
+                    packet_id DESC
+                LIMIT 1
+                """,
+                (response_mesh_packet_id, target_node_num, target_node_num),
+            ).fetchall()
+
+        for row in rows:
+            route = self._route_observation_row_to_dict(row)
+            if route is not None:
+                return route
+        return None
+
+    def get_latest_complete_traceroute_for_node(
+        self,
+        target_node_num: int,
+        *,
+        primary_only: bool = False,
+    ) -> dict[str, Any] | None:
+        clauses = [
+            "variant IN ('traceroute', 'route_reply')",
+            "(source_node_num = ? OR destination_node_num = ?)",
+        ]
+        params: list[Any] = [target_node_num, target_node_num]
+        if primary_only:
+            clauses.append(self._primary_channel_clause())
+        where = self._where_clause(clauses)
+
+        with self._connect() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT
+                    packet_id,
+                    mesh_packet_id,
+                    received_at,
+                    portnum,
+                    variant,
+                    direction,
+                    source_node_num,
+                    destination_node_num,
+                    path_node_nums_json,
+                    edge_snr_db_json,
+                    hop_count
+                FROM route_observations
+                {where}
+                ORDER BY received_at DESC, packet_id DESC
+                """,
+                params,
+            ).fetchall()
+
+            grouped: dict[int, dict[str, Any]] = {}
+            latest_complete: dict[str, Any] | None = None
+            for row in rows:
+                route = self._route_observation_row_to_dict(row)
+                if route is None:
+                    continue
+                mesh_packet_id = self._coerce_optional_int(route.get("mesh_packet_id"))
+                if mesh_packet_id is None:
+                    continue
+                bucket = grouped.setdefault(
+                    mesh_packet_id,
+                    {
+                        "mesh_packet_id": mesh_packet_id,
+                        "received_at": route.get("received_at"),
+                        "forward": None,
+                        "return": None,
+                    },
+                )
+                direction = route.get("direction")
+                if direction == "forward" and bucket["forward"] is None:
+                    bucket["forward"] = route
+                elif direction == "return" and bucket["return"] is None:
+                    bucket["return"] = route
+                if bucket["forward"] is not None and bucket["return"] is not None:
+                    latest_complete = bucket
+                    break
+
+            if latest_complete is None:
+                return None
+
+            forward = latest_complete["forward"]
+            reverse = latest_complete["return"]
+            forward_path = self._coerce_optional_int_list(forward.get("path_node_nums")) or []
+            reverse_path = self._coerce_optional_int_list(reverse.get("path_node_nums")) or []
+            full_path = forward_path + reverse_path[1:] if reverse_path else forward_path
+
+            request_mesh_packet_id = None
+            discovery_request_id = None
+            attempt_row = connection.execute(
+                """
+                SELECT request_mesh_packet_id
+                FROM traceroute_attempts
+                WHERE response_mesh_packet_id = ?
+                ORDER BY COALESCE(completed_at, requested_at) DESC, id DESC
+                LIMIT 1
+                """,
+                (latest_complete["mesh_packet_id"],),
+            ).fetchone()
+            if attempt_row is not None:
+                request_mesh_packet_id = self._coerce_optional_int(attempt_row["request_mesh_packet_id"])
+            packet_row = connection.execute(
+                """
+                SELECT raw_json
+                FROM packets
+                WHERE mesh_packet_id = ?
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (latest_complete["mesh_packet_id"],),
+            ).fetchone()
+            try:
+                raw_json = json.loads(None if packet_row is None else packet_row["raw_json"] or "{}")
+            except (TypeError, ValueError):
+                raw_json = {}
+            if isinstance(raw_json, dict):
+                decoded = raw_json.get("decoded")
+                if isinstance(decoded, dict):
+                    discovery_request_id = self._coerce_optional_int(decoded.get("requestId"))
+            if request_mesh_packet_id is None:
+                request_mesh_packet_id = discovery_request_id
+
+        return {
+            "mesh_packet_id": latest_complete["mesh_packet_id"],
+            "received_at": latest_complete["received_at"],
+            "request_mesh_packet_id": request_mesh_packet_id,
+            "discovery_request_id": discovery_request_id,
+            "forward_path_node_nums": forward_path,
+            "return_path_node_nums": reverse_path,
+            "full_path_node_nums": full_path,
+            "hop_count": max(0, len(full_path) - 1),
         }
 
     def get_mesh_links(self, *, primary_only: bool = False) -> dict[str, Any]:
@@ -1739,80 +2247,191 @@ class MeshRepository:
     def _route_activity_column(self, *, primary_only: bool = False) -> str:
         return "last_primary_route_seen_at" if primary_only else "last_route_seen_at"
 
-    def _autotrace_candidates_query(
+    @staticmethod
+    def _last_trace_activity_at(candidate: Mapping[str, Any], *, primary_only: bool) -> str | None:
+        route_key = "last_primary_route_seen_at" if primary_only else "last_route_seen_at"
+        attempt_activity = candidate.get("last_activity_at")
+        route_activity = candidate.get(route_key)
+        if not isinstance(attempt_activity, str) or not attempt_activity:
+            return route_activity if isinstance(route_activity, str) and route_activity else None
+        if not isinstance(route_activity, str) or not route_activity:
+            return attempt_activity
+        return attempt_activity if attempt_activity >= route_activity else route_activity
+
+    def _autotrace_candidate_rows(
         self,
         *,
         local_node_num: int,
         heard_cutoff: str,
-        now_iso: str,
-        cooldown_hours: int,
-        ack_only_cooldown_hours: int,
         primary_only: bool,
-    ) -> tuple[str, list[Any]]:
-        observed_column = self._route_activity_column(primary_only=primary_only)
+    ) -> list[dict[str, Any]]:
         clauses = [
             "n.node_num != ?",
             "COALESCE(n.via_mqtt, 0) = 0",
             "n.hops_away IS NOT NULL",
             "n.last_heard_at IS NOT NULL",
             "n.last_heard_at >= ?",
-            """
-            (
-                s.last_activity_at IS NULL OR
-                julianday(s.last_activity_at) < (
-                    julianday(?) - (
-                        CASE
-                            WHEN s.last_status = 'ack_only' THEN MIN(
-                                ? * CASE
-                                    WHEN COALESCE(s.ack_only_streak, 0) < 1 THEN 1
-                                    ELSE s.ack_only_streak
-                                END,
-                                ?
-                            )
-                            ELSE ?
-                        END / 24.0
-                    )
-                )
-            )
-            """,
-            f"""
-            (
-                r.{observed_column} IS NULL OR
-                julianday(r.{observed_column}) < (julianday(?) - (? / 24.0))
-            )
-            """,
         ]
-        params: list[Any] = [
-            local_node_num,
-            heard_cutoff,
-            now_iso,
-            max(1, ack_only_cooldown_hours),
-            max(1, cooldown_hours),
-            max(1, cooldown_hours),
-            now_iso,
-            max(1, cooldown_hours),
-        ]
+        params: list[Any] = [local_node_num, heard_cutoff]
         if primary_only:
             clauses.append(self._primary_channel_clause("n.channel_index"))
 
+        observed_column = self._route_activity_column(primary_only=primary_only)
         where = self._where_clause(clauses)
-        query = f"""
-            SELECT
-                n.*,
-                CASE
-                    WHEN s.last_activity_at IS NULL THEN r.{observed_column}
-                    WHEN r.{observed_column} IS NULL THEN s.last_activity_at
-                    WHEN s.last_activity_at >= r.{observed_column} THEN s.last_activity_at
-                    ELSE r.{observed_column}
-                END AS last_trace_activity_at
-            FROM nodes AS n
-            LEFT JOIN autotrace_target_state AS s
-                ON s.target_node_num = n.node_num
-            LEFT JOIN route_node_activity AS r
-                ON r.node_num = n.node_num
-            {where}
-        """
-        return query, params
+        with self._connect() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT
+                    n.*,
+                    s.last_activity_at,
+                    s.last_status,
+                    s.ack_only_streak,
+                    s.position_trigger_pending,
+                    s.last_position_trigger_at,
+                    s.last_position_lat,
+                    s.last_position_lon,
+                    s.last_position_trigger_reason,
+                    s.last_traced_position_lat,
+                    s.last_traced_position_lon,
+                    r.{observed_column} AS {observed_column}
+                FROM nodes AS n
+                LEFT JOIN autotrace_target_state AS s
+                    ON s.target_node_num = n.node_num
+                LEFT JOIN route_node_activity AS r
+                    ON r.node_num = n.node_num
+                {where}
+                """,
+                params,
+            ).fetchall()
+        return [
+            {
+                **candidate,
+                "last_trace_activity_at": self._last_trace_activity_at(candidate, primary_only=primary_only),
+            }
+            for row in rows
+            if (candidate := self._row_to_dict(row)) is not None
+        ]
+
+    def _position_trigger_metadata(
+        self,
+        candidate: Mapping[str, Any],
+        *,
+        now: datetime,
+        priority_window_minutes: int,
+    ) -> dict[str, Any]:
+        trigger_at = self._parse_utc_timestamp(candidate.get("last_position_trigger_at"))
+        reason = candidate.get("last_position_trigger_reason")
+        pending = bool(candidate.get("position_trigger_pending"))
+        recent = (
+            pending
+            and trigger_at is not None
+            and trigger_at >= (now - timedelta(minutes=max(1, priority_window_minutes)))
+        )
+        moved_meters = self._haversine_distance_meters(
+            self._coerce_optional_float(candidate.get("last_traced_position_lat")),
+            self._coerce_optional_float(candidate.get("last_traced_position_lon")),
+            self._coerce_optional_float(candidate.get("last_position_lat")),
+            self._coerce_optional_float(candidate.get("last_position_lon")),
+        )
+        return {
+            "pending": pending,
+            "recent": recent,
+            "trigger_at": trigger_at,
+            "reason": reason if isinstance(reason, str) else None,
+            "moved_meters": moved_meters,
+        }
+
+    def _candidate_is_eligible(
+        self,
+        candidate: Mapping[str, Any],
+        *,
+        now: datetime,
+        cooldown_hours: int,
+        ack_only_cooldown_hours: int,
+        position_priority_window_minutes: int,
+        position_movement_cooldown_minutes: int,
+        primary_only: bool,
+    ) -> tuple[bool, dict[str, Any]]:
+        position = self._position_trigger_metadata(
+            candidate,
+            now=now,
+            priority_window_minutes=position_priority_window_minutes,
+        )
+        last_activity = self._parse_utc_timestamp(candidate.get("last_activity_at"))
+        last_route_activity = self._parse_utc_timestamp(
+            candidate.get(self._route_activity_column(primary_only=primary_only))
+        )
+        last_trace_activity = self._parse_utc_timestamp(candidate.get("last_trace_activity_at"))
+        last_status = candidate.get("last_status")
+
+        attempt_cooldown_hours = max(1, cooldown_hours)
+        if isinstance(last_status, str) and last_status == "ack_only":
+            attempt_cooldown_hours = self._ack_only_backoff_hours(
+                dict(candidate),
+                ack_only_cooldown_hours=ack_only_cooldown_hours,
+                cooldown_hours=cooldown_hours,
+            )
+
+        standard_cooldown_ok = (
+            last_activity is None
+            or last_activity <= (now - timedelta(hours=attempt_cooldown_hours))
+        )
+        movement_override_ok = (
+            position["recent"]
+            and position["reason"] in {"first_fix", "moved"}
+            and (
+                last_activity is None
+                or last_activity <= (
+                    now - timedelta(minutes=max(1, position_movement_cooldown_minutes))
+                )
+            )
+        )
+        cooldown_ok = standard_cooldown_ok or movement_override_ok
+
+        standard_route_ok = (
+            last_route_activity is None
+            or last_route_activity <= (now - timedelta(hours=max(1, cooldown_hours)))
+        )
+        route_override_ok = (
+            position["recent"]
+            and position["reason"] in {"first_fix", "moved", "stale_refresh"}
+        )
+        route_ok = standard_route_ok or route_override_ok
+
+        return cooldown_ok and route_ok, {
+            "position_recent": position["recent"],
+            "position_reason": position["reason"],
+            "position_trigger_at": position["trigger_at"],
+            "position_moved_meters": position["moved_meters"],
+            "last_trace_activity": last_trace_activity,
+        }
+
+    @staticmethod
+    def _candidate_sort_key(candidate: Mapping[str, Any]) -> tuple[Any, ...]:
+        if candidate.get("position_recent"):
+            trigger_at = candidate.get("position_trigger_at")
+            return (
+                0,
+                POSITION_PRIORITY_REASONS.get(
+                    candidate.get("position_reason"),
+                    len(POSITION_PRIORITY_REASONS),
+                ),
+                0.0 if trigger_at is None else -trigger_at.timestamp(),
+                -(MeshRepository._parse_utc_timestamp(candidate.get("last_heard_at")) or datetime.min.replace(tzinfo=UTC)).timestamp(),
+                candidate.get("hops_away") if isinstance(candidate.get("hops_away"), int) else 999,
+                candidate.get("node_num") if isinstance(candidate.get("node_num"), int) else 0,
+            )
+
+        last_trace_activity = candidate.get("last_trace_activity")
+        return (
+            1,
+            0 if last_trace_activity is None else 1,
+            datetime.max.replace(tzinfo=UTC).timestamp()
+            if last_trace_activity is None else last_trace_activity.timestamp(),
+            -(MeshRepository._parse_utc_timestamp(candidate.get("last_heard_at")) or datetime.min.replace(tzinfo=UTC)).timestamp(),
+            candidate.get("hops_away") if isinstance(candidate.get("hops_away"), int) else 999,
+            candidate.get("node_num") if isinstance(candidate.get("node_num"), int) else 0,
+        )
 
     def _eligible_autotrace_nodes(
         self,
@@ -1821,6 +2440,8 @@ class MeshRepository:
         target_window_hours: int,
         cooldown_hours: int,
         ack_only_cooldown_hours: int,
+        position_priority_window_minutes: int = 15,
+        position_movement_cooldown_minutes: int = 60,
         primary_only: bool = False,
         now: datetime | None = None,
         limit: int | None = None,
@@ -1830,33 +2451,28 @@ class MeshRepository:
 
         current = utc_now() if now is None else now.astimezone(UTC)
         heard_cutoff = timestamp_to_utc_iso((current - timedelta(hours=target_window_hours)).timestamp())
-        now_iso = to_utc_iso(current)
-        query, params = self._autotrace_candidates_query(
+        candidates = self._autotrace_candidate_rows(
             local_node_num=local_node_num,
             heard_cutoff=heard_cutoff,
-            now_iso=now_iso,
-            cooldown_hours=cooldown_hours,
-            ack_only_cooldown_hours=ack_only_cooldown_hours,
             primary_only=primary_only,
         )
-        limit_clause = "LIMIT ?" if limit is not None else ""
+        eligible: list[dict[str, Any]] = []
+        for candidate in candidates:
+            is_eligible, metadata = self._candidate_is_eligible(
+                candidate,
+                now=current,
+                cooldown_hours=cooldown_hours,
+                ack_only_cooldown_hours=ack_only_cooldown_hours,
+                position_priority_window_minutes=position_priority_window_minutes,
+                position_movement_cooldown_minutes=position_movement_cooldown_minutes,
+                primary_only=primary_only,
+            )
+            if not is_eligible:
+                continue
+            eligible.append({**candidate, **metadata})
 
-        with self._connect() as connection:
-            rows = connection.execute(
-                f"""
-                {query}
-                ORDER BY
-                    CASE WHEN last_trace_activity_at IS NULL THEN 0 ELSE 1 END ASC,
-                    last_trace_activity_at ASC,
-                    last_heard_at DESC,
-                    hops_away ASC,
-                    node_num ASC
-                {limit_clause}
-                """,
-                [*params, *([limit] if limit is not None else [])],
-            ).fetchall()
-
-        return [self._row_to_dict(row) for row in rows if row is not None]
+        eligible.sort(key=self._candidate_sort_key)
+        return eligible if limit is None else eligible[:limit]
 
     def _count_eligible_autotrace_nodes(
         self,
@@ -1865,36 +2481,24 @@ class MeshRepository:
         target_window_hours: int,
         cooldown_hours: int,
         ack_only_cooldown_hours: int,
+        position_priority_window_minutes: int = 15,
+        position_movement_cooldown_minutes: int = 60,
         primary_only: bool = False,
         now: datetime | None = None,
     ) -> int:
-        if local_node_num is None:
-            return 0
-
-        current = utc_now() if now is None else now.astimezone(UTC)
-        heard_cutoff = timestamp_to_utc_iso((current - timedelta(hours=target_window_hours)).timestamp())
-        now_iso = to_utc_iso(current)
-        query, params = self._autotrace_candidates_query(
-            local_node_num=local_node_num,
-            heard_cutoff=heard_cutoff,
-            now_iso=now_iso,
-            cooldown_hours=cooldown_hours,
-            ack_only_cooldown_hours=ack_only_cooldown_hours,
-            primary_only=primary_only,
+        return len(
+            self._eligible_autotrace_nodes(
+                local_node_num=local_node_num,
+                target_window_hours=target_window_hours,
+                cooldown_hours=cooldown_hours,
+                ack_only_cooldown_hours=ack_only_cooldown_hours,
+                position_priority_window_minutes=position_priority_window_minutes,
+                position_movement_cooldown_minutes=position_movement_cooldown_minutes,
+                primary_only=primary_only,
+                now=now,
+                limit=None,
+            )
         )
-
-        with self._connect() as connection:
-            row = connection.execute(
-                f"""
-                SELECT COUNT(*) AS total
-                FROM (
-                    {query}
-                ) AS eligible
-                """,
-                params,
-            ).fetchone()
-
-        return int(row["total"] or 0) if row is not None else 0
 
     def count_autotrace_candidates(
         self,
@@ -1903,6 +2507,8 @@ class MeshRepository:
         target_window_hours: int,
         cooldown_hours: int,
         ack_only_cooldown_hours: int,
+        position_priority_window_minutes: int = 15,
+        position_movement_cooldown_minutes: int = 60,
         primary_only: bool = False,
         now: datetime | None = None,
     ) -> int:
@@ -1911,6 +2517,8 @@ class MeshRepository:
             target_window_hours=target_window_hours,
             cooldown_hours=cooldown_hours,
             ack_only_cooldown_hours=ack_only_cooldown_hours,
+            position_priority_window_minutes=position_priority_window_minutes,
+            position_movement_cooldown_minutes=position_movement_cooldown_minutes,
             primary_only=primary_only,
             now=now,
         )
@@ -1922,6 +2530,8 @@ class MeshRepository:
         target_window_hours: int,
         cooldown_hours: int,
         ack_only_cooldown_hours: int,
+        position_priority_window_minutes: int = 15,
+        position_movement_cooldown_minutes: int = 60,
         primary_only: bool = False,
         now: datetime | None = None,
     ) -> dict[str, Any] | None:
@@ -1930,6 +2540,8 @@ class MeshRepository:
             target_window_hours=target_window_hours,
             cooldown_hours=cooldown_hours,
             ack_only_cooldown_hours=ack_only_cooldown_hours,
+            position_priority_window_minutes=position_priority_window_minutes,
+            position_movement_cooldown_minutes=position_movement_cooldown_minutes,
             primary_only=primary_only,
             now=now,
             limit=1,
@@ -1942,6 +2554,8 @@ class MeshRepository:
         target_node_num: int,
         requested_at: str,
         hop_limit: int,
+        traced_latitude: float | None = None,
+        traced_longitude: float | None = None,
     ) -> int:
         with self._connect() as connection:
             cursor = connection.execute(
@@ -1966,6 +2580,8 @@ class MeshRepository:
                 last_activity_at=requested_at,
                 last_status="pending",
                 ack_only_streak=0,
+                traced_latitude=self._coerce_optional_float(traced_latitude),
+                traced_longitude=self._coerce_optional_float(traced_longitude),
             )
             attempt_id = int(cursor.lastrowid)
         self.run_maintenance()
@@ -2063,6 +2679,51 @@ class MeshRepository:
             ).fetchall()
         return [self._row_to_dict(row) for row in rows if row is not None]
 
+    def list_recent_traceroute_attempts_for_node(
+        self,
+        target_node_num: int,
+        *,
+        limit: int = 10,
+        status: str | None = None,
+    ) -> list[dict[str, Any]]:
+        query = """
+            SELECT
+                a.*,
+                n.short_name AS target_short_name,
+                n.long_name AS target_long_name,
+                n.node_id AS target_node_id
+            FROM traceroute_attempts AS a
+            LEFT JOIN nodes AS n ON n.node_num = a.target_node_num
+            WHERE a.target_node_num = ?
+        """
+        params: list[Any] = [target_node_num]
+        if status is not None:
+            query += " AND a.status = ?"
+            params.append(status)
+        query += """
+            ORDER BY COALESCE(a.completed_at, a.requested_at) DESC, a.id DESC
+            LIMIT ?
+        """
+        params.append(limit)
+        with self._connect() as connection:
+            rows = connection.execute(query, tuple(params)).fetchall()
+        return [self._row_to_dict(row) for row in rows if row is not None]
+
+    def get_last_traceroute_attempt_for_node(self, target_node_num: int) -> dict[str, Any] | None:
+        attempts = self.list_recent_traceroute_attempts_for_node(target_node_num, limit=1)
+        return attempts[0] if attempts else None
+
+    def get_last_successful_traceroute_attempt_for_node(
+        self,
+        target_node_num: int,
+    ) -> dict[str, Any] | None:
+        attempts = self.list_recent_traceroute_attempts_for_node(
+            target_node_num,
+            limit=1,
+            status="success",
+        )
+        return attempts[0] if attempts else None
+
     def get_last_traceroute_attempt(self) -> dict[str, Any] | None:
         attempts = self.list_recent_traceroute_attempts(limit=1)
         return attempts[0] if attempts else None
@@ -2124,12 +2785,17 @@ class MeshRepository:
     def upsert_node(self, node: NodeRecord) -> None:
         with self._connect() as connection:
             existing_row = connection.execute(
-                "SELECT channel_index, latitude, longitude FROM nodes WHERE node_num = ?",
+                "SELECT channel_index, latitude, longitude, first_heard_at FROM nodes WHERE node_num = ?",
                 (node.node_num,),
             ).fetchone()
             existing = self._row_to_dict(existing_row)
             previous_primary = bool(existing and self._is_primary_channel_value(existing.get("channel_index")))
             previous_mapped = bool(previous_primary and self._node_has_coordinates(existing))
+            first_heard_at = self._earliest_timestamp(
+                None if existing is None else existing.get("first_heard_at"),
+                node.last_heard_at,
+                node.updated_at,
+            )
             connection.execute(
                 """
                 INSERT INTO nodes (
@@ -2140,6 +2806,7 @@ class MeshRepository:
                     hardware_model,
                     role,
                     channel_index,
+                    first_heard_at,
                     last_heard_at,
                     last_snr,
                     latitude,
@@ -2152,7 +2819,7 @@ class MeshRepository:
                     via_mqtt,
                     raw_json,
                     updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(node_num) DO UPDATE SET
                     node_id = excluded.node_id,
                     short_name = excluded.short_name,
@@ -2160,6 +2827,7 @@ class MeshRepository:
                     hardware_model = excluded.hardware_model,
                     role = excluded.role,
                     channel_index = excluded.channel_index,
+                    first_heard_at = excluded.first_heard_at,
                     last_heard_at = excluded.last_heard_at,
                     last_snr = excluded.last_snr,
                     latitude = excluded.latitude,
@@ -2181,6 +2849,7 @@ class MeshRepository:
                     node.hardware_model,
                     node.role,
                     node.channel_index,
+                    first_heard_at,
                     node.last_heard_at,
                     node.last_snr,
                     node.latitude,
@@ -2234,16 +2903,44 @@ class MeshRepository:
             clauses.append("portnum = ?")
             params.append(portnum)
         if primary_only:
-            clauses.append(self._primary_channel_clause())
+            clauses.append(self._primary_channel_clause("p.channel_index"))
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         params.append(limit)
-        query = f"""
-            SELECT *
-            FROM packets
-            {where}
-            ORDER BY id DESC
-            LIMIT ?
-        """
+        if since is not None:
+            packets_from = (
+                "FROM packets AS p INDEXED BY idx_packets_primary_received_at"
+                if primary_only else
+                "FROM packets AS p INDEXED BY idx_packets_received_at"
+            )
+            query = f"""
+                WITH filtered_packets AS MATERIALIZED (
+                    SELECT p.*
+                    {packets_from}
+                    {where}
+                )
+                SELECT
+                    p.*,
+                    d.short_name AS delivery_short_name,
+                    d.long_name AS delivery_long_name
+                FROM filtered_packets AS p
+                LEFT JOIN nodes AS d
+                    ON d.node_num = COALESCE(p.relay_node, p.next_hop)
+                ORDER BY p.id DESC
+                LIMIT ?
+            """
+        else:
+            query = f"""
+                SELECT
+                    p.*,
+                    d.short_name AS delivery_short_name,
+                    d.long_name AS delivery_long_name
+                FROM packets AS p
+                LEFT JOIN nodes AS d
+                    ON d.node_num = COALESCE(p.relay_node, p.next_hop)
+                {where}
+                ORDER BY p.id DESC
+                LIMIT ?
+            """
         with self._connect() as connection:
             rows = connection.execute(query, params).fetchall()
         return [self._row_to_dict(row) for row in rows if row is not None]
@@ -2256,20 +2953,64 @@ class MeshRepository:
         primary_only: bool = False,
         exclude_admin: bool = False,
     ) -> list[dict[str, Any]]:
-        clauses = ["(from_node_num = ? OR to_node_num = ?)"]
-        params: list[Any] = [node_num, node_num]
+        sent_clauses = ["from_node_num = ?"]
+        received_clauses = ["to_node_num = ?", "(from_node_num IS NULL OR from_node_num != ?)"]
+        params: list[Any] = [node_num]
         if exclude_admin:
-            clauses.append(self._non_admin_packet_clause())
+            sent_clauses.append(self._non_admin_packet_clause())
+            received_clauses.append(self._non_admin_packet_clause())
         if primary_only:
-            clauses.append(self._primary_channel_clause())
-        where = " AND ".join(clauses)
+            sent_clauses.append(self._primary_channel_clause())
+            received_clauses.append(self._primary_channel_clause())
+        sent_where = " AND ".join(sent_clauses)
+        received_where = " AND ".join(received_clauses)
         with self._connect() as connection:
             rows = connection.execute(
                 f"""
                 SELECT *
-                FROM packets
-                WHERE {where}
+                FROM (
+                    SELECT *
+                    FROM packets
+                    WHERE {sent_where}
+                    UNION ALL
+                    SELECT *
+                    FROM packets
+                    WHERE {received_where}
+                )
                 ORDER BY id DESC
+                LIMIT ?
+                """,
+                (*params, node_num, node_num, limit),
+            ).fetchall()
+        return [self._row_to_dict(row) for row in rows if row is not None]
+
+    def list_recent_packets_from_node(
+        self,
+        node_num: int,
+        *,
+        limit: int = 8,
+        primary_only: bool = False,
+    ) -> list[dict[str, Any]]:
+        clauses = ["p.from_node_num = ?"]
+        params: list[Any] = [node_num]
+        if primary_only:
+            clauses.append(self._primary_channel_clause("p.channel_index"))
+        where = " AND ".join(clauses)
+        with self._connect() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT
+                    p.*,
+                    n.short_name AS to_short_name,
+                    n.long_name AS to_long_name,
+                    n.node_id AS to_node_id,
+                    d.short_name AS delivery_short_name,
+                    d.long_name AS delivery_long_name
+                FROM packets AS p
+                LEFT JOIN nodes AS n ON n.node_num = p.to_node_num
+                LEFT JOIN nodes AS d ON d.node_num = COALESCE(p.relay_node, p.next_hop)
+                WHERE {where}
+                ORDER BY p.id DESC
                 LIMIT ?
                 """,
                 (*params, limit),
@@ -2648,46 +3389,113 @@ class MeshRepository:
         return bool(row and row["ok"] == 1)
 
     def get_node_insights(self, node_num: int, *, primary_only: bool = False) -> dict[str, Any]:
-        clauses = ["(from_node_num = ? OR to_node_num = ?)"]
-        params: list[Any] = [node_num, node_num]
+        sent_clauses = ["from_node_num = ?"]
+        received_clauses = ["to_node_num = ?", "(from_node_num IS NULL OR from_node_num != ?)"]
         if primary_only:
-            clauses.append(self._primary_channel_clause())
-        where = self._where_clause(clauses)
+            sent_clauses.append(self._primary_channel_clause())
+            received_clauses.append(self._primary_channel_clause())
+        sent_where = " AND ".join(sent_clauses)
+        received_where = " AND ".join(received_clauses)
         hops_taken_expr = "CASE WHEN hop_start IS NOT NULL AND hop_limit IS NOT NULL AND hop_start >= hop_limit THEN hop_start - hop_limit END"
         with self._connect() as connection:
             aggregate = connection.execute(
                 f"""
                 SELECT
                     COUNT(*) AS heard_packets,
+                    SUM(CASE WHEN from_node_num = ? THEN 1 ELSE 0 END) AS sent_packets,
                     SUM(CASE WHEN to_node_num = ? THEN 1 ELSE 0 END) AS broadcast_packets,
-                    SUM(CASE WHEN COALESCE(via_mqtt, 0) = 1 THEN 1 ELSE 0 END) AS mqtt_packets,
-                    SUM(CASE WHEN COALESCE(via_mqtt, 0) = 0 AND {hops_taken_expr} = 0 THEN 1 ELSE 0 END) AS direct_packets,
-                    SUM(CASE WHEN COALESCE(via_mqtt, 0) = 0 AND {hops_taken_expr} > 0 THEN 1 ELSE 0 END) AS relayed_packets,
+                    SUM(CASE WHEN from_node_num = ? AND portnum = 'TEXT_MESSAGE_APP' THEN 1 ELSE 0 END) AS text_packets,
+                    SUM(CASE WHEN from_node_num = ? AND portnum LIKE '%POSITION%' THEN 1 ELSE 0 END) AS position_packets,
+                    SUM(CASE WHEN from_node_num = ? AND (
+                        portnum LIKE '%TELEMETRY%'
+                        OR portnum LIKE '%NODEINFO%'
+                        OR portnum LIKE '%NEIGHBORINFO%'
+                        OR portnum LIKE '%STORE_FORWARD%'
+                        OR portnum LIKE '%PAXCOUNTER%'
+                        OR portnum LIKE '%AIRQUALITY%'
+                    ) THEN 1 ELSE 0 END) AS telemetry_packets,
+                    SUM(CASE WHEN from_node_num = ? AND COALESCE(via_mqtt, 0) = 1 THEN 1 ELSE 0 END) AS mqtt_packets,
+                    SUM(CASE WHEN from_node_num = ? AND COALESCE(via_mqtt, 0) = 0 AND {hops_taken_expr} = 0 THEN 1 ELSE 0 END) AS direct_packets,
+                    SUM(CASE WHEN from_node_num = ? AND COALESCE(via_mqtt, 0) = 0 AND {hops_taken_expr} > 0 THEN 1 ELSE 0 END) AS relayed_packets,
                     AVG(rx_snr) AS avg_rx_snr,
                     MAX(rx_snr) AS best_rx_snr,
                     MIN(rx_snr) AS worst_rx_snr
-                FROM packets
-                {where}
+                FROM (
+                    SELECT
+                        from_node_num,
+                        to_node_num,
+                        portnum,
+                        hop_start,
+                        hop_limit,
+                        via_mqtt,
+                        rx_snr
+                    FROM packets
+                    WHERE {sent_where}
+                    UNION ALL
+                    SELECT
+                        from_node_num,
+                        to_node_num,
+                        portnum,
+                        hop_start,
+                        hop_limit,
+                        via_mqtt,
+                        rx_snr
+                    FROM packets
+                    WHERE {received_where}
+                ) AS node_packets
                 """,
-                [BROADCAST_NODE_NUM, *params],
+                [
+                    node_num,
+                    BROADCAST_NODE_NUM,
+                    node_num,
+                    node_num,
+                    node_num,
+                    node_num,
+                    node_num,
+                    node_num,
+                    node_num,
+                    node_num,
+                    node_num,
+                ],
             ).fetchone()
             latest_packet = connection.execute(
                 f"""
                 SELECT *
-                FROM packets
-                {where}
+                FROM (
+                    SELECT *
+                    FROM (
+                        SELECT *
+                        FROM packets
+                        WHERE {sent_where}
+                        ORDER BY id DESC
+                        LIMIT 1
+                    )
+                    UNION ALL
+                    SELECT *
+                    FROM (
+                        SELECT *
+                        FROM packets
+                        WHERE {received_where}
+                        ORDER BY id DESC
+                        LIMIT 1
+                    )
+                )
                 ORDER BY id DESC
                 LIMIT 1
                 """,
-                params,
+                (node_num, node_num, node_num),
             ).fetchone()
         latest_payload = self._row_to_dict(latest_packet)
         return {
             "heard_packets": int(aggregate["heard_packets"] or 0) if aggregate is not None else 0,
+            "sent_packets": int(aggregate["sent_packets"] or 0) if aggregate is not None else 0,
             "broadcast_packets": int(aggregate["broadcast_packets"] or 0) if aggregate is not None else 0,
             "mqtt_packets": int(aggregate["mqtt_packets"] or 0) if aggregate is not None else 0,
             "direct_packets": int(aggregate["direct_packets"] or 0) if aggregate is not None else 0,
             "relayed_packets": int(aggregate["relayed_packets"] or 0) if aggregate is not None else 0,
+            "text_packets": int(aggregate["text_packets"] or 0) if aggregate is not None else 0,
+            "position_packets": int(aggregate["position_packets"] or 0) if aggregate is not None else 0,
+            "telemetry_packets": int(aggregate["telemetry_packets"] or 0) if aggregate is not None else 0,
             "avg_rx_snr": aggregate["avg_rx_snr"] if aggregate is not None else None,
             "best_rx_snr": aggregate["best_rx_snr"] if aggregate is not None else None,
             "worst_rx_snr": aggregate["worst_rx_snr"] if aggregate is not None else None,

@@ -523,6 +523,33 @@ def visible_tile_sources(page) -> list[str]:
     )
 
 
+def test_carto_key_is_used_for_each_theme(tmp_path):
+    with open_page(tmp_path) as page:
+        page.route(
+            "**/api/map/config",
+            lambda route: route.fulfill(json={"carto_api_key": "merge-test-key"}),
+        )
+        page.reload(wait_until="domcontentloaded")
+        _wait_for_dashboard(page)
+        page.click("#rail-toggle-options")
+        expect_rail_open(page)
+
+        for theme, tile_path in (
+            ("amber-monochrome", "dark_nolabels"),
+            ("classic", "rastertiles/voyager"),
+            ("classic-dark", "dark_nolabels"),
+        ):
+            page.select_option("#ui-theme-select", theme)
+            page.wait_for_function(
+                """path => Array.from(document.querySelectorAll('.leaflet-tile-pane img.leaflet-tile'))
+                  .some(tile => tile.src.includes(path) && tile.src.includes('key=merge-test-key'))""",
+                arg=tile_path,
+            )
+            sources = visible_tile_sources(page)
+            assert sources
+            assert all("key=merge-test-key" in src for src in sources)
+
+
 def test_theme_selection_persists_and_invalid_saved_value_falls_back(tmp_path):
     with open_page(tmp_path) as page:
         page.click("#rail-toggle-options")

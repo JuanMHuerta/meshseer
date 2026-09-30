@@ -4376,12 +4376,12 @@ async function loadAll() {
   const results = [
     ...bootstrapResults,
     ...(await Promise.allSettled([
-    loadNodes(),
-    loadPackets(),
-    loadRecentActivityPackets(),
-    loadChat(),
-    loadMeshSummary(),
-    loadMeshRoutes(),
+      loadNodes(),
+      loadPackets(),
+      loadRecentActivityPackets(),
+      loadChat(),
+      loadMeshSummary(),
+      loadMeshRoutes(),
     ])),
   ];
   if (results.some((result) => result.status === "fulfilled")) {

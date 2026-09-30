@@ -12,7 +12,7 @@ from fastapi import FastAPI
 from meshtastic.protobuf import mesh_pb2
 
 from meshseer.app import create_app
-from meshseer.channels import BROADCAST_NODE_NUM
+from meshseer.channels import BROADCAST_NODE_NUM, LONGFAST_CHANNEL_NAME
 from meshseer.clock import to_utc_iso, utc_now
 from meshseer.collector import CollectorStatus
 from meshseer.config import Settings
@@ -45,6 +45,9 @@ class DemoCollector:
 
     def local_node_num(self) -> int:
         return self._local_node_num
+
+    def primary_channel_name(self) -> str:
+        return LONGFAST_CHANNEL_NAME
 
 
 class DemoAutotraceService:
@@ -823,7 +826,7 @@ def run(argv: Sequence[str] | None = None) -> None:
     db_path = Path(args.db_path)
     db_path.parent.mkdir(parents=True, exist_ok=True)
     app = build_demo_app(db_path)
-    uvicorn.run(app, host=args.host, port=args.port)
+    uvicorn.run(app, host=args.host, port=args.port, ws="websockets-sansio")
 
 
 if __name__ == "__main__":

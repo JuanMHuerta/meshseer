@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ipaddress
 import json
 import logging
 import threading
@@ -26,7 +27,16 @@ def audit_log(event: str, **fields: Any) -> None:
     _logger.info(json.dumps(payload, separators=(",", ":"), sort_keys=True))
 
 
-def request_source(headers: Mapping[str, str], client_host: str | None) -> str:
+def _is_loopback_proxy(client_host: str | None) -> bool:
+    if not client_host:
+        return False
+    try:
+        return ipaddress.ip_address(client_host).is_loopback
+    except ValueError:
+        return client_host.strip().lower() == "localhost"
+
+
+def _forwarded_source(headers: Mapping[str, str]) -> str | None:
     forwarded_for = headers.get("x-forwarded-for", "")
     if forwarded_for:
         source = forwarded_for.split(",", 1)[0].strip()
@@ -36,6 +46,17 @@ def request_source(headers: Mapping[str, str], client_host: str | None) -> str:
     real_ip = headers.get("x-real-ip", "").strip()
     if real_ip:
         return real_ip
+
+    return None
+
+
+def request_source(headers: Mapping[str, str], client_host: str | None) -> str:
+    if client_host and not _is_loopback_proxy(client_host):
+        return client_host
+
+    source = _forwarded_source(headers)
+    if source:
+        return source
 
     if client_host:
         return client_host

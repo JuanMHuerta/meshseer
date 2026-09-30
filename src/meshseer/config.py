@@ -65,6 +65,17 @@ def _environment(value: str | None) -> str:
     raise ValueError("MESHSEER_ENV must be one of: development, dev, production, prod")
 
 
+def _ui_style(value: str | None) -> str:
+    if value is None:
+        return "amber-monochrome"
+    normalized = value.strip().lower()
+    if normalized == "":
+        return "amber-monochrome"
+    if normalized in {"classic", "classic-dark", "amber-monochrome"}:
+        return normalized
+    raise ValueError("MESHSEER_UI_DEFAULT_STYLE must be one of: classic, classic-dark, amber-monochrome")
+
+
 @dataclass(frozen=True)
 class Settings:
     environment: str
@@ -76,12 +87,16 @@ class Settings:
     local_node_num: int | None
     admin_bearer_token: str | None
     carto_api_key: str | None
+    ui_default_style: str
     autotrace_enabled: bool
     autotrace_interval_seconds: int
     autotrace_target_window_hours: int
     autotrace_cooldown_hours: int
     autotrace_ack_only_cooldown_hours: int
     autotrace_response_timeout_seconds: int
+    autotrace_position_priority_window_minutes: int
+    autotrace_position_movement_distance_meters: float
+    autotrace_position_movement_cooldown_minutes: int
     ws_max_connections: int
     ws_queue_size: int
     ws_send_timeout_seconds: float
@@ -109,6 +124,7 @@ class Settings:
             local_node_num=_optional_int(values.get("MESHSEER_LOCAL_NODE_NUM")),
             admin_bearer_token=_optional_stripped(values.get("MESHSEER_ADMIN_BEARER_TOKEN")),
             carto_api_key=_optional_stripped(values.get("MESHSEER_CARTO_API_KEY")),
+            ui_default_style=_ui_style(values.get("MESHSEER_UI_DEFAULT_STYLE")),
             autotrace_enabled=_optional_bool(values.get("MESHSEER_AUTOTRACE_ENABLED")),
             autotrace_interval_seconds=int(values.get("MESHSEER_AUTOTRACE_INTERVAL_SECONDS", "300")),
             autotrace_target_window_hours=int(values.get("MESHSEER_AUTOTRACE_TARGET_WINDOW_HOURS", "24")),
@@ -118,6 +134,21 @@ class Settings:
             ),
             autotrace_response_timeout_seconds=int(
                 values.get("MESHSEER_AUTOTRACE_RESPONSE_TIMEOUT_SECONDS", "20")
+            ),
+            autotrace_position_priority_window_minutes=_positive_int(
+                values.get("MESHSEER_AUTOTRACE_POSITION_PRIORITY_WINDOW_MINUTES"),
+                default=15,
+                name="MESHSEER_AUTOTRACE_POSITION_PRIORITY_WINDOW_MINUTES",
+            ),
+            autotrace_position_movement_distance_meters=_positive_float(
+                values.get("MESHSEER_AUTOTRACE_POSITION_MOVEMENT_DISTANCE_METERS"),
+                default=150.0,
+                name="MESHSEER_AUTOTRACE_POSITION_MOVEMENT_DISTANCE_METERS",
+            ),
+            autotrace_position_movement_cooldown_minutes=_positive_int(
+                values.get("MESHSEER_AUTOTRACE_POSITION_MOVEMENT_COOLDOWN_MINUTES"),
+                default=60,
+                name="MESHSEER_AUTOTRACE_POSITION_MOVEMENT_COOLDOWN_MINUTES",
             ),
             ws_max_connections=_positive_int(
                 values.get("MESHSEER_WS_MAX_CONNECTIONS"),

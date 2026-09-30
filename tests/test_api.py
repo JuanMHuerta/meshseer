@@ -9,7 +9,7 @@ from meshtastic.protobuf import mesh_pb2
 from starlette import status
 from starlette.websockets import WebSocketDisconnect
 
-from meshseer.app import create_app
+from meshseer.app import _autotrace_position_tracking_enabled, create_app
 from meshseer import __version__
 from meshseer.channels import BROADCAST_NODE_NUM
 from meshseer.collector import CollectorStatus
@@ -22,11 +22,12 @@ ADMIN_TOKEN = "test-admin-token"
 
 
 class StubCollector:
-    def __init__(self, *, local_node_num=None):
+    def __init__(self, *, local_node_num=None, primary_channel_name=None):
         self.started = False
         self.stopped = False
         self.status = CollectorStatus(state="connected", connected=True, detail=None)
         self._local_node_num = local_node_num
+        self._primary_channel_name = primary_channel_name
 
     def start(self):
         self.started = True
@@ -39,6 +40,9 @@ class StubCollector:
 
     def local_node_num(self):
         return self._local_node_num
+
+    def primary_channel_name(self):
+        return self._primary_channel_name
 
 
 class StubAutotraceService:
@@ -192,7 +196,7 @@ def build_app(tmp_path, *, admin_token: str | None = None, extra_env: dict[str, 
             updated_at="2026-03-30T12:05:00Z",
         )
     )
-    collector = StubCollector()
+    collector = StubCollector(primary_channel_name="LongFast")
     env = {
         "MESHSEER_DB_PATH": str(tmp_path / "mesh.db"),
         "MESHSEER_LOCAL_NODE_NUM": "101",
@@ -234,17 +238,18 @@ def test_api_routes_and_filters(tmp_path):
     assert "detail" not in status.json()["collector"]
     assert status.json()["perspective"]["local_node_num"] == 101
     assert status.json()["perspective"]["label"] == "ALFA"
+    assert status.json()["perspective"]["channel_name"] == "LongFast"
+    assert status.json()["ui"]["default_style"] == "amber-monochrome"
     assert status.json()["version"] == __version__
-    assert "channel_name" not in status.json()["perspective"]
     assert "database" not in health.json()
-    assert packets.json()[0]["path_label"] == "Direct"
-    assert packets.json()[0]["path_tone"] == "direct"
+    assert packets.json()[0]["path_label"] == "Local"
+    assert packets.json()[0]["path_tone"] == "local"
     assert "text_preview" not in packets.json()[0]
     assert "mesh_packet_id" not in packets.json()[0]
     assert "channel_index" not in packets.json()[0]
     assert "hop_limit" not in packets.json()[0]
     assert "hop_start" not in packets.json()[0]
-    assert "rx_snr" not in packets.json()[0]
+    assert packets.json()[0]["rx_snr"] == 6.5
     assert "via_mqtt" not in packets.json()[0]
     assert "from_node_id" not in packets.json()[0]
     assert "payload_base64" not in packets.json()[0]
@@ -252,14 +257,23 @@ def test_api_routes_and_filters(tmp_path):
     assert len(chat.json()) == 1
     assert chat.json()[0]["text_preview"] == "hello mesh"
     assert chat.json()[0]["sender_label"] == "ALFA"
-    assert chat.json()[0]["path_label"] == "Direct"
+    assert chat.json()[0]["path_label"] == "Local"
     assert "from_node_num" not in chat.json()[0]
     assert "mesh_packet_id" not in chat.json()[0]
     assert node.json()["node"]["node_num"] == 101
     assert "latitude" not in node.json()["node"]
+    assert len(node.json()["recent_packets"]) == 1
+    assert node.json()["metric_history"] == []
+    assert node.json()["recent_packets"][0]["text_preview"] == "hello mesh"
+    assert node.json()["recent_packets"][0]["destination_label"] == "Broadcast"
+    assert node.json()["recent_packets"][0]["delivery_node_label"] is None
+    assert node.json()["recent_packets"][0]["path_label"] == "Local"
+    assert node.json()["recent_packets"][0]["rx_snr"] == 6.5
+    assert "raw_json" not in node.json()["recent_packets"][0]
+    assert "mesh_packet_id" not in node.json()["recent_packets"][0]
     assert "longitude" not in node.json()["node"]
     assert "raw_json" not in node.json()["node"]
-    assert "recent_packets" not in node.json()
+    assert "recent_activity_packets" not in node.json()
     assert hidden_node.status_code == 404
     assert admin_packet.json()["mesh_packet_id"] == 11
     assert admin_packet.json()["raw_json"] == '{"id":11}'
@@ -292,6 +306,65 @@ def test_map_config_returns_null_when_no_carto_key_is_configured(tmp_path):
 
     assert response.status_code == 200
     assert response.json() == {"carto_api_key": None}
+
+
+def test_public_packets_expose_receiver_local_path_without_route_metadata(tmp_path):
+    app, _collector = build_app(tmp_path)
+    repo = app.state.repository
+    repo.insert_packet(
+        PacketRecord(
+            mesh_packet_id=13,
+            received_at="2026-03-30T12:10:00Z",
+            from_node_num=101,
+            to_node_num=BROADCAST_NODE_NUM,
+            portnum="POSITION_APP",
+            channel_index=0,
+            hop_limit=None,
+            hop_start=None,
+            next_hop=None,
+            relay_node=None,
+            rx_snr=5.2,
+            rx_rssi=-88,
+            text_preview=None,
+            payload_base64="cG9z",
+            raw_json='{"id":13}',
+            via_mqtt=False,
+        )
+    )
+
+    client = TestClient(app)
+    with client:
+        packets = client.get("/api/packets")
+        node = client.get("/api/nodes/101")
+
+    assert packets.status_code == 200
+    assert packets.json()[0]["path_tone"] == "local"
+    assert packets.json()[0]["path_label"] == "Local"
+    assert packets.json()[0]["delivery_node_label"] is None
+    assert node.status_code == 200
+    assert node.json()["recent_packets"][0]["path_tone"] == "local"
+    assert node.json()["recent_packets"][0]["path_label"] == "Local"
+    assert node.json()["recent_packets"][0]["delivery_node_label"] is None
+
+
+def test_status_reflects_ui_default_style_override(tmp_path):
+    app, _collector = build_app(tmp_path, extra_env={"MESHSEER_UI_DEFAULT_STYLE": "classic"})
+
+    with TestClient(app) as client:
+        status = client.get("/api/status")
+
+    assert status.status_code == 200
+    assert status.json()["ui"]["default_style"] == "classic"
+
+
+def test_status_reflects_classic_dark_ui_default_style_override(tmp_path):
+    app, _collector = build_app(tmp_path, extra_env={"MESHSEER_UI_DEFAULT_STYLE": "classic-dark"})
+
+    with TestClient(app) as client:
+        status = client.get("/api/status")
+
+    assert status.status_code == 200
+    assert status.json()["ui"]["default_style"] == "classic-dark"
 
 
 def test_docs_routes_are_hidden_in_production(tmp_path):
@@ -650,7 +723,355 @@ def test_node_detail_omits_recent_activity_packets(tmp_path):
         node = client.get("/api/nodes/101")
 
     assert node.status_code == 200
-    assert "recent_packets" not in node.json()
+    assert "recent_activity_packets" not in node.json()
+    assert "recent_packets" in node.json()
+
+
+def test_node_detail_exposes_recent_packets_from_selected_node(tmp_path):
+    app, _collector = build_app(tmp_path)
+    repo = app.state.repository
+
+    repo.upsert_node(
+        NodeRecord(
+            node_num=303,
+            node_id="!0000012f",
+            short_name="GAMMA",
+            long_name="Gamma Node",
+            hardware_model="TBEAM",
+            role="CLIENT",
+            channel_index=0,
+            last_heard_at="2026-03-30T12:08:00Z",
+            last_snr=2.5,
+            latitude=10.4,
+            longitude=-84.15,
+            altitude=18.0,
+            battery_level=74.0,
+            channel_utilization=5.2,
+            air_util_tx=1.8,
+            raw_json='{"num":303}',
+            updated_at="2026-03-30T12:08:00Z",
+            hops_away=1,
+            via_mqtt=False,
+        )
+    )
+    repo.insert_packet(
+        PacketRecord(
+            mesh_packet_id=13,
+            received_at="2026-03-30T12:06:00Z",
+            from_node_num=101,
+            to_node_num=303,
+            portnum="POSITION_APP",
+            channel_index=0,
+            hop_limit=2,
+            hop_start=2,
+            rx_snr=4.1,
+            rx_rssi=-90,
+            text_preview=None,
+            payload_base64=None,
+            raw_json='{"id":13}',
+            via_mqtt=False,
+        )
+    )
+    repo.insert_packet(
+        PacketRecord(
+            mesh_packet_id=14,
+            received_at="2026-03-30T12:07:00Z",
+            from_node_num=101,
+            to_node_num=BROADCAST_NODE_NUM,
+            portnum="TEXT_MESSAGE_APP",
+            channel_index=0,
+            hop_limit=2,
+            hop_start=3,
+            rx_snr=3.5,
+            rx_rssi=-94,
+            text_preview="status update",
+            payload_base64=None,
+            raw_json='{"id":14}',
+            relay_node=303,
+            via_mqtt=False,
+        )
+    )
+    repo.insert_packet(
+        PacketRecord(
+            mesh_packet_id=15,
+            received_at="2026-03-30T12:08:00Z",
+            from_node_num=101,
+            to_node_num=303,
+            portnum="NODEINFO_APP",
+            channel_index=2,
+            hop_limit=1,
+            hop_start=1,
+            rx_snr=2.0,
+            rx_rssi=-99,
+            text_preview=None,
+            payload_base64=None,
+            raw_json='{"id":15,"channel":2}',
+            via_mqtt=False,
+        )
+    )
+
+    with TestClient(app) as client:
+        node = client.get("/api/nodes/101")
+
+    assert node.status_code == 200
+    recent_packets = node.json()["recent_packets"]
+    assert [item["portnum"] for item in recent_packets] == ["TEXT_MESSAGE_APP", "POSITION_APP", "TEXT_MESSAGE_APP"]
+    assert recent_packets[0]["destination_label"] == "Broadcast"
+    assert recent_packets[0]["text_preview"] == "status update"
+    assert recent_packets[0]["delivery_node_label"] == "GAMMA"
+    assert recent_packets[1]["destination_label"] == "GAMMA"
+    assert recent_packets[1]["path_label"] == "Local"
+    assert recent_packets[2]["path_label"] == "Local"
+    assert node.json()["metric_history"] == []
+
+
+def test_node_detail_metric_history_can_fall_back_to_current_snapshot(tmp_path):
+    app, _collector = build_app(tmp_path)
+    repo = app.state.repository
+
+    repo.upsert_node(
+        NodeRecord(
+            node_num=303,
+            node_id="!0000012f",
+            short_name="GAMMA",
+            long_name="Gamma Node",
+            hardware_model="TBEAM",
+            role="CLIENT",
+            channel_index=0,
+            last_heard_at="2026-03-30T12:08:00Z",
+            last_snr=2.5,
+            latitude=10.4,
+            longitude=-84.15,
+            altitude=18.0,
+            battery_level=74.0,
+            channel_utilization=5.2,
+            air_util_tx=1.8,
+            raw_json='{"num":303}',
+            updated_at="2026-03-30T12:08:00Z",
+            hops_away=1,
+            via_mqtt=False,
+        )
+    )
+
+    with TestClient(app) as client:
+        node = client.get("/api/nodes/303")
+
+    assert node.status_code == 200
+    assert node.json()["metric_history"] == [
+        {
+            "recorded_at": "2026-03-30T12:08:00Z",
+            "channel_utilization": 5.2,
+            "air_util_tx": 1.8,
+        }
+    ]
+
+
+def test_node_detail_limits_recent_packets_to_twelve(tmp_path):
+    app, _collector = build_app(tmp_path)
+    repo = app.state.repository
+
+    for packet_id in range(1, 14):
+        repo.insert_packet(
+            PacketRecord(
+                mesh_packet_id=packet_id,
+                received_at=f"2026-03-30T12:{packet_id:02d}:00Z",
+                from_node_num=101,
+                to_node_num=BROADCAST_NODE_NUM,
+                portnum="TEXT_MESSAGE_APP",
+                channel_index=0,
+                hop_limit=1,
+                hop_start=1,
+                rx_snr=1.0,
+                rx_rssi=-90,
+                text_preview=f"packet {packet_id}",
+                payload_base64=None,
+                raw_json=json.dumps({"id": packet_id}),
+                via_mqtt=False,
+            )
+        )
+
+    with TestClient(app) as client:
+        node = client.get("/api/nodes/101")
+
+    assert node.status_code == 200
+    recent_packets = node.json()["recent_packets"]
+    assert len(recent_packets) == 12
+    assert [item["text_preview"] for item in recent_packets] == [f"packet {packet_id}" for packet_id in range(13, 1, -1)]
+
+
+def test_node_detail_exposes_last_traceroute_attempts(tmp_path):
+    app, _collector = build_app(tmp_path)
+    repo = app.state.repository
+
+    success_attempt_id = repo.start_traceroute_attempt(
+        target_node_num=101,
+        requested_at="2026-03-30T12:00:00Z",
+        hop_limit=3,
+    )
+    repo.complete_traceroute_attempt(
+        success_attempt_id,
+        completed_at="2026-03-30T12:00:15Z",
+        status="success",
+        request_mesh_packet_id=81,
+        response_mesh_packet_id=91,
+        detail=None,
+    )
+
+    timeout_attempt_id = repo.start_traceroute_attempt(
+        target_node_num=101,
+        requested_at="2026-03-30T12:05:00Z",
+        hop_limit=3,
+    )
+    repo.complete_traceroute_attempt(
+        timeout_attempt_id,
+        completed_at="2026-03-30T12:05:30Z",
+        status="timeout",
+        request_mesh_packet_id=82,
+        response_mesh_packet_id=None,
+        detail="Timed out waiting for traceroute response",
+    )
+
+    with TestClient(app) as client:
+        node = client.get("/api/nodes/101")
+
+    assert node.status_code == 200
+    payload = node.json()
+    assert payload["last_traceroute_attempt"]["id"] == timeout_attempt_id
+    assert payload["last_traceroute_attempt"]["status"] == "timeout"
+    assert payload["last_traceroute_attempt"]["detail"] == "Timed out waiting for traceroute response"
+    assert payload["last_successful_traceroute_attempt"]["id"] == success_attempt_id
+    assert payload["last_successful_traceroute_attempt"]["status"] == "success"
+    assert payload["last_successful_traceroute_attempt"]["response_mesh_packet_id"] == 91
+
+
+def test_node_detail_exposes_latest_complete_traceroute_path(tmp_path):
+    app, _collector = build_app(tmp_path)
+    repo = app.state.repository
+    repo.upsert_node(
+        NodeRecord(
+            node_num=303,
+            node_id="!0000012f",
+            short_name="INX3",
+            long_name="INX3",
+            hardware_model="TBEAM",
+            role="CLIENT",
+            channel_index=0,
+            last_heard_at="2026-03-30T12:08:00Z",
+            last_snr=2.5,
+            latitude=10.4,
+            longitude=-84.15,
+            altitude=18.0,
+            battery_level=74.0,
+            channel_utilization=5.2,
+            air_util_tx=1.8,
+            raw_json='{"num":303}',
+            updated_at="2026-03-30T12:08:00Z",
+            hops_away=1,
+            via_mqtt=False,
+        )
+    )
+    repo.insert_packet(
+        PacketRecord(
+            mesh_packet_id=9001,
+            received_at="2026-03-30T12:10:00Z",
+            from_node_num=303,
+            to_node_num=101,
+            portnum="TRACEROUTE_APP",
+            channel_index=0,
+            hop_limit=2,
+            hop_start=3,
+            rx_snr=3.5,
+            rx_rssi=-90,
+            text_preview=None,
+            payload_base64=encode_traceroute_payload(
+                route=[202],
+                snr_towards=[20, 10],
+                route_back=[202],
+                snr_back=[15, 5],
+            ),
+            raw_json='{"decoded":{"requestId":7001,"traceroute":{"route":[202],"snrTowards":[20,10],"routeBack":[202],"snrBack":[15,5]}}}',
+            via_mqtt=False,
+        )
+    )
+
+    with TestClient(app) as client:
+        node = client.get("/api/nodes/303")
+
+    assert node.status_code == 200
+    latest_complete = node.json()["latest_complete_traceroute"]
+    assert latest_complete["mesh_packet_id"] == 9001
+    assert latest_complete["request_mesh_packet_id"] == 7001
+    assert latest_complete["discovery_request_id"] == 7001
+    assert latest_complete["full_path_node_nums"] == [101, 202, 303, 202, 101]
+
+
+def test_node_detail_exposes_latest_complete_route_reply_path(tmp_path):
+    app, _collector = build_app(tmp_path)
+    repo = app.state.repository
+    repo.upsert_node(
+        NodeRecord(
+            node_num=303,
+            node_id="!0000012f",
+            short_name="INX3",
+            long_name="INX3",
+            hardware_model="TBEAM",
+            role="CLIENT",
+            channel_index=0,
+            last_heard_at="2026-03-30T12:08:00Z",
+            last_snr=2.5,
+            latitude=10.4,
+            longitude=-84.15,
+            altitude=18.0,
+            battery_level=74.0,
+            channel_utilization=5.2,
+            air_util_tx=1.8,
+            raw_json='{"num":303}',
+            updated_at="2026-03-30T12:08:00Z",
+            hops_away=1,
+            via_mqtt=False,
+        )
+    )
+    attempt_id = repo.start_traceroute_attempt(
+        target_node_num=303,
+        requested_at="2026-03-30T12:09:30Z",
+        hop_limit=2,
+    )
+    repo.complete_traceroute_attempt(
+        attempt_id,
+        completed_at="2026-03-30T12:10:05Z",
+        status="success",
+        request_mesh_packet_id=5001,
+        response_mesh_packet_id=9002,
+        detail=None,
+    )
+    repo.insert_packet(
+        PacketRecord(
+            mesh_packet_id=9002,
+            received_at="2026-03-30T12:10:00Z",
+            from_node_num=303,
+            to_node_num=101,
+            portnum="ROUTING_APP",
+            channel_index=0,
+            hop_limit=2,
+            hop_start=3,
+            rx_snr=3.5,
+            rx_rssi=-90,
+            text_preview=None,
+            payload_base64=None,
+            raw_json='{"decoded":{"requestId":7002,"routing":{"routeReply":{"route":[202],"snrTowards":[20,10],"routeBack":[202],"snrBack":[15,5]}}}}',
+            via_mqtt=False,
+        )
+    )
+
+    with TestClient(app) as client:
+        node = client.get("/api/nodes/303")
+
+    assert node.status_code == 200
+    latest_complete = node.json()["latest_complete_traceroute"]
+    assert latest_complete["mesh_packet_id"] == 9002
+    assert latest_complete["request_mesh_packet_id"] == 5001
+    assert latest_complete["discovery_request_id"] == 7002
+    assert latest_complete["full_path_node_nums"] == [101, 202, 303, 202, 101]
 
 
 def test_public_node_payload_obfuscates_roster_coordinates_and_hides_detail_coordinates(tmp_path):
@@ -1466,8 +1887,68 @@ def test_packet_ingest_updates_node_activity_without_node_update(tmp_path):
 
     assert node.status_code == 200
     assert node.json()["node"]["node_id"] == "!000002c3"
+    assert node.json()["node"]["first_heard_at"] == "2026-03-30T12:15:00Z"
     assert node.json()["node"]["last_heard_at"] == "2026-03-30T12:15:00Z"
     assert node.json()["node"]["last_snr"] == 4.2
+
+
+def test_node_detail_preserves_first_heard_at_after_later_updates(tmp_path):
+    app, _collector = build_app(tmp_path)
+    repo = app.state.repository
+
+    repo.upsert_node(
+        NodeRecord(
+            node_num=101,
+            node_id="!00000065",
+            short_name="ALFA",
+            long_name="Alpha Node",
+            hardware_model="TBEAM",
+            role="CLIENT",
+            channel_index=0,
+            last_heard_at="2026-03-30T11:45:00Z",
+            last_snr=5.8,
+            latitude=10.25,
+            longitude=-84.1,
+            altitude=15.0,
+            battery_level=92.0,
+            channel_utilization=8.0,
+            air_util_tx=1.1,
+            raw_json='{"num":101}',
+            updated_at="2026-03-30T11:45:00Z",
+            hops_away=0,
+            via_mqtt=False,
+        )
+    )
+    repo.upsert_node(
+        NodeRecord(
+            node_num=101,
+            node_id="!00000065",
+            short_name="ALFA",
+            long_name="Alpha Node",
+            hardware_model="TBEAM",
+            role="CLIENT",
+            channel_index=0,
+            last_heard_at="2026-03-30T12:15:00Z",
+            last_snr=7.1,
+            latitude=10.25,
+            longitude=-84.1,
+            altitude=15.0,
+            battery_level=87.0,
+            channel_utilization=16.4,
+            air_util_tx=2.1,
+            raw_json='{"num":101}',
+            updated_at="2026-03-30T12:15:00Z",
+            hops_away=0,
+            via_mqtt=False,
+        )
+    )
+
+    with TestClient(app) as client:
+        node = client.get("/api/nodes/101")
+
+    assert node.status_code == 200
+    assert node.json()["node"]["first_heard_at"] == "2026-03-30T11:45:00Z"
+    assert node.json()["node"]["last_heard_at"] == "2026-03-30T12:15:00Z"
 
 
 def test_mesh_links_exposes_mutual_neighbor_reports(tmp_path):
@@ -1697,6 +2178,60 @@ def test_mesh_routes_support_since_filter(tmp_path, monkeypatch):
     assert routes.json()["stats"] == {"total": 1, "forward": 1, "return": 0}
     assert routes.json()["routes"][0]["mesh_packet_id"] == 18
     assert routes.json()["routes"][0]["path_node_nums"] == [101, 202, 404]
+
+
+def test_mesh_routes_support_limit_filter(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "meshseer.app.utc_now",
+        lambda: datetime(2026, 3, 30, 12, 30, tzinfo=UTC),
+    )
+
+    app, _collector = build_app(tmp_path)
+    repo = app.state.repository
+
+    repo.insert_packet(
+        PacketRecord(
+            mesh_packet_id=17,
+            received_at="2026-03-30T12:12:00Z",
+            from_node_num=303,
+            to_node_num=101,
+            portnum="TRACEROUTE_APP",
+            channel_index=0,
+            hop_limit=3,
+            hop_start=3,
+            rx_snr=4.5,
+            rx_rssi=-95,
+            text_preview=None,
+            payload_base64=encode_traceroute_payload(route=[202]),
+            raw_json="{}",
+            via_mqtt=False,
+        )
+    )
+    repo.insert_packet(
+        PacketRecord(
+            mesh_packet_id=18,
+            received_at="2026-03-30T12:13:00Z",
+            from_node_num=404,
+            to_node_num=101,
+            portnum="TRACEROUTE_APP",
+            channel_index=0,
+            hop_limit=2,
+            hop_start=2,
+            rx_snr=3.5,
+            rx_rssi=-96,
+            text_preview=None,
+            payload_base64=encode_traceroute_payload(route=[202]),
+            raw_json="{}",
+            via_mqtt=False,
+        )
+    )
+
+    with TestClient(app) as client:
+        routes = client.get("/api/mesh/routes", params={"limit": 1})
+
+    assert routes.status_code == 200
+    assert routes.json()["stats"] == {"total": 1, "forward": 1, "return": 0}
+    assert routes.json()["routes"][0]["mesh_packet_id"] == 18
 
 
 def test_mesh_routes_default_to_one_week_lookback(tmp_path, monkeypatch):
@@ -1965,6 +2500,20 @@ def test_lifespan_enables_autotrace_when_requested_by_settings(tmp_path):
     assert autotrace_service.stopped is True
 
 
+def test_autotrace_position_tracking_follows_runtime_service_state():
+    class ToggleService:
+        def __init__(self, enabled):
+            self._enabled = enabled
+
+        def is_enabled(self):
+            return self._enabled
+
+    settings = Settings.from_env({"MESHSEER_DB_PATH": "./data/test.db"})
+
+    assert _autotrace_position_tracking_enabled(settings, ToggleService(False)) is False
+    assert _autotrace_position_tracking_enabled(settings, ToggleService(True)) is True
+
+
 def test_websocket_receives_events(tmp_path):
     app, _collector = build_app(tmp_path)
 
@@ -1998,7 +2547,7 @@ def test_default_collector_callbacks_persist_and_broadcast(tmp_path):
     with TestClient(app) as client:
         collector = client.app.state.collector
         with client.websocket_connect("/ws/events", headers=websocket_headers()) as websocket:
-            collector.callbacks.on_packet(
+            client.app.state.collector.callbacks.on_packet(
                 {
                     "mesh_packet_id": 23,
                     "received_at": "2026-03-30T12:00:05Z",
@@ -2120,6 +2669,49 @@ def test_default_collector_callbacks_persist_and_broadcast(tmp_path):
     assert "raw_json" not in chat.json()[0]
     assert missing_packet.status_code == 404
     assert missing_node.status_code == 404
+
+
+def test_receiver_originated_packets_broadcast_as_local_without_route_metadata(tmp_path):
+    repo = MeshRepository(tmp_path / "mesh.db")
+    app = create_app(
+        Settings.from_env(
+            {
+                "MESHSEER_DB_PATH": str(tmp_path / "mesh.db"),
+                "MESHSEER_LOCAL_NODE_NUM": "101",
+            }
+        ),
+        repository=repo,
+        start_collector=False,
+        start_autotrace_service=False,
+    )
+
+    with TestClient(app) as client:
+        with client.websocket_connect("/ws/events", headers=websocket_headers()) as websocket:
+            client.app.state.collector.callbacks.on_packet(
+                {
+                    "mesh_packet_id": 31,
+                    "received_at": "2026-03-30T12:00:00Z",
+                    "from_node_num": 101,
+                    "to_node_num": BROADCAST_NODE_NUM,
+                    "portnum": "TEXT_MESSAGE_APP",
+                    "channel_index": 0,
+                    "hop_limit": None,
+                    "hop_start": None,
+                    "rx_snr": 4.2,
+                    "text_preview": "from receiver",
+                    "payload_base64": None,
+                    "raw_json": "{}",
+                }
+            )
+            packet_message = websocket.receive_json()
+            chat_message = websocket.receive_json()
+
+    assert packet_message["type"] == "packet_received"
+    assert packet_message["data"]["path_tone"] == "local"
+    assert packet_message["data"]["path_label"] == "Local"
+    assert chat_message["type"] == "chat_message_received"
+    assert chat_message["data"]["path_tone"] == "local"
+    assert chat_message["data"]["path_label"] == "Local"
 
 
 def test_chat_api_caps_public_history_to_40_messages(tmp_path):
